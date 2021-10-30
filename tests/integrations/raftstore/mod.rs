@@ -1,5 +1,6 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
+mod test_batch_read_index;
 mod test_bootstrap;
 mod test_clear_stale_data;
 mod test_compact_after_delete;
@@ -28,4 +29,3 @@ mod test_tombstone;
 mod test_transfer_leader;
 mod test_transport;
 mod test_update_region_size;
-mod test_batch_read_index;

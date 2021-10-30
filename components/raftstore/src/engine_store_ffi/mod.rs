@@ -65,7 +65,7 @@ impl RaftStoreProxy {
 }
 
 impl RaftStoreProxyPtr {
-    unsafe fn as_ref(&self) -> &RaftStoreProxy {
+    pub unsafe fn as_ref(&self) -> &RaftStoreProxy {
         &*(self.inner as *const RaftStoreProxy)
     }
     pub fn is_null(&self) -> bool {
