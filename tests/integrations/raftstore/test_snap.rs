@@ -32,7 +32,7 @@ fn test_huge_snapshot<T: Simulator>(cluster: &mut Cluster<T>) {
     let r1 = cluster.run_conf_change();
 
     // at least 4m data
-    for i in 0..2 * 1024 {
+    for i in 0..2 * 100 {
         let key = format!("{:01024}", i);
         let value = format!("{:01024}", i);
         cluster.must_put(key.as_bytes(), value.as_bytes());
@@ -42,6 +42,11 @@ fn test_huge_snapshot<T: Simulator>(cluster: &mut Cluster<T>) {
     must_get_none(&engine_2, &format!("{:01024}", 0).into_bytes());
     // add peer (2,2) to region 1.
     pd_client.must_add_peer(r1, new_peer(2, 2));
+
+    let key = format!("{:01024}", 0);
+    let value = format!("{:01024}", 0);
+    must_get_equal(&engine_2, key.as_bytes(), value.as_bytes());
+    debug!("!!!!! ZZZZZZZ");
 
     let (key, value) = (b"k2", b"v2");
     cluster.must_put(key, value);
@@ -83,7 +88,7 @@ fn test_huge_snapshot<T: Simulator>(cluster: &mut Cluster<T>) {
 
 #[test]
 fn test_node_huge_snapshot() {
-    let count = 5;
+    let count = 3;
     let mut cluster = new_node_cluster(0, count);
     test_huge_snapshot(&mut cluster);
 }

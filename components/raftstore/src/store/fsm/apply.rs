@@ -3640,7 +3640,7 @@ where
             match drainer.next() {
                 Some(Msg::Apply { start, apply }) => {
                     APPLY_TASK_WAIT_TIME_HISTOGRAM.observe(start.elapsed_secs());
-                    // If there is any apply task, we change this fsm to normal-priority.
+                    // If there isly any apply task, we change this fsm to normal-priority.
                     // When it meets a ingest-request or a delete-range request, it will change to
                     // low-priority.
                     self.delegate.priority = Priority::Normal;

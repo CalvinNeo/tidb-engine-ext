@@ -7,7 +7,7 @@ publish = false
 
 [lib]
 name = "raftstore_proxy"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 server = { path = "../components/server" }
