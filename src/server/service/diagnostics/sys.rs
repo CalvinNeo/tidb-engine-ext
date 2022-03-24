@@ -362,25 +362,25 @@ fn disk_hardware_info(collector: &mut Vec<ServerInfoItem>) {
     system.refresh_disks();
     let disks = system.get_disks();
     for disk in disks {
+        let file_sys = std::str::from_utf8(disk.get_file_system()).unwrap_or("unknown");
+        if file_sys == "rootfs" {
+            continue;
+        }
         let total = disk.get_total_space();
         let free = disk.get_available_space();
         let used = total - free;
         let free_pct = (free as f64) / (total as f64);
         let used_pct = (used as f64) / (total as f64);
+        let path =
+            disk.get_mount_point()
+                .to_str()
+                .unwrap_or("unknown")
+                .to_string();
         let infos = vec![
             ("type", format!("{:?}", disk.get_type())),
+            ("fstype", file_sys.to_string()),
             (
-                "fstype",
-                std::str::from_utf8(disk.get_file_system())
-                    .unwrap_or("unkonwn")
-                    .to_string(),
-            ),
-            (
-                "path",
-                disk.get_mount_point()
-                    .to_str()
-                    .unwrap_or("unknown")
-                    .to_string(),
+                "path", path,
             ),
             ("total", total.to_string()),
             ("free", free.to_string()),
