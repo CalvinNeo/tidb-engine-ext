@@ -53,6 +53,8 @@ fn server_info_for_ffi(req: ServerInfoRequest) -> ServerInfoResponse {
         server_infos.sort_by(|a, b| (a.get_tp(), a.get_name()).cmp(&(b.get_tp(), b.get_name())));
         let mut resp = ServerInfoResponse::default();
         resp.set_items(server_infos.into());
+        let s = format!("!!!! xxxxxxxx {:?}", resp);
+        tikv_util::info!("!!!! x"; "a" => s);
         resp
     };
 
