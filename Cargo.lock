@@ -1973,6 +1973,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen-proxy-ffi"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.57.0",
+ "clap 2.33.0",
+ "walkdir",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3822,6 +3831,13 @@ dependencies = [
  "txn_types",
  "uuid",
  "yatp",
+]
+
+[[package]]
+name = "raftstore-proxy"
+version = "0.0.1"
+dependencies = [
+ "server",
 ]
 
 [[package]]

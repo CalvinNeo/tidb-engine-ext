@@ -265,6 +265,8 @@ members = [
   "components/resource_metering",
   "components/api_version",
   "components/causal_ts",
+  "components/gen-proxy-ffi",
+  "components/raftstore-proxy",
 ]
 default-members = ["cmd/tikv-server", "cmd/tikv-ctl"]
 
