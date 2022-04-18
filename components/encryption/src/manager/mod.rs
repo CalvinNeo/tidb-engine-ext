@@ -694,6 +694,12 @@ impl DataKeyManager {
     }
 }
 
+impl DataKeyManager {
+    pub fn encryption_method(&self) -> engine_traits::EncryptionMethod {
+        crypter::encryption_method_to_db_encryption_method(self.method)
+    }
+}
+
 impl Drop for DataKeyManager {
     fn drop(&mut self) {
         if let Err(e) = self.rotate_terminal.send(()) {

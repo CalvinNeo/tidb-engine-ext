@@ -275,6 +275,9 @@ pub struct Config {
     pub reactive_memory_lock_timeout_tick: usize,
     // Interval of scheduling a tick to report region buckets.
     pub report_region_buckets_tick_interval: ReadableDuration,
+
+    #[online_config(skip)]
+    pub engine_store_server_helper: isize,
 }
 
 impl Default for Config {
@@ -365,6 +368,8 @@ impl Default for Config {
             check_leader_lease_interval: ReadableDuration::secs(0),
             renew_leader_lease_advance_duration: ReadableDuration::secs(0),
             report_region_buckets_tick_interval: ReadableDuration::secs(10),
+
+            engine_store_server_helper: 0,
         }
     }
 }

@@ -9,5 +9,32 @@ publish = false
 name = "raftstore_proxy"
 crate-type = ["cdylib"]
 
+[features]
+sse = ["engine_rocks/sse"]
+cloud-aws = [
+    "encryption_export/cloud-aws",
+    "sst_importer/cloud-aws",
+]
+cloud-gcp = [
+    "encryption_export/cloud-gcp",
+    "sst_importer/cloud-gcp",
+]
+cloud-azure = [
+    "encryption_export/cloud-azure",
+    "sst_importer/cloud-azure",
+]
+test-engines-rocksdb = [
+    "engine_test/test-engines-rocksdb",
+]
+
 [dependencies]
+sst_importer = { path = "../sst_importer", default-features = false }
+encryption_export = { path = "../encryption/export", default-features = false }
 server = { path = "../server" }
+engine_rocks = { path = "../engine_rocks", default-features = false }
+engine_test = { path = "../engine_test", default-features = false }
+tikv_util = { path = "../tikv_util", default-features = false }
+slog = { version = "2.3", features = ["max_level_trace", "release_max_level_debug"] }
+slog-global = { version = "0.1", git = "https://github.com/breeswish/slog-global.git", rev = "d592f88e4dbba5eb439998463054f1a44fbf17b9" }
+
+

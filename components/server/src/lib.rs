@@ -9,3 +9,4 @@ pub mod memory;
 pub mod raft_engine_switch;
 pub mod server;
 pub mod signal_handler;
+pub mod proxy;

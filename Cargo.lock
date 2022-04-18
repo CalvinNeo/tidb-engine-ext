@@ -3854,7 +3854,14 @@ dependencies = [
 name = "raftstore-proxy"
 version = "0.0.1"
 dependencies = [
+ "encryption_export",
+ "engine_rocks",
+ "engine_test",
  "server",
+ "slog",
+ "slog-global",
+ "sst_importer",
+ "tikv_util",
 ]
 
 [[package]]

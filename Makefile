@@ -146,6 +146,11 @@ clean:
 
 all: format build test error-code
 
+proxy_debug:
+	export CARGO_PROFILE_DEV_DEBUG="true"
+	export CARGO_PROFILE_RELEASE_DEBUG="true"
+	PROXY_ENABLE_FEATURES="${ENABLE_FEATURES}" ./components/raftstore-proxy/build.sh
+
 dev: format clippy
 	@env FAIL_POINT=1 make test
 

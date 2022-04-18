@@ -17,6 +17,7 @@ pub mod coprocessor;
 pub mod errors;
 pub mod router;
 pub mod store;
+pub mod engine_store_ffi;
 pub use self::coprocessor::{RegionInfo, RegionInfoAccessor, SeekRegionCallback};
 pub use self::errors::{DiscardReason, Error, Result};
 

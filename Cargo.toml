@@ -268,7 +268,7 @@ members = [
   "components/gen-proxy-ffi",
   "components/raftstore-proxy",
 ]
-default-members = ["cmd/tikv-server", "cmd/tikv-ctl"]
+default-members = ["cmd/tikv-server", "cmd/tikv-ctl",]
 
 [profile.dev]
 opt-level = 0
