@@ -171,8 +171,8 @@ const DEFAULT_ENGINE_METRICS_RESET_INTERVAL: Duration = Duration::from_millis(60
 const DEFAULT_STORAGE_STATS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A complete TiKV server.
-struct TiKVServer<ER: RaftEngine> {
-    config: TiKvConfig,
+pub struct TiKVServer<ER: RaftEngine> {
+    pub config: TiKvConfig,
     cfg_controller: Option<ConfigController>,
     security_mgr: Arc<SecurityManager>,
     pd_client: Arc<RpcClient>,
@@ -185,7 +185,7 @@ struct TiKVServer<ER: RaftEngine> {
     store_path: PathBuf,
     snap_mgr: Option<SnapManager>, // Will be filled in `init_servers`.
     encryption_key_manager: Option<Arc<DataKeyManager>>,
-    engines: Option<TiKVEngines<RocksEngine, ER>>,
+    pub engines: Option<TiKVEngines<RocksEngine, ER>>,
     servers: Option<Servers<RocksEngine, ER>>,
     region_info_accessor: RegionInfoAccessor,
     coprocessor_host: Option<CoprocessorHost<RocksEngine>>,
@@ -197,8 +197,8 @@ struct TiKVServer<ER: RaftEngine> {
     quota_limiter: Arc<QuotaLimiter>,
 }
 
-struct TiKVEngines<EK: KvEngine, ER: RaftEngine> {
-    engines: Engines<EK, ER>,
+pub struct TiKVEngines<EK: KvEngine, ER: RaftEngine> {
+    pub engines: Engines<EK, ER>,
     store_meta: Arc<Mutex<StoreMeta>>,
     engine: RaftKv<EK, ServerRaftStoreRouter<EK, ER>>,
 }
@@ -218,7 +218,7 @@ type LocalServer<EK, ER> =
 type LocalRaftKv<EK, ER> = RaftKv<EK, ServerRaftStoreRouter<EK, ER>>;
 
 impl<ER: RaftEngine> TiKVServer<ER> {
-    fn init(mut config: TiKvConfig) -> TiKVServer<ER> {
+    pub fn init(mut config: TiKvConfig) -> TiKVServer<ER> {
         tikv_util::thread_group::set_properties(Some(GroupProperties::default()));
         // It is okay use pd config and security config before `init_config`,
         // because these configs must be provided by command line, and only
@@ -366,7 +366,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         pd_client
     }
 
-    fn check_conflict_addr(&mut self) {
+    pub fn check_conflict_addr(&mut self) {
         let cur_addr: SocketAddr = self
             .config
             .server
@@ -403,7 +403,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         self.lock_files.push(cur_file);
     }
 
-    fn init_fs(&mut self) {
+    pub fn init_fs(&mut self) {
         let lock_path = self.store_path.join(Path::new("LOCK"));
 
         let f = File::create(lock_path.as_path())
@@ -463,13 +463,13 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         }
     }
 
-    fn init_yatp(&self) {
+    pub fn init_yatp(&self) {
         yatp::metrics::set_namespace(Some("tikv"));
         prometheus::register(Box::new(yatp::metrics::MULTILEVEL_LEVEL0_CHANCE.clone())).unwrap();
         prometheus::register(Box::new(yatp::metrics::MULTILEVEL_LEVEL_ELAPSED.clone())).unwrap();
     }
 
-    fn init_encryption(&mut self) {
+    pub fn init_encryption(&mut self) {
         self.encryption_key_manager = data_key_manager_from_config(
             &self.config.security.encryption,
             &self.config.storage.data_dir,
@@ -485,14 +485,14 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         .map(Arc::new);
     }
 
-    fn init_flow_receiver(&mut self) -> engine_rocks::FlowListener {
+    pub fn init_flow_receiver(&mut self) -> engine_rocks::FlowListener {
         let (tx, rx) = mpsc::channel();
         self.flow_info_sender = Some(tx.clone());
         self.flow_info_receiver = Some(rx);
         engine_rocks::FlowListener::new(tx)
     }
 
-    fn init_engines(&mut self, engines: Engines<RocksEngine, ER>) {
+    pub fn init_engines(&mut self, engines: Engines<RocksEngine, ER>) {
         let store_meta = Arc::new(Mutex::new(StoreMeta::new(PENDING_MSG_CAP)));
         let engine = RaftKv::new(
             ServerRaftStoreRouter::new(
@@ -542,7 +542,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         gc_worker
     }
 
-    fn init_servers<Api: APIVersion>(&mut self) -> Arc<VersionTrack<ServerConfig>> {
+    pub fn init_servers<Api: APIVersion>(&mut self) -> Arc<VersionTrack<ServerConfig>> {
         let flow_controller = Arc::new(FlowController::new(
             &self.config.storage.flow_control,
             self.engines.as_ref().unwrap().engine.kv_engine(),
@@ -971,7 +971,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         server_config
     }
 
-    fn register_services(&mut self) {
+    pub fn register_services(&mut self) {
         let servers = self.servers.as_mut().unwrap();
         let engines = self.engines.as_ref().unwrap();
 
@@ -1088,7 +1088,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         }
     }
 
-    fn init_io_utility(&mut self) -> BytesFetcher {
+    pub fn init_io_utility(&mut self) -> BytesFetcher {
         let stats_collector_enabled = file_system::init_io_stats_collector()
             .map_err(|e| warn!("failed to init I/O stats collector: {}", e))
             .is_ok();
@@ -1110,7 +1110,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         fetcher
     }
 
-    fn init_metrics_flusher(
+    pub fn init_metrics_flusher(
         &mut self,
         fetcher: BytesFetcher,
         engines_info: Arc<EnginesResourceInfo>,
@@ -1141,7 +1141,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
             });
     }
 
-    fn init_storage_stats_task(&self, engines: Engines<RocksEngine, ER>) {
+    pub fn init_storage_stats_task(&self, engines: Engines<RocksEngine, ER>) {
         let config_disk_capacity: u64 = self.config.raft_store.capacity.0;
         let data_dir = self.config.storage.data_dir.clone();
         let store_path = self.store_path.clone();
@@ -1221,7 +1221,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
             })
     }
 
-    fn run_server(&mut self, server_config: Arc<VersionTrack<ServerConfig>>) {
+    pub fn run_server(&mut self, server_config: Arc<VersionTrack<ServerConfig>>) {
         let server = self.servers.as_mut().unwrap();
         server
             .server
@@ -1233,7 +1233,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
             .unwrap_or_else(|e| fatal!("failed to start server: {}", e));
     }
 
-    fn run_status_server(&mut self) {
+    pub fn run_status_server(&mut self) {
         // Create a status server.
         let status_enabled = !self.config.server.status_addr.is_empty();
         if status_enabled {
@@ -1259,7 +1259,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
         }
     }
 
-    fn stop(self) {
+    pub fn stop(self) {
         tikv_util::thread_group::mark_shutdown();
         let mut servers = self.servers.unwrap();
         servers
@@ -1276,7 +1276,7 @@ impl<ER: RaftEngine> TiKVServer<ER> {
     }
 }
 
-trait ConfiguredRaftEngine: RaftEngine {
+pub trait ConfiguredRaftEngine: RaftEngine {
     fn build(_: &TiKVServer<Self>, _: &Arc<Env>, _: &Option<Cache>) -> Self;
     fn as_rocks_engine(&self) -> Option<&RocksEngine> {
         None
@@ -1366,7 +1366,7 @@ impl ConfiguredRaftEngine for RaftLogEngine {
 }
 
 impl<CER: ConfiguredRaftEngine> TiKVServer<CER> {
-    fn init_raw_engines(
+    pub fn init_raw_engines(
         &mut self,
         flow_listener: engine_rocks::FlowListener,
     ) -> (Engines<RocksEngine, CER>, Arc<EnginesResourceInfo>) {
@@ -1433,7 +1433,7 @@ impl<CER: ConfiguredRaftEngine> TiKVServer<CER> {
 /// - if `vm.swappiness` is not 0
 /// - if data directories are not on SSDs
 /// - if the "TZ" environment variable is not set on unix
-fn pre_start() {
+pub fn pre_start() {
     check_environment_variables();
     for e in tikv_util::config::check_kernel() {
         warn!(
