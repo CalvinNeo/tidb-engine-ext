@@ -173,7 +173,7 @@ const DEFAULT_STORAGE_STATS_INTERVAL: Duration = Duration::from_secs(1);
 /// A complete TiKV server.
 pub struct TiKVServer<ER: RaftEngine> {
     pub config: TiKvConfig,
-    cfg_controller: Option<ConfigController>,
+    pub cfg_controller: Option<ConfigController>,
     security_mgr: Arc<SecurityManager>,
     pd_client: Arc<RpcClient>,
     router: RaftRouter<RocksEngine, ER>,
@@ -182,9 +182,9 @@ pub struct TiKVServer<ER: RaftEngine> {
     system: Option<RaftBatchSystem<RocksEngine, ER>>,
     resolver: resolve::PdStoreAddrResolver,
     state: Arc<Mutex<GlobalReplicationState>>,
-    store_path: PathBuf,
+    pub store_path: PathBuf,
     snap_mgr: Option<SnapManager>, // Will be filled in `init_servers`.
-    encryption_key_manager: Option<Arc<DataKeyManager>>,
+    pub encryption_key_manager: Option<Arc<DataKeyManager>>,
     pub engines: Option<TiKVEngines<RocksEngine, ER>>,
     servers: Option<Servers<RocksEngine, ER>>,
     region_info_accessor: RegionInfoAccessor,
