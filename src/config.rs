@@ -1605,7 +1605,7 @@ impl ConfigManager for DBConfigManger {
     }
 }
 
-fn config_to_slice(config_change: &[(String, String)]) -> Vec<(&str, &str)> {
+pub fn config_to_slice(config_change: &[(String, String)]) -> Vec<(&str, &str)> {
     config_change
         .iter()
         .map(|(name, value)| (name.as_str(), value.as_str()))
@@ -1613,7 +1613,7 @@ fn config_to_slice(config_change: &[(String, String)]) -> Vec<(&str, &str)> {
 }
 
 // Convert `ConfigValue` to formatted String that can pass to `DB::set_db_options`
-fn config_value_to_string(config_change: Vec<(String, ConfigValue)>) -> Vec<(String, String)> {
+pub fn config_value_to_string(config_change: Vec<(String, ConfigValue)>) -> Vec<(String, String)> {
     config_change
         .into_iter()
         .filter_map(|(name, value)| {
