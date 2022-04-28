@@ -78,9 +78,9 @@ pub struct Config {
     #[online_config(skip)]
     pub advertise_addr: String,
 
-    pub engine_addr: String,
-    pub engine_store_version: String,
-    pub engine_store_git_hash: String,
+    pub peer_addr: String,
+    pub version: String,
+    pub git_hash: String,
 
     // These are related to TiKV status.
     #[online_config(skip)]
