@@ -21,6 +21,11 @@ use super::snap::Task as SnapTask;
 
 pub const DEFAULT_CLUSTER_ID: u64 = 0;
 pub const DEFAULT_LISTENING_ADDR: &str = "127.0.0.1:20160";
+pub const DEFAULT_ENGINE_ADDR: &str = if cfg!(feature = "failpoints") {
+    "127.0.0.1:20206"
+} else {
+    ""
+};
 const DEFAULT_ADVERTISE_LISTENING_ADDR: &str = "";
 const DEFAULT_STATUS_ADDR: &str = "127.0.0.1:20180";
 const DEFAULT_GRPC_CONCURRENCY: usize = 5;
@@ -72,6 +77,10 @@ pub struct Config {
     // If not set, we will use listening address instead.
     #[online_config(skip)]
     pub advertise_addr: String,
+
+    pub engine_addr: String,
+    pub engine_store_version: String,
+    pub engine_store_git_hash: String,
 
     // These are related to TiKV status.
     #[online_config(skip)]
@@ -203,6 +212,9 @@ impl Default for Config {
             addr: DEFAULT_LISTENING_ADDR.to_owned(),
             labels: HashMap::default(),
             advertise_addr: DEFAULT_ADVERTISE_LISTENING_ADDR.to_owned(),
+            engine_addr: DEFAULT_ENGINE_ADDR.to_string(),
+            engine_store_version: "".to_string(),
+            engine_store_git_hash: "".to_string(),
             status_addr: DEFAULT_STATUS_ADDR.to_owned(),
             advertise_status_addr: DEFAULT_ADVERTISE_LISTENING_ADDR.to_owned(),
             status_thread_pool_size: 1,
@@ -262,6 +274,7 @@ impl Config {
 
     /// Validates the configuration and returns an error if it is misconfigured.
     pub fn validate(&mut self) -> Result<()> {
+        info!("self.addr {} self.advertise_addr {}", self.addr, self.advertise_addr);
         box_try!(config::check_addr(&self.addr));
         if !self.advertise_addr.is_empty() {
             box_try!(config::check_addr(&self.advertise_addr));
@@ -342,6 +355,20 @@ impl Config {
             return Err(box_err!(
                 "server.grpc-stream-initial-window-size is too large."
             ));
+        }
+
+        {
+            pub const DEFAULT_ENGINE_LABEL_KEY: &str = "engine";
+            let engine_name = match option_env!("ENGINE_LABEL_VALUE") {
+                None => {
+                    return Err(box_err!(
+                        "should set engine name with env variable `ENGINE_LABEL_VALUE`"
+                    ));
+                }
+                Some(name) => name.to_owned(),
+            };
+            self.labels
+                .insert(DEFAULT_ENGINE_LABEL_KEY.to_owned(), engine_name);
         }
 
         for (k, v) in &self.labels {

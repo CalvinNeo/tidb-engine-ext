@@ -105,17 +105,37 @@ where
     ) -> Node<C, EK, ER> {
         let mut store = metapb::Store::default();
         store.set_id(INVALID_ID);
-        if cfg.advertise_addr.is_empty() {
-            store.set_address(cfg.addr.clone());
-        } else {
-            store.set_address(cfg.advertise_addr.clone())
-        }
+        // if cfg.advertise_addr.is_empty() {
+        //     store.set_address(cfg.addr.clone());
+        // } else {
+        //     store.set_address(cfg.advertise_addr.clone())
+        // }
         if cfg.advertise_status_addr.is_empty() {
             store.set_status_address(cfg.status_addr.clone());
         } else {
             store.set_status_address(cfg.advertise_status_addr.clone())
         }
-        store.set_version(env!("CARGO_PKG_VERSION").to_string());
+        // store.set_version(env!("CARGO_PKG_VERSION").to_string());
+
+        if cfg.advertise_addr.is_empty() {
+            store.set_peer_address(cfg.addr.clone());
+        } else {
+            store.set_peer_address(cfg.advertise_addr.clone())
+        }
+
+        if !cfg.engine_addr.is_empty() {
+            store.set_address(cfg.engine_addr.clone());
+        } else {
+            panic!("engine address is empty");
+        }
+
+        if !cfg.engine_store_version.is_empty() {
+            store.set_version(cfg.engine_store_version.clone());
+        }
+        if !cfg.engine_store_git_hash.is_empty() {
+            store.set_git_hash(cfg.engine_store_git_hash.clone());
+        }
+
 
         if let Ok(path) = std::env::current_exe() {
             if let Some(path) = path.parent() {
