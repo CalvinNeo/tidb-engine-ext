@@ -141,6 +141,39 @@ pub trait Simulator<EK: KvEngine> {
     }
 }
 
+// trait TestKvEngineFactory<EK: KvEngine> {
+//     fn new_test_engine(
+//         router: Option<RaftRouter<EK, RocksEngine>>,
+//         limiter: Option<Arc<IORateLimiter>>,
+//         cfg: &Config,
+//     ) -> (
+//         Engines<EK, RocksEngine>,
+//         Option<Arc<DataKeyManager>>,
+//         TempDir,
+//     );
+// }
+//
+// struct TestRocksEngineFactory {
+//
+// }
+//
+// impl<EK: KvEngine> TestKvEngineFactory<EK> for TestRocksEngineFactory {
+//     fn new_test_engine(
+//         router: Option<RaftRouter<EK, RocksEngine>>,
+//         limiter: Option<Arc<IORateLimiter>>,
+//         cfg: &Config,
+//     ) -> (
+//         Engines<EK, RocksEngine>,
+//         Option<Arc<DataKeyManager>>,
+//         TempDir,
+//     ) {
+//         create_test_engine(router, limiter, cfg)
+//     }
+// }
+
+type TestKvEngineFactory<EK: KvEngine> = fn(Option<RaftRouter<EK, RocksEngine>>, limiter: Option<Arc<IORateLimiter>>, &Config) -> (
+    Engines<EK, RocksEngine>, Option<Arc<DataKeyManager>>, TempDir);
+
 pub struct Cluster<T: Simulator<EK>, EK: KvEngine> {
     pub cfg: Config,
     leaders: HashMap<u64, metapb::Peer>,
@@ -158,6 +191,7 @@ pub struct Cluster<T: Simulator<EK>, EK: KvEngine> {
 
     pub sim: Arc<RwLock<T>>,
     pub pd_client: Arc<TestPdClient>,
+    pub kvengine_factory: TestKvEngineFactory<EK>,
 }
 
 impl<T: Simulator<EK>, EK: KvEngine> Cluster<T, EK> {
@@ -167,6 +201,7 @@ impl<T: Simulator<EK>, EK: KvEngine> Cluster<T, EK> {
         count: usize,
         sim: Arc<RwLock<T>>,
         pd_client: Arc<TestPdClient>,
+        kvengine_factory: TestKvEngineFactory<EK>,
     ) -> Cluster<T, EK> {
         // TODO: In the future, maybe it's better to test both case where `use_delete_range` is true and false
         Cluster {
@@ -187,6 +222,7 @@ impl<T: Simulator<EK>, EK: KvEngine> Cluster<T, EK> {
             group_props: HashMap::default(),
             sim,
             pd_client,
+            kvengine_factory,
         }
     }
 
@@ -221,7 +257,7 @@ impl<T: Simulator<EK>, EK: KvEngine> Cluster<T, EK> {
 
     pub fn create_engine(&mut self, router: Option<RaftRouter<EK, RocksEngine>>) {
         let (engines, key_manager, dir) =
-            create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
+            (self.kvengine_factory)(router, self.io_rate_limiter.clone(), &self.cfg);
         self.dbs.push(engines);
         self.key_managers.push(key_manager);
         self.paths.push(dir);
