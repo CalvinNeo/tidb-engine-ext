@@ -148,12 +148,12 @@ pub struct Cluster<T: Simulator> {
     pub paths: Vec<TempDir>,
     pub dbs: Vec<Engines<RocksEngine, RocksEngine>>,
     pub store_metas: HashMap<u64, Arc<Mutex<StoreMeta>>>,
-    key_managers: Vec<Option<Arc<DataKeyManager>>>,
+    pub key_managers: Vec<Option<Arc<DataKeyManager>>>,
     pub io_rate_limiter: Option<Arc<IORateLimiter>>,
     pub engines: HashMap<u64, Engines<RocksEngine, RocksEngine>>,
-    key_managers_map: HashMap<u64, Option<Arc<DataKeyManager>>>,
+    pub key_managers_map: HashMap<u64, Option<Arc<DataKeyManager>>>,
     pub labels: HashMap<u64, HashMap<String, String>>,
-    group_props: HashMap<u64, GroupProperties>,
+    pub group_props: HashMap<u64, GroupProperties>,
 
     pub sim: Arc<RwLock<T>>,
     pub pd_client: Arc<TestPdClient>,
@@ -218,7 +218,7 @@ impl<T: Simulator> Cluster<T> {
         assert!(self.key_managers_map.insert(node_id, key_mgr).is_none());
     }
 
-    fn create_engine(&mut self, router: Option<RaftRouter<RocksEngine, RocksEngine>>) {
+    pub fn create_engine(&mut self, router: Option<RaftRouter<RocksEngine, RocksEngine>>) {
         let (engines, key_manager, dir) =
             create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
         self.dbs.push(engines);
