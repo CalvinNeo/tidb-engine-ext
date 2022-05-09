@@ -266,7 +266,7 @@ impl Filter for EraseHeartbeatCommit {
     }
 }
 
-fn check_cluster(cluster: &mut Cluster<impl Simulator>, k: &[u8], v: &[u8], all_committed: bool) {
+fn check_cluster(cluster: &mut Cluster<impl Simulator<EK>>, k: &[u8], v: &[u8], all_committed: bool) {
     let region = cluster.pd_client.get_region(k).unwrap();
     let mut tried_cnt = 0;
     let leader = loop {

@@ -37,6 +37,7 @@ use tikv::server::Result as ServerResult;
 use tikv_util::config::VersionTrack;
 use tikv_util::time::ThreadReadId;
 use tikv_util::worker::{Builder as WorkerBuilder, LazyWorker};
+use engine_traits::KvEngine;
 
 pub struct ChannelTransportCore {
     snap_paths: HashMap<u64, (SnapManager, TempDir)>,
@@ -207,7 +208,7 @@ impl NodeCluster {
     }
 }
 
-impl Simulator for NodeCluster {
+impl Simulator<RocksEngine> for NodeCluster {
     fn run_node(
         &mut self,
         node_id: u64,
@@ -471,13 +472,13 @@ impl Simulator for NodeCluster {
     }
 }
 
-pub fn new_node_cluster(id: u64, count: usize) -> Cluster<NodeCluster> {
+pub fn new_node_cluster(id: u64, count: usize) -> Cluster<NodeCluster, RocksEngine> {
     let pd_client = Arc::new(TestPdClient::new(id, false));
     let sim = Arc::new(RwLock::new(NodeCluster::new(Arc::clone(&pd_client))));
     Cluster::new(id, count, sim, pd_client)
 }
 
-pub fn new_incompatible_node_cluster(id: u64, count: usize) -> Cluster<NodeCluster> {
+pub fn new_incompatible_node_cluster(id: u64, count: usize) -> Cluster<NodeCluster, RocksEngine> {
     let pd_client = Arc::new(TestPdClient::new(id, true));
     let sim = Arc::new(RwLock::new(NodeCluster::new(Arc::clone(&pd_client))));
     Cluster::new(id, count, sim, pd_client)

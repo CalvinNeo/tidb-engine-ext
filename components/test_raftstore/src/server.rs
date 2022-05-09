@@ -69,6 +69,7 @@ use tikv_util::time::ThreadReadId;
 use tikv_util::worker::{Builder as WorkerBuilder, LazyWorker};
 use tikv_util::HandyRwLock;
 use txn_types::TxnExtraScheduler;
+use engine_traits::KvEngine;
 
 type SimulateStoreTransport = SimulateTransport<ServerRaftStoreRouter<RocksEngine, RocksEngine>>;
 type SimulateServerTransport =
@@ -560,7 +561,7 @@ impl ServerCluster {
     }
 }
 
-impl Simulator for ServerCluster {
+impl Simulator<RocksEngine> for ServerCluster {
     fn run_node(
         &mut self,
         node_id: u64,
@@ -690,7 +691,7 @@ impl Simulator for ServerCluster {
     }
 }
 
-impl Cluster<ServerCluster> {
+impl Cluster<ServerCluster, RocksEngine> {
     pub fn must_get_snapshot_of_region(&mut self, region_id: u64) -> RegionSnapshot<RocksSnapshot> {
         let mut try_snapshot = || -> Option<RegionSnapshot<RocksSnapshot>> {
             let leader = self.leader_of_region(region_id)?;
@@ -718,32 +719,32 @@ impl Cluster<ServerCluster> {
     }
 }
 
-pub fn new_server_cluster(id: u64, count: usize) -> Cluster<ServerCluster> {
+pub fn new_server_cluster(id: u64, count: usize) -> Cluster<ServerCluster, RocksEngine> {
     let pd_client = Arc::new(TestPdClient::new(id, false));
     let sim = Arc::new(RwLock::new(ServerCluster::new(Arc::clone(&pd_client))));
     Cluster::new(id, count, sim, pd_client)
 }
 
-pub fn new_incompatible_server_cluster(id: u64, count: usize) -> Cluster<ServerCluster> {
+pub fn new_incompatible_server_cluster(id: u64, count: usize) -> Cluster<ServerCluster, RocksEngine> {
     let pd_client = Arc::new(TestPdClient::new(id, true));
     let sim = Arc::new(RwLock::new(ServerCluster::new(Arc::clone(&pd_client))));
     Cluster::new(id, count, sim, pd_client)
 }
 
-pub fn must_new_cluster_mul(count: usize) -> (Cluster<ServerCluster>, metapb::Peer, Context) {
+pub fn must_new_cluster_mul(count: usize) -> (Cluster<ServerCluster, RocksEngine>, metapb::Peer, Context) {
     must_new_and_configure_cluster_mul(count, |_| ())
 }
 
 pub fn must_new_and_configure_cluster(
-    configure: impl FnMut(&mut Cluster<ServerCluster>),
-) -> (Cluster<ServerCluster>, metapb::Peer, Context) {
+    configure: impl FnMut(&mut Cluster<ServerCluster, RocksEngine>),
+) -> (Cluster<ServerCluster, RocksEngine>, metapb::Peer, Context) {
     must_new_and_configure_cluster_mul(1, configure)
 }
 
 fn must_new_and_configure_cluster_mul(
     count: usize,
-    mut configure: impl FnMut(&mut Cluster<ServerCluster>),
-) -> (Cluster<ServerCluster>, metapb::Peer, Context) {
+    mut configure: impl FnMut(&mut Cluster<ServerCluster, RocksEngine>),
+) -> (Cluster<ServerCluster, RocksEngine>, metapb::Peer, Context) {
     let mut cluster = new_server_cluster(0, count);
     configure(&mut cluster);
     cluster.run();
@@ -758,13 +759,13 @@ fn must_new_and_configure_cluster_mul(
     (cluster, leader, ctx)
 }
 
-pub fn must_new_cluster_and_kv_client() -> (Cluster<ServerCluster>, TikvClient, Context) {
+pub fn must_new_cluster_and_kv_client() -> (Cluster<ServerCluster, RocksEngine>, TikvClient, Context) {
     must_new_cluster_and_kv_client_mul(1)
 }
 
 pub fn must_new_cluster_and_kv_client_mul(
     count: usize,
-) -> (Cluster<ServerCluster>, TikvClient, Context) {
+) -> (Cluster<ServerCluster, RocksEngine>, TikvClient, Context) {
     let (cluster, leader, ctx) = must_new_cluster_mul(count);
 
     let env = Arc::new(Environment::new(1));
@@ -775,7 +776,7 @@ pub fn must_new_cluster_and_kv_client_mul(
     (cluster, client, ctx)
 }
 
-pub fn must_new_cluster_and_debug_client() -> (Cluster<ServerCluster>, DebugClient, u64) {
+pub fn must_new_cluster_and_debug_client() -> (Cluster<ServerCluster, RocksEngine>, DebugClient, u64) {
     let (cluster, leader, _) = must_new_cluster_mul(1);
 
     let env = Arc::new(Environment::new(1));
@@ -787,8 +788,8 @@ pub fn must_new_cluster_and_debug_client() -> (Cluster<ServerCluster>, DebugClie
 }
 
 pub fn must_new_and_configure_cluster_and_kv_client(
-    configure: impl FnMut(&mut Cluster<ServerCluster>),
-) -> (Cluster<ServerCluster>, TikvClient, Context) {
+    configure: impl FnMut(&mut Cluster<ServerCluster, RocksEngine>),
+) -> (Cluster<ServerCluster, RocksEngine>, TikvClient, Context) {
     let (cluster, leader, ctx) = must_new_and_configure_cluster(configure);
 
     let env = Arc::new(Environment::new(1));

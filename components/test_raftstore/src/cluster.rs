@@ -42,6 +42,7 @@ use tikv::server::Result as ServerResult;
 use tikv_util::thread_group::GroupProperties;
 use tikv_util::time::Instant;
 use tikv_util::HandyRwLock;
+use engine_traits::KvEngine;
 
 use super::*;
 use tikv_util::time::ThreadReadId;
@@ -51,7 +52,7 @@ use tikv_util::time::ThreadReadId;
 // isn't allocated by pd, and node id, store id are same.
 // E,g, for node 1, the node id and store id are both 1.
 
-pub trait Simulator {
+pub trait Simulator<EK: KvEngine> {
     // Pass 0 to let pd allocate a node id if db is empty.
     // If node id > 0, the node must be created in db already,
     // and the node id must be the same as given argument.
@@ -61,11 +62,11 @@ pub trait Simulator {
         &mut self,
         node_id: u64,
         cfg: Config,
-        engines: Engines<RocksEngine, RocksEngine>,
+        engines: Engines<EK, RocksEngine>,
         store_meta: Arc<Mutex<StoreMeta>>,
         key_manager: Option<Arc<DataKeyManager>>,
-        router: RaftRouter<RocksEngine, RocksEngine>,
-        system: RaftBatchSystem<RocksEngine, RocksEngine>,
+        router: RaftRouter<EK, RocksEngine>,
+        system: RaftBatchSystem<EK, RocksEngine>,
     ) -> ServerResult<u64>;
     fn stop_node(&mut self, node_id: u64);
     fn get_node_ids(&self) -> HashSet<u64>;
@@ -87,7 +88,7 @@ pub trait Simulator {
     fn send_raft_msg(&mut self, msg: RaftMessage) -> Result<()>;
     fn get_snap_dir(&self, node_id: u64) -> String;
     fn get_snap_mgr(&self, node_id: u64) -> &SnapManager;
-    fn get_router(&self, node_id: u64) -> Option<RaftRouter<RocksEngine, RocksEngine>>;
+    fn get_router(&self, node_id: u64) -> Option<RaftRouter<EK, RocksEngine>>;
     fn add_send_filter(&mut self, node_id: u64, filter: Box<dyn Filter>);
     fn clear_send_filters(&mut self, node_id: u64);
     fn add_recv_filter(&mut self, node_id: u64, filter: Box<dyn Filter>);
@@ -140,17 +141,17 @@ pub trait Simulator {
     }
 }
 
-pub struct Cluster<T: Simulator> {
+pub struct Cluster<T: Simulator<EK>, EK: KvEngine> {
     pub cfg: Config,
     leaders: HashMap<u64, metapb::Peer>,
     pub count: usize,
 
     pub paths: Vec<TempDir>,
-    pub dbs: Vec<Engines<RocksEngine, RocksEngine>>,
+    pub dbs: Vec<Engines<EK, RocksEngine>>,
     pub store_metas: HashMap<u64, Arc<Mutex<StoreMeta>>>,
     pub key_managers: Vec<Option<Arc<DataKeyManager>>>,
     pub io_rate_limiter: Option<Arc<IORateLimiter>>,
-    pub engines: HashMap<u64, Engines<RocksEngine, RocksEngine>>,
+    pub engines: HashMap<u64, Engines<EK, RocksEngine>>,
     pub key_managers_map: HashMap<u64, Option<Arc<DataKeyManager>>>,
     pub labels: HashMap<u64, HashMap<String, String>>,
     pub group_props: HashMap<u64, GroupProperties>,
@@ -159,14 +160,14 @@ pub struct Cluster<T: Simulator> {
     pub pd_client: Arc<TestPdClient>,
 }
 
-impl<T: Simulator> Cluster<T> {
+impl<T: Simulator<EK>, EK: KvEngine> Cluster<T, EK> {
     // Create the default Store cluster.
     pub fn new(
         id: u64,
         count: usize,
         sim: Arc<RwLock<T>>,
         pd_client: Arc<TestPdClient>,
-    ) -> Cluster<T> {
+    ) -> Cluster<T, EK> {
         // TODO: In the future, maybe it's better to test both case where `use_delete_range` is true and false
         Cluster {
             cfg: Config {
@@ -218,7 +219,7 @@ impl<T: Simulator> Cluster<T> {
         assert!(self.key_managers_map.insert(node_id, key_mgr).is_none());
     }
 
-    pub fn create_engine(&mut self, router: Option<RaftRouter<RocksEngine, RocksEngine>>) {
+    pub fn create_engine(&mut self, router: Option<RaftRouter<EK, RocksEngine>>) {
         let (engines, key_manager, dir) =
             create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
         self.dbs.push(engines);
@@ -360,7 +361,7 @@ impl<T: Simulator> Cluster<T> {
         Arc::clone(self.engines[&node_id].raft.as_inner())
     }
 
-    pub fn get_all_engines(&self, node_id: u64) -> Engines<RocksEngine, RocksEngine> {
+    pub fn get_all_engines(&self, node_id: u64) -> Engines<EK, RocksEngine> {
         self.engines[&node_id].clone()
     }
 
@@ -1803,7 +1804,7 @@ impl<T: Simulator> Cluster<T> {
     }
 }
 
-impl<T: Simulator> Drop for Cluster<T> {
+impl<T: Simulator<EK>, EK: KvEngine> Drop for Cluster<T, EK> {
     fn drop(&mut self) {
         test_util::clear_failpoints();
         self.shutdown();
