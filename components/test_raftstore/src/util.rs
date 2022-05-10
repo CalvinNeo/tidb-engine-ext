@@ -49,6 +49,7 @@ use txn_types::Key;
 
 use crate::{Cluster, ServerCluster, Simulator, TestPdClient};
 use pd_client::PdClient;
+use engine_traits::KvEngine;
 
 pub use raftstore::store::util::{find_peer, new_learner_peer, new_peer};
 
@@ -442,8 +443,8 @@ pub fn make_cb_ext(
 }
 
 // Issue a read request on the specified peer.
-pub fn read_on_peer<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn read_on_peer<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     peer: metapb::Peer,
     region: metapb::Region,
     key: &[u8],
@@ -460,8 +461,8 @@ pub fn read_on_peer<T: Simulator>(
     cluster.read(None, request, timeout)
 }
 
-pub fn async_read_on_peer<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn async_read_on_peer<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     peer: metapb::Peer,
     region: metapb::Region,
     key: &[u8],
@@ -483,8 +484,8 @@ pub fn async_read_on_peer<T: Simulator>(
     rx
 }
 
-pub fn batch_read_on_peer<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn batch_read_on_peer<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     requests: &[(metapb::Peer, metapb::Region)],
 ) -> Vec<ReadResponse<RocksSnapshot>> {
     let batch_id = Some(ThreadReadId::new());
@@ -517,8 +518,8 @@ pub fn batch_read_on_peer<T: Simulator>(
     results.into_iter().map(|resp| resp.1).collect()
 }
 
-pub fn read_index_on_peer<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn read_index_on_peer<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     peer: metapb::Peer,
     region: metapb::Region,
     read_quorum: bool,
@@ -534,8 +535,8 @@ pub fn read_index_on_peer<T: Simulator>(
     cluster.read(None, request, timeout)
 }
 
-pub fn async_read_index_on_peer<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn async_read_index_on_peer<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     peer: metapb::Peer,
     region: metapb::Region,
     key: &[u8],
@@ -570,8 +571,8 @@ pub fn must_get_value(resp: &RaftCmdResponse) -> Vec<u8> {
     resp.get_responses()[0].get_get().get_value().to_vec()
 }
 
-pub fn must_read_on_peer<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn must_read_on_peer<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     peer: metapb::Peer,
     region: metapb::Region,
     key: &[u8],
@@ -589,8 +590,8 @@ pub fn must_read_on_peer<T: Simulator>(
     }
 }
 
-pub fn must_error_read_on_peer<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn must_error_read_on_peer<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     peer: metapb::Peer,
     region: metapb::Region,
     key: &[u8],
@@ -662,21 +663,21 @@ pub fn create_test_engine(
     (engines, key_manager, dir)
 }
 
-pub fn configure_for_request_snapshot<T: Simulator>(cluster: &mut Cluster<T>) {
+pub fn configure_for_request_snapshot<T: Simulator<EK>, EK: KvEngine>(cluster: &mut Cluster<T, EK>) {
     // We don't want to generate snapshots due to compact log.
     cluster.cfg.raft_store.raft_log_gc_threshold = 1000;
     cluster.cfg.raft_store.raft_log_gc_count_limit = 1000;
     cluster.cfg.raft_store.raft_log_gc_size_limit = ReadableSize::mb(20);
 }
 
-pub fn configure_for_hibernate<T: Simulator>(cluster: &mut Cluster<T>) {
+pub fn configure_for_hibernate<T: Simulator<EK>, EK: KvEngine>(cluster: &mut Cluster<T, EK>) {
     // Uses long check interval to make leader keep sleeping during tests.
     cluster.cfg.raft_store.abnormal_leader_missing_duration = ReadableDuration::secs(20);
     cluster.cfg.raft_store.max_leader_missing_duration = ReadableDuration::secs(40);
     cluster.cfg.raft_store.peer_stale_state_check_interval = ReadableDuration::secs(10);
 }
 
-pub fn configure_for_snapshot<T: Simulator>(cluster: &mut Cluster<T>) {
+pub fn configure_for_snapshot<T: Simulator<EK>, EK: KvEngine>(cluster: &mut Cluster<T, EK>) {
     // Truncate the log quickly so that we can force sending snapshot.
     cluster.cfg.raft_store.raft_log_gc_tick_interval = ReadableDuration::millis(20);
     cluster.cfg.raft_store.raft_log_gc_count_limit = 2;
@@ -684,7 +685,7 @@ pub fn configure_for_snapshot<T: Simulator>(cluster: &mut Cluster<T>) {
     cluster.cfg.raft_store.snap_mgr_gc_tick_interval = ReadableDuration::millis(50);
 }
 
-pub fn configure_for_merge<T: Simulator>(cluster: &mut Cluster<T>) {
+pub fn configure_for_merge<T: Simulator<EK>, EK: KvEngine>(cluster: &mut Cluster<T, EK>) {
     // Avoid log compaction which will prevent merge.
     cluster.cfg.raft_store.raft_log_gc_threshold = 1000;
     cluster.cfg.raft_store.raft_log_gc_count_limit = 1000;
@@ -696,13 +697,13 @@ pub fn configure_for_merge<T: Simulator>(cluster: &mut Cluster<T>) {
     cluster.cfg.raft_store.peer_stale_state_check_interval = ReadableDuration::millis(500);
 }
 
-pub fn ignore_merge_target_integrity<T: Simulator>(cluster: &mut Cluster<T>) {
+pub fn ignore_merge_target_integrity<T: Simulator<EK>, EK: KvEngine>(cluster: &mut Cluster<T, EK>) {
     cluster.cfg.raft_store.dev_assert = false;
     cluster.pd_client.ignore_merge_target_integrity();
 }
 
-pub fn configure_for_lease_read<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn configure_for_lease_read<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     base_tick_ms: Option<u64>,
     election_ticks: Option<usize>,
 ) -> Duration {
@@ -728,8 +729,8 @@ pub fn configure_for_lease_read<T: Simulator>(
     election_timeout
 }
 
-pub fn configure_for_enable_titan<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn configure_for_enable_titan<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     min_blob_size: ReadableSize,
 ) {
     cluster.cfg.rocksdb.titan.enabled = true;
@@ -740,11 +741,11 @@ pub fn configure_for_enable_titan<T: Simulator>(
     cluster.cfg.rocksdb.defaultcf.titan.min_gc_batch_size = ReadableSize::kb(0);
 }
 
-pub fn configure_for_disable_titan<T: Simulator>(cluster: &mut Cluster<T>) {
+pub fn configure_for_disable_titan<T: Simulator<EK>, EK: KvEngine>(cluster: &mut Cluster<T, EK>) {
     cluster.cfg.rocksdb.titan.enabled = false;
 }
 
-pub fn configure_for_encryption<T: Simulator>(cluster: &mut Cluster<T>) {
+pub fn configure_for_encryption<T: Simulator<EK>, EK: KvEngine>(cluster: &mut Cluster<T, EK>) {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let master_key_file = manifest_dir.join("src/master-key.data");
 
@@ -759,16 +760,16 @@ pub fn configure_for_encryption<T: Simulator>(cluster: &mut Cluster<T>) {
 }
 
 /// Keep putting random kvs until specified size limit is reached.
-pub fn put_till_size<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn put_till_size<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     limit: u64,
     range: &mut dyn Iterator<Item = u64>,
 ) -> Vec<u8> {
     put_cf_till_size(cluster, CF_DEFAULT, limit, range)
 }
 
-pub fn put_cf_till_size<T: Simulator>(
-    cluster: &mut Cluster<T>,
+pub fn put_cf_till_size<T: Simulator<EK>, EK: KvEngine>(
+    cluster: &mut Cluster<T, EK>,
     cf: &'static str,
     limit: u64,
     range: &mut dyn Iterator<Item = u64>,
@@ -1187,7 +1188,7 @@ pub struct PeerClient {
 }
 
 impl PeerClient {
-    pub fn new(cluster: &Cluster<ServerCluster>, region_id: u64, peer: metapb::Peer) -> PeerClient {
+    pub fn new(cluster: &Cluster<ServerCluster, RocksEngine>, region_id: u64, peer: metapb::Peer) -> PeerClient {
         let cli = {
             let env = Arc::new(Environment::new(1));
             let channel =
