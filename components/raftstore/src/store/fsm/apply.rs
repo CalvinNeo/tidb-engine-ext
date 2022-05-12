@@ -1429,6 +1429,16 @@ where
     )> {
         let request = req.get_admin_request();
         let cmd_type = request.get_cmd_type();
+        debug!("!!!!exec_admin_cmd";
+            "req" => ?req,
+            "peer_id" => self.id,
+            "term" => self.term,
+            "region" => format!("{:?}", self.region),
+            "apply_state" => format!("{:?}", self.apply_state),
+            "exec_log_index" => ctx.exec_log_index,
+            "exec_log_term" => ctx.exec_log_term,
+            "thread_id" => tikv_util::sys::thread::thread_id(),
+        );
 
         match cmd_type {
             AdminCmdType::CompactLog | AdminCmdType::CommitMerge => {}
@@ -1485,6 +1495,16 @@ where
         let flash_res = if let ApplyResult::WaitMergeSource(_) = &exec_result {
             EngineStoreApplyRes::None
         } else {
+            debug!("!!!!! calling handle_admin_raft_cmd";
+                "req" => ?req,
+                "peer_id" => self.id,
+                "term" => self.term,
+                "region" => format!("{:?}", self.region),
+                "apply_state" => format!("{:?}", self.apply_state),
+                "exec_log_index" => ctx.exec_log_index,
+                "exec_log_term" => ctx.exec_log_term,
+                "thread_id" => tikv_util::sys::thread::thread_id(),
+            );
             ctx.engine_store_server_helper.handle_admin_raft_cmd(
                 &request,
                 &response,
@@ -1521,6 +1541,10 @@ where
         let mut ssts = vec![];
         let mut cmds = WriteCmds::with_capacity(requests.len());
         for req in requests {
+            debug!("!!!!exec_write_cmd req {:?} {} {} region {:?} apply_state {:?}",
+                     req, self.id, self.term, self.region, self.apply_state);
+            println!("!!!!exec_write_cmd req {:?} {} {} region {:?} apply_state {:?}",
+                     req, self.id, self.term, self.region, self.apply_state);
             let cmd_type = req.get_cmd_type();
             match cmd_type {
                 CmdType::Put => {

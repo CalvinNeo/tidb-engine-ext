@@ -13,9 +13,11 @@ fn test_bootstrap_half_way_failure(fp: &str) {
     unsafe {
         test_raftstore::init_cluster_ptr(&cluster);
     }
+    // cluster.cfg.raft_store.raft_log_reserve_max_ticks = 2;
 
     // Try to start this node, return after persisted some keys.
     fail::cfg(fp, "return").unwrap();
+    debug!("first start");
     cluster.start().unwrap_err();
 
     let engines = cluster.dbs[0].clone();
@@ -25,11 +27,12 @@ fn test_bootstrap_half_way_failure(fp: &str) {
         .unwrap()
         .unwrap();
     let store_id = ident.get_store_id();
-    debug!("store id {:?}", store_id);
+    debug!("set bootstrapped store id {:?}", store_id);
     cluster.set_bootstrapped(store_id, 0);
 
     // Check whether it can bootstrap cluster successfully.
     fail::remove(fp);
+    debug!("restart again");
     cluster.start().unwrap();
 
     assert!(
@@ -45,6 +48,7 @@ fn test_bootstrap_half_way_failure(fp: &str) {
     cluster.must_put(k, v);
     must_get_equal(&cluster.get_engine(store_id), k, v);
     for id in cluster.engines.keys() {
+        println!("!!!! get {}", id);
         must_get_equal(&cluster.get_engine(*id), k, v);
     }
 }

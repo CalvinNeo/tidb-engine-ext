@@ -4461,18 +4461,35 @@ where
             // [entries...][the entry at `compact_idx`][the last entry][new compaction entry]
             //             |-------------------- entries will be left ----------------------|
             self.ctx.raft_metrics.raft_log_gc_skipped.reserve_log += 1;
+
+            debug!("!!!!! on_raft_gc_log_tick_skip1 tag {} first_idx {} applied_idx {} truncated_index {} last_idx {} replicated_idx {} raft_log_gc_threshold {} raft_log_reserve_max_ticks {} skip {}",
+            self.fsm.peer.tag, first_idx, applied_idx, truncated_idx, last_idx, replicated_idx,
+            self.ctx.cfg.raft_log_gc_threshold, self.ctx.cfg.raft_log_reserve_max_ticks, self.fsm.skip_gc_raft_log_ticks
+            );
             return;
-        } else if replicated_idx - first_idx < self.ctx.cfg.raft_log_gc_threshold
+        }
+        else if replicated_idx - first_idx < self.ctx.cfg.raft_log_gc_threshold
             && self.fsm.skip_gc_raft_log_ticks < self.ctx.cfg.raft_log_reserve_max_ticks
         {
             self.ctx.raft_metrics.raft_log_gc_skipped.threshold_limit += 1;
             // Logs will only be kept `max_ticks` * `raft_log_gc_tick_interval`.
             self.fsm.skip_gc_raft_log_ticks += 1;
+
+            debug!("!!!!! on_raft_gc_log_tick_skip2 tag {} first_idx {} applied_idx {} truncated_index {} last_idx {} replicated_idx {} raft_log_gc_threshold {} raft_log_reserve_max_ticks {} skip {}",
+            self.fsm.peer.tag, first_idx, applied_idx, truncated_idx, last_idx, replicated_idx,
+            self.ctx.cfg.raft_log_gc_threshold, self.ctx.cfg.raft_log_reserve_max_ticks, self.fsm.skip_gc_raft_log_ticks
+            );
             self.register_raft_gc_log_tick();
             return;
         } else {
             replicated_idx
         };
+
+        debug!("!!!!! on_raft_gc_log_tick tag {} compact_idx {} first_idx {} applied_idx {} truncated_index {} last_idx {} replicated_idx {} raft_log_gc_threshold {} raft_log_reserve_max_ticks {} skip {}",
+        self.fsm.peer.tag, compact_idx, first_idx, applied_idx, truncated_idx, last_idx, replicated_idx,
+        self.ctx.cfg.raft_log_gc_threshold, self.ctx.cfg.raft_log_reserve_max_ticks, self.fsm.skip_gc_raft_log_ticks
+        );
+
         assert!(compact_idx >= first_idx);
         // Have no idea why subtract 1 here, but original code did this by magic.
         compact_idx -= 1;
