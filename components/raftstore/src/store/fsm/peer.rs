@@ -1603,11 +1603,19 @@ where
                     "region_id" => self.region_id(),
                     "peer_id" => self.fsm.peer_id(),
                     "res" => ?res,
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
                 );
                 self.on_ready_result(&mut res.exec_res, &res.metrics);
                 if self.fsm.stopped {
                     return;
                 }
+                debug!(
+                    "async apply finish2";
+                    "region_id" => self.region_id(),
+                    "peer_id" => self.fsm.peer_id(),
+                    "res" => ?res,
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                );
                 let applied_index = res.apply_state.applied_index;
                 if let Some(delta) = res.bucket_stat {
                     let buckets = self.fsm.peer.region_buckets.as_mut().unwrap();
@@ -1631,6 +1639,12 @@ where
                     self.register_split_region_check_tick();
                     self.retry_pending_prepare_merge(applied_index);
                 }
+                debug!(
+                    "async apply finish3";
+                    "region_id" => self.region_id(),
+                    "peer_id" => self.fsm.peer_id(),
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                );
             }
             ApplyTaskRes::Destroy {
                 region_id,

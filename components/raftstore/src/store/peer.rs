@@ -2380,6 +2380,16 @@ where
                 self.raft_group.raft.raft_log.persisted,
             );
             let commit_term = self.get_store().term(commit_index).unwrap();
+            debug!(
+                "!!!! PeerFsm handle_apply_committed";
+                "region_id" => self.region_id,
+                "peer_id" => self.peer_id(),
+                "thread_id" => tikv_util::sys::thread::thread_id(),
+                "commit_index" => commit_index,
+                "commit_term" => commit_term,
+                "entries" => ?committed_entries,
+            );
+
             let mut apply = Apply::new(
                 self.peer_id(),
                 self.region_id,
@@ -2399,6 +2409,15 @@ where
             }
             ctx.apply_router
                 .schedule_task(self.region_id, ApplyTask::apply(apply));
+            debug!(
+                "!!!! PeerFsm handle_apply_committed end schedule";
+                "region_id" => self.region_id,
+                "peer_id" => self.peer_id(),
+                "thread_id" => tikv_util::sys::thread::thread_id(),
+                "commit_index" => commit_index,
+                "commit_term" => commit_term,
+            );
+
         }
         fail_point!("after_send_to_apply_1003", self.peer_id() == 1003, |_| {});
     }

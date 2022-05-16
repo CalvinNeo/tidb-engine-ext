@@ -953,8 +953,31 @@ where
                 break;
             }
 
+            debug!(
+                    "handle_raft_committed_entries";
+                    "region_id" => self.region_id(),
+                    "tag" => self.tag.clone(),
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                    "apply_state" => ?self.apply_state,
+                    "entry_index" => entry.get_index(),
+                    "entry" => ?entry,
+                );
             let expect_index = self.apply_state.get_applied_index() + 1;
+
             if expect_index != entry.get_index() {
+                let mut e = Vec::new();
+                self
+                    .raft_engine
+                    .fetch_entries_to(self.region_id(), expect_index - 1, entry.get_index() + 1, None, &mut e)
+                    .unwrap();
+                debug!(
+                    "{} expect index {}, but got {}",
+                    self.tag,
+                    expect_index,
+                    entry.get_index();
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                    "new_entries" => ?e,
+                );
                 panic!(
                     "{} expect index {}, but got {}",
                     self.tag,
@@ -1298,7 +1321,10 @@ where
         };
 
         if need_write_apply_state && !self.pending_remove {
-            info!("persist apply state"; "region_id" => self.region_id(), "peer_id" => self.id(), "state" => ?self.apply_state);
+            info!("persist apply state"; "region_id" => self.region_id(),
+                "peer_id" => self.id(), "state" => ?self.apply_state,
+                "thread_id" => tikv_util::sys::thread::thread_id(),
+            );
             self.write_apply_state(ctx.kv_wb_mut());
         }
 
@@ -3125,12 +3151,32 @@ impl<S: Snapshot> Apply<S> {
             assert!(other.commit_term >= self.commit_term);
             self.commit_term = other.commit_term;
 
+            for i in other.entries.iter() {
+                debug!(
+                    "!!!! try_batch";
+                    "region_id" => self.region_id,
+                    "peer_id" => self.peer_id,
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                    "entry_last_start" => i.range.start,
+                    "entry_last_end" => i.range.end,
+                );
+            }
             self.entries.append(&mut other.entries);
             self.entries_size += other.entries_size;
 
             self.cbs.append(&mut other.cbs);
             true
         } else {
+            for i in other.entries.iter() {
+                debug!(
+                    "!!!! try_batch no";
+                    "region_id" => self.region_id,
+                    "peer_id" => self.peer_id,
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                    "entry_last_start" => i.range.start,
+                    "entry_last_end" => i.range.end,
+                );
+            }
             false
         }
     }
@@ -3477,13 +3523,46 @@ where
             if e.is_empty() {
                 let rid = self.delegate.region_id();
                 let StdRange { start, end } = cached_entries.range;
+
+                debug!(
+                    "!!!! handle_apply use fetch";
+                    "region_id" => rid,
+                    "tag" => self.delegate.tag.clone(),
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                    "apply_state" => ?self.delegate.apply_state,
+                    "start" => start,
+                    "end" => end,
+                );
                 self.delegate
                     .raft_engine
                     .fetch_entries_to(rid, start, end, None, &mut entries)
                     .unwrap();
             } else if entries.is_empty() {
+                let rid = self.delegate.region_id();
+                let StdRange { start, end } = cached_entries.range;
+
+                debug!(
+                    "!!!! handle_apply use cache from empty";
+                    "region_id" => rid,
+                    "tag" => self.delegate.tag.clone(),
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                    "apply_state" => ?self.delegate.apply_state,
+                    "start" => start,
+                    "end" => end,
+                );
                 entries = e;
             } else {
+                let rid = self.delegate.region_id();
+                let StdRange { start, end } = cached_entries.range;
+                debug!(
+                    "!!!! handle_apply use cache";
+                    "region_id" => rid,
+                    "tag" => self.delegate.tag.clone(),
+                    "thread_id" => tikv_util::sys::thread::thread_id(),
+                    "apply_state" => ?self.delegate.apply_state,
+                    "start" => start,
+                    "end" => end,
+                );
                 entries.extend(e);
             }
         }
@@ -3492,6 +3571,14 @@ where
             RAFT_ENTRIES_CACHES_GAUGE.sub(dangle_size as i64);
         }
 
+        debug!(
+                "!!!! handle_apply finish";
+                "region_id" => self.delegate.region_id(),
+                "tag" => self.delegate.tag.clone(),
+                "thread_id" => tikv_util::sys::thread::thread_id(),
+                "apply_state" => ?self.delegate.apply_state,
+                "entries" => ?entries,
+            );
         self.delegate.metrics = ApplyMetrics::default();
         self.delegate.term = apply.term;
         if let Some(meta) = apply.bucket_meta.clone() {
@@ -3819,7 +3906,9 @@ where
 
             if batch_apply.is_some() {
                 match &msg {
-                    Msg::Apply { .. } => (),
+                    Msg::Apply { .. } => {
+                        ()
+                    },
                     _ => {
                         self.handle_apply(apply_ctx, batch_apply.take().unwrap());
                         if let Some(ref mut state) = self.delegate.yield_state {
@@ -3837,10 +3926,32 @@ where
                         .apply_wait
                         .observe(start.saturating_elapsed_secs());
 
+                    for i in apply.entries.iter() {
+                        debug!(
+                                "!!!! Msg::Apply";
+                                "region_id" => self.delegate.region_id(),
+                                "peer_id" => self.delegate.tag.clone(),
+                                "thread_id" => tikv_util::sys::thread::thread_id(),
+                                "entry_last_start" => i.range.start,
+                                "entry_last_end" => i.range.end,
+                            );
+                    }
                     if let Some(batch) = batch_apply.as_mut() {
                         if batch.try_batch(&mut apply) {
+                            debug!(
+                                "!!!! Msg::Appl go batch";
+                                "region_id" => self.delegate.region_id(),
+                                "peer_id" => self.delegate.tag.clone(),
+                                "thread_id" => tikv_util::sys::thread::thread_id(),
+                            );
                             continue;
                         } else {
+                            debug!(
+                                "!!!! Msg::Appl go apply";
+                                "region_id" => self.delegate.region_id(),
+                                "peer_id" => self.delegate.tag.clone(),
+                                "thread_id" => tikv_util::sys::thread::thread_id(),
+                            );
                             self.handle_apply(apply_ctx, batch_apply.take().unwrap());
                             if let Some(ref mut state) = self.delegate.yield_state {
                                 state.pending_msgs.push(Msg::Apply { start, apply });
@@ -4213,13 +4324,23 @@ where
 {
     pub fn schedule_task(&self, region_id: u64, msg: Msg<EK>) {
         let reg = match self.try_send(region_id, msg) {
-            Either::Left(Ok(())) => return,
+            Either::Left(Ok(())) => {
+                info!(
+                        "schedule_task send ok";
+                        "region_id" => region_id,
+                        "thread_id" => tikv_util::sys::thread::thread_id(),
+                    );
+                return;
+            },
             Either::Left(Err(TrySendError::Disconnected(msg))) | Either::Right(msg) => match msg {
-                Msg::Registration(reg) => reg,
+                Msg::Registration(reg) => {
+                    reg
+                },
                 Msg::Apply { mut apply, .. } => {
                     info!(
                         "target region is not found, drop proposals";
-                        "region_id" => region_id
+                        "region_id" => region_id,
+                        "thread_id" => tikv_util::sys::thread::thread_id(),
                     );
                     // Invoking callback can release txn latch, if it's still leader, following
                     // command may not read the writes of previous commands and break ACID. If
@@ -4243,7 +4364,8 @@ where
                 Msg::Destroy(_) | Msg::Noop => {
                     info!(
                         "target region is not found, drop messages";
-                        "region_id" => region_id
+                        "region_id" => region_id,
+                        "thread_id" => tikv_util::sys::thread::thread_id(),
                     );
                     return;
                 }
