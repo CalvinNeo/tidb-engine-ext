@@ -4137,6 +4137,13 @@ where
         let mut handle_result = HandleResult::KeepProcessing;
         normal.delegate.handle_start = Some(Instant::now_coarse());
         if normal.delegate.yield_state.is_some() {
+            debug!(
+                "!!!! handle_normal";
+                "tag" => self.apply_ctx.tag.clone(),
+                "thread_id" => tikv_util::sys::thread::thread_id(),
+                "yield_state" => ?normal.delegate.yield_state,
+                "wait_merge_state" => ?normal.delegate.wait_merge_state,
+            );
             if normal.delegate.wait_merge_state.is_some() {
                 // We need to query the length first, otherwise there is a race
                 // condition that new messages are queued after resuming and before

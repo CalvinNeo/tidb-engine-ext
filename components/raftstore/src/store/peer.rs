@@ -2407,6 +2407,7 @@ where
                 // Compact all cached entries instead of half evict.
                 self.mut_store().evict_cache(false);
             }
+            fail_point!("calvin_before_send", self.peer_id() == 1002 && commit_index == 8, |_| { debug!("!!!! calvin_before_send"); });
             ctx.apply_router
                 .schedule_task(self.region_id, ApplyTask::apply(apply));
             debug!(
