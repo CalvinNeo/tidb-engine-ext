@@ -141,40 +141,10 @@ pub trait Simulator<EK: KvEngine> {
     }
 }
 
-// trait TestKvEngineFactory<EK: KvEngine> {
-//     fn new_test_engine(
-//         router: Option<RaftRouter<EK, RocksEngine>>,
-//         limiter: Option<Arc<IORateLimiter>>,
-//         cfg: &Config,
-//     ) -> (
-//         Engines<EK, RocksEngine>,
-//         Option<Arc<DataKeyManager>>,
-//         TempDir,
-//     );
-// }
-//
-// struct TestRocksEngineFactory {
-//
-// }
-//
-// impl<EK: KvEngine> TestKvEngineFactory<EK> for TestRocksEngineFactory {
-//     fn new_test_engine(
-//         router: Option<RaftRouter<EK, RocksEngine>>,
-//         limiter: Option<Arc<IORateLimiter>>,
-//         cfg: &Config,
-//     ) -> (
-//         Engines<EK, RocksEngine>,
-//         Option<Arc<DataKeyManager>>,
-//         TempDir,
-//     ) {
-//         create_test_engine(router, limiter, cfg)
-//     }
-// }
-
-type TestKvEngineFactory<EK: KvEngine> = fn(Option<RaftRouter<EK, RocksEngine>>, limiter: Option<Arc<IORateLimiter>>, &Config) -> (
+type TestKvEngineFactory<EK> = fn(Option<RaftRouter<EK, RocksEngine>>, limiter: Option<Arc<IORateLimiter>>, &Config) -> (
     Engines<EK, RocksEngine>, Option<Arc<DataKeyManager>>, TempDir);
 
-type EngineGetter<EK: KvEngine> = fn(&EK) -> Arc<DB>;
+type EngineGetter<EK> = fn(&EK) -> Arc<DB>;
 
 pub struct Cluster<T: Simulator<EK>, EK: KvEngine> {
     pub cfg: Config,

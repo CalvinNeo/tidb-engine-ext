@@ -245,6 +245,10 @@ where
         self.store.get_id()
     }
 
+    // Gets store
+    pub fn store(&self) -> metapb::Store {
+        self.store.clone()
+    }
     /// Gets the Scheduler of RaftstoreConfigTask, it must be called after start.
     pub fn refresh_config_scheduler(&mut self) -> Scheduler<RefreshConfigTask> {
         self.system.refresh_config_scheduler()
