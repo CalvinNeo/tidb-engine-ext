@@ -214,6 +214,11 @@ where
             fail_point!("node_after_prepare_bootstrap_cluster", |_| Err(box_err!(
                 "injected error: node_after_prepare_bootstrap_cluster"
             )));
+            coprocessor_host.on_region_changed(
+                &first_region,
+                raftstore::coprocessor::RegionChangeEvent::Bootstrap,
+                raft::StateRole::Leader, // just a placeholder
+            );
             self.bootstrap_cluster(&engines, first_region)?;
         }
 

@@ -131,6 +131,7 @@ impl<E: KvEngine> RegionChangeObserver for Observer<E> {
                 }
             }
             RegionChangeEvent::UpdateBuckets(_) => {}
+            RegionChangeEvent::Bootstrap => {}
         }
     }
 }

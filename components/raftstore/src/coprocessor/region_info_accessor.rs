@@ -163,16 +163,19 @@ impl RegionChangeObserver for RegionEventListener {
     ) {
         let region = context.region().clone();
         let event = match event {
-            RegionChangeEvent::Create => RaftStoreEvent::CreateRegion { region, role },
-            RegionChangeEvent::Update => RaftStoreEvent::UpdateRegion { region, role },
-            RegionChangeEvent::Destroy => RaftStoreEvent::DestroyRegion { region },
+            RegionChangeEvent::Create => Some(RaftStoreEvent::CreateRegion { region, role }),
+            RegionChangeEvent::Update => Some(RaftStoreEvent::UpdateRegion { region, role }),
+            RegionChangeEvent::Destroy => Some(RaftStoreEvent::DestroyRegion { region }),
             RegionChangeEvent::UpdateBuckets(buckets) => {
-                RaftStoreEvent::UpdateRegionBuckets { region, buckets }
+                Some(RaftStoreEvent::UpdateRegionBuckets { region, buckets })
             }
+            RegionChangeEvent::Bootstrap => None
         };
-        self.scheduler
-            .schedule(RegionInfoQuery::RaftStoreEvent(event))
-            .unwrap();
+        if event.is_some() {
+            self.scheduler
+                .schedule(RegionInfoQuery::RaftStoreEvent(event.unwrap()))
+                .unwrap();
+        }
     }
 }
 

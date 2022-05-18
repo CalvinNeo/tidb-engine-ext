@@ -79,6 +79,8 @@ pub trait AdminObserver: Coprocessor {
     /// Hook to call after applying admin request.
     /// For now, the `region` in `ObserverContext` is an empty region.
     fn post_apply_admin(&self, _: &mut ObserverContext<'_>, _: &AdminResponse) {}
+
+    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd) {}
 }
 
 pub trait QueryObserver: Coprocessor {
@@ -95,6 +97,8 @@ pub trait QueryObserver: Coprocessor {
     /// Hook to call after applying write request.
     /// For now, the `region` in `ObserverContext` is an empty region.
     fn post_apply_query(&self, _: &mut ObserverContext<'_>, _: &Cmd) {}
+
+    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd) {}
 }
 
 pub trait ApplySnapshotObserver: Coprocessor {
@@ -172,6 +176,7 @@ pub trait RoleObserver: Coprocessor {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RegionChangeEvent {
+    Bootstrap,
     Create,
     Update,
     Destroy,
@@ -186,14 +191,16 @@ pub trait RegionChangeObserver: Coprocessor {
 #[derive(Clone, Debug, Default)]
 pub struct Cmd {
     pub index: u64,
+    pub term: u64,
     pub request: RaftCmdRequest,
     pub response: RaftCmdResponse,
 }
 
 impl Cmd {
-    pub fn new(index: u64, request: RaftCmdRequest, response: RaftCmdResponse) -> Cmd {
+    pub fn new(index: u64, term: u64, request: RaftCmdRequest, response: RaftCmdResponse) -> Cmd {
         Cmd {
             index,
+            term,
             request,
             response,
         }

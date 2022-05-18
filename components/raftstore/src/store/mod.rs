@@ -16,7 +16,7 @@ mod compaction_guard;
 mod hibernate_state;
 mod local_metrics;
 mod peer;
-mod peer_storage;
+pub mod peer_storage;
 mod read_queue;
 mod region_snapshot;
 mod replication_mode;

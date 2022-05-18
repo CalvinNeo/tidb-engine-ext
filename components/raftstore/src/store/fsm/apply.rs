@@ -1197,7 +1197,7 @@ where
         // store will call it after handing exec result.
         cmd_resp::bind_term(&mut resp, self.term);
         let cmd_cb = self.find_pending(index, term, is_conf_change_cmd(&cmd));
-        let cmd = Cmd::new(index, cmd, resp);
+        let cmd = Cmd::new(index, term,cmd, resp);
         apply_ctx
             .applied_batch
             .push(cmd_cb, cmd, &self.observe_info, self.region_id());
@@ -1259,6 +1259,8 @@ where
             return (resp, exec_result);
         }
 
+        let cmd = Cmd::new(index, term, req.clone(), resp.clone());
+        ctx.host.address_apply_result(&self.region, &cmd);
         self.apply_state.set_applied_index(index);
         self.applied_index_term = term;
 
