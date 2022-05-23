@@ -20,7 +20,7 @@ use engine_rocks::util::get_cf_handle;
 use engine_rocks::RocksMvccProperties;
 use engine_rocks::{Compat, RocksEngine, RocksEngineIterator, RocksWriteBatch};
 use engine_traits::{
-    Engines, IterOptions, Iterable, Iterator as EngineIterator, Mutable, Peekable, RaftEngine,
+    Engines, IterOptions, Iterable, Iterator as EngineItRocksEngineerator, Mutable, Peekable, RaftEngine,
     RangePropertiesExt, SeekKey, SyncMutable, WriteBatch, WriteOptions,
 };
 use engine_traits::{MvccProperties, Range, WriteBatchExt, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE};

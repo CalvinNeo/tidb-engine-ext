@@ -9,6 +9,7 @@ use engine_traits::{CfName, KvEngine};
 use kvproto::metapb::Region;
 use kvproto::pdpb::CheckPolicy;
 use kvproto::raft_cmdpb::{ComputeHashRequest, RaftCmdRequest};
+use kvproto::raft_serverpb::RaftApplyState;
 use protobuf::Message;
 use raft::eraftpb;
 use tikv_util::box_try;
@@ -406,20 +407,24 @@ impl<E: KvEngine> CoprocessorHost<E> {
         }
     }
 
-    pub fn address_apply_result(&self, region: &Region, cmd: &Cmd) {
+    pub fn address_apply_result(&self, region: &Region, cmd: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) {
         if !cmd.response.has_admin_response() {
             loop_ob!(
                 region,
                 &self.registry.query_observers,
                 address_apply_result,
                 cmd,
+                apply_state,
+                region_state,
             );
         } else {
             loop_ob!(
                 region,
                 &self.registry.admin_observers,
                 address_apply_result,
-                cmd
+                cmd,
+                apply_state,
+                region_state,
             );
         }
     }

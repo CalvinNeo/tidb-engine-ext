@@ -61,7 +61,7 @@ use uuid::Builder as UuidBuilder;
 
 use self::memtrace::*;
 use crate::coprocessor::{
-    Cmd, CmdBatch, CmdObserveInfo, CoprocessorHost, ObserveHandle, ObserveLevel,
+    Cmd, CmdBatch, CmdObserveInfo, CoprocessorHost, ObserveHandle, ObserveLevel, RegionState,
 };
 use crate::store::fsm::RaftPollerBuilder;
 use crate::store::local_metrics::RaftMetrics;
@@ -474,7 +474,7 @@ where
     /// This call is valid only when it's between a `prepare_for` and `finish_for`.
     pub fn commit(&mut self, delegate: &mut ApplyDelegate<EK>) {
         if delegate.last_flush_applied_index < delegate.apply_state.get_applied_index() {
-            delegate.write_apply_state(self.kv_wb_mut());
+            // delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, true);
     }
@@ -568,7 +568,7 @@ where
         results: VecDeque<ExecResult<EK::Snapshot>>,
     ) {
         if !delegate.pending_remove {
-            delegate.write_apply_state(self.kv_wb_mut());
+            // delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, false);
         self.apply_res.push(ApplyRes {
@@ -1259,11 +1259,14 @@ where
             return (resp, exec_result);
         }
 
-        let cmd = Cmd::new(index, term, req.clone(), resp.clone());
-        ctx.host.address_apply_result(&self.region, &cmd);
-
         self.apply_state.set_applied_index(index);
         self.applied_index_term = term;
+
+        let cmd = Cmd::new(index, term, req.clone(), resp.clone());
+        ctx.host.address_apply_result(&self.region, &cmd, &self.apply_state, &RegionState {
+            peer_id: self.id(),
+            pending_remove: self.pending_remove,
+        });
 
         if let ApplyResult::Res(ref exec_result) = exec_result {
             match *exec_result {
