@@ -357,20 +357,6 @@ impl Config {
             ));
         }
 
-        {
-            pub const DEFAULT_ENGINE_LABEL_KEY: &str = "engine";
-            let engine_name = match option_env!("ENGINE_LABEL_VALUE") {
-                None => {
-                    return Err(box_err!(
-                        "should set engine name with env variable `ENGINE_LABEL_VALUE`"
-                    ));
-                }
-                Some(name) => name.to_owned(),
-            };
-            self.labels
-                .insert(DEFAULT_ENGINE_LABEL_KEY.to_owned(), engine_name);
-        }
-
         for (k, v) in &self.labels {
             validate_label_key(k)?;
             validate_label_value(v)?;
