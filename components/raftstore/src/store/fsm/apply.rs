@@ -474,6 +474,7 @@ where
     /// This call is valid only when it's between a `prepare_for` and `finish_for`.
     pub fn commit(&mut self, delegate: &mut ApplyDelegate<EK>) {
         if delegate.last_flush_applied_index < delegate.apply_state.get_applied_index() {
+            // !!!!! should remove this
             // delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, true);
@@ -568,6 +569,7 @@ where
         results: VecDeque<ExecResult<EK::Snapshot>>,
     ) {
         if !delegate.pending_remove {
+            // !!!!! should remove this
             // delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, false);
