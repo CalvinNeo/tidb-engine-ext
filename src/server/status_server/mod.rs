@@ -72,6 +72,7 @@ pub struct StatusServer<E, R> {
     router: R,
     security_config: Arc<SecurityConfig>,
     store_path: PathBuf,
+    pub engine_status_handler: Option<Arc<dyn EngineStatusHandler + Send + Sync>>,
     _snap: PhantomData<E>,
 }
 
@@ -105,6 +106,7 @@ where
             router,
             security_config,
             store_path,
+            engine_status_handler: None,
             _snap: PhantomData,
         })
     }
@@ -494,6 +496,7 @@ where
         let cfg_controller = self.cfg_controller.clone();
         let router = self.router.clone();
         let store_path = self.store_path.clone();
+        let engine_status_handler = self.engine_status_handler.clone();
         // Start to serve.
         let server = builder.serve(make_service_fn(move |conn: &C| {
             let x509 = conn.get_x509();
@@ -501,6 +504,7 @@ where
             let cfg_controller = cfg_controller.clone();
             let router = router.clone();
             let store_path = store_path.clone();
+            let engine_status_handler = engine_status_handler.clone();
             async move {
                 // Create a status service.
                 Ok::<_, hyper::Error>(service_fn(move |req: Request<Body>| {
@@ -509,6 +513,7 @@ where
                     let cfg_controller = cfg_controller.clone();
                     let router = router.clone();
                     let store_path = store_path.clone();
+                    let engine_status_handler = engine_status_handler.clone();
                     async move {
                         let path = req.uri().path().to_owned();
                         let method = req.method().to_owned();
@@ -580,7 +585,11 @@ where
                             (Method::PUT, path) if path.starts_with("/log-level") => {
                                 Self::change_log_level(req).await
                             }
-                            _ => Ok(make_response(StatusCode::NOT_FOUND, "path not found")),
+                            _ => match engine_status_handler {
+                                Some(h) => h.handle(req).await,
+                                None => Ok(make_response(StatusCode::NOT_FOUND, "path not found")),
+                            }
+                            // _ => Ok(make_response(StatusCode::NOT_FOUND, "path not found"))
                         }
                     }
                 }))
@@ -625,6 +634,12 @@ where
         }
         Ok(())
     }
+}
+
+use async_trait::async_trait;
+#[async_trait]
+pub trait EngineStatusHandler {
+    async fn handle(&self, req: Request<Body>) -> hyper::Result<hyper::Response<Body>>;
 }
 
 // To unify TLS/Plain connection usage in start_serve function
