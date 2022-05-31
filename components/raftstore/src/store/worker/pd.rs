@@ -1075,6 +1075,7 @@ where
         } else {
             store_info.capacity
         };
+        let capacity = 50 * 1024 * 1024 * 1024;
         stats.set_capacity(capacity);
 
         let used_size = self.snap_mgr.get_total_snap_size().unwrap()

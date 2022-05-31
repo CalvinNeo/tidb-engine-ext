@@ -76,7 +76,7 @@ where
 // TODO: we will rename another better name like RaftStore later.
 pub struct Node<C: PdClient + 'static, EK: KvEngine, ER: RaftEngine> {
     cluster_id: u64,
-    store: metapb::Store,
+    pub store: metapb::Store,
     store_cfg: Arc<VersionTrack<StoreConfig>>,
     api_version: ApiVersion,
     system: RaftBatchSystem<EK, ER>,

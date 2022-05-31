@@ -475,6 +475,7 @@ where
     pub fn commit(&mut self, delegate: &mut ApplyDelegate<EK>) {
         if delegate.last_flush_applied_index < delegate.apply_state.get_applied_index() {
             // !!!!! should remove this
+            println!("!!!!! commit write");
             // delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, true);
@@ -570,6 +571,7 @@ where
     ) {
         if !delegate.pending_remove {
             // !!!!! should remove this
+            println!("!!!!! finish_for write {} {}", delegate.id, delegate.apply_state.applied_index);
             // delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, false);
@@ -1375,6 +1377,7 @@ where
         let include_region =
             req.get_header().get_region_epoch().get_version() >= self.last_merge_version;
         check_region_epoch(req, &self.region, include_region)?;
+        tikv_util::info!("!!!!! exec_raft_cmd");
         if req.has_admin_request() {
             self.exec_admin_cmd(ctx, req)
         } else {

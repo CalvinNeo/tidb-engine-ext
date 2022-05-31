@@ -386,6 +386,7 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
         // from becoming hungry if some regions are hot points. Since we fetch new fsm every time
         // calling `poll`, we do not need to configure a large value for `self.max_batch_size`.
         let mut run = true;
+        tikv_util::info!("!!!!! poll enter");
         while run && self.fetch_fsm(&mut batch) {
             // If there is some region wait to be deal, we must deal with it even if it has overhead
             // max size of batch. It's helpful to protect regions from becoming hungry
@@ -444,6 +445,7 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
                 }
             }
             let mut fsm_cnt = batch.normals.len();
+            tikv_util::info!("!!!! handle_normal fsm_cnt {}", fsm_cnt);
             while batch.normals.len() < max_batch_size {
                 if let Ok(fsm) = self.fsm_receiver.try_recv() {
                     run = batch.push(fsm);
@@ -455,6 +457,8 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
                     break;
                 }
                 let p = batch.normals[fsm_cnt].as_mut().unwrap();
+
+                tikv_util::info!("!!!! handle_normal begin");
                 let res = self.handler.handle_normal(p);
                 if p.is_stopped() {
                     p.policy = Some(ReschedulePolicy::Remove);
@@ -481,6 +485,7 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
                 batch.schedule(&self.router, r, false);
             }
         }
+        tikv_util::info!("!!!! handle_normal x");
         if let Some(fsm) = batch.control.take() {
             self.router.control_scheduler.schedule(fsm);
             info!("poller will exit, release the left ControlFsm");

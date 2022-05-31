@@ -314,7 +314,7 @@ pub struct Snapshot {
     key: SnapKey,
     display_path: String,
     dir_path: PathBuf,
-    cf_files: Vec<CfFile>,
+    pub cf_files: Vec<CfFile>,
     cf_index: usize,
     meta_file: MetaFile,
     hold_tmp_files: bool,

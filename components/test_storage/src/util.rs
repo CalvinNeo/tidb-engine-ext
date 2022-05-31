@@ -11,7 +11,7 @@ use super::*;
 pub fn new_raft_engine(
     count: usize,
     key: &str,
-) -> (Cluster<ServerCluster>, SimulateEngine, Context) {
+) -> (Cluster<ServerCluster, engine_rocks::RocksEngine>, SimulateEngine, Context) {
     let mut cluster = new_server_cluster(0, count);
     cluster.run();
     // make sure leader has been elected.
@@ -30,7 +30,7 @@ pub fn new_raft_storage_with_store_count<Api: APIVersion>(
     count: usize,
     key: &str,
 ) -> (
-    Cluster<ServerCluster>,
+    Cluster<ServerCluster, engine_rocks::RocksEngine>,
     SyncTestStorage<SimulateEngine, Api>,
     Context,
 ) {

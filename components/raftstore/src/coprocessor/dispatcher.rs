@@ -15,7 +15,7 @@ use raft::eraftpb;
 use tikv_util::box_try;
 
 use super::*;
-use crate::store::CasualRouter;
+use crate::store::{CasualRouter, SnapKey};
 
 struct Entry<T> {
     priority: u32,
@@ -451,6 +451,29 @@ impl<E: KvEngine> CoprocessorHost<E> {
             apply_sst,
             cf,
             path
+        );
+    }
+
+    pub fn pre_handle_snapshot(&self, region: &Region, peer_id: u64, snap_key: &crate::store::SnapKey, ssts: &[crate::store::snap::CfFile]) {
+        for i in self.registry.apply_snapshot_observers.iter() {
+            tikv_util::info!("!!!!! x {:?}", 1);
+        }
+        loop_ob!(
+            region,
+            &self.registry.apply_snapshot_observers,
+            pre_handle_snapshot,
+            peer_id,
+            snap_key,
+            ssts,
+        );
+    }
+
+    pub fn post_apply_snapshot(&self, region: &Region, snap_key: &crate::store::SnapKey) {
+        loop_ob!(
+            region,
+            &self.registry.apply_snapshot_observers,
+            post_apply_snapshot,
+            snap_key,
         );
     }
 

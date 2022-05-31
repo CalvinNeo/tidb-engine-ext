@@ -118,6 +118,12 @@ pub trait ApplySnapshotObserver: Coprocessor {
     /// Hook to call after applying sst file. Currently the content of the snapshot can't be
     /// passed to the observer.
     fn apply_sst(&self, _: &mut ObserverContext<'_>, _: CfName, _path: &str) {}
+
+    /// Hook to pre-handle received snapshot.
+    fn pre_handle_snapshot(&self, _: &mut ObserverContext<'_>, peer_id: u64, snap_key: &crate::store::SnapKey, ssts: &[crate::store::snap::CfFile]) {}
+
+    // Hook when the whole snapshot is applied
+    fn post_apply_snapshot(&self, _: &mut ObserverContext<'_>, snap_key: &crate::store::SnapKey) {}
 }
 
 /// SplitChecker is invoked during a split check scan, and decides to use

@@ -45,13 +45,13 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
     pub fn new_raft_storage_with_store_count(
         count: usize,
         key: &str,
-    ) -> (Cluster<ServerCluster>, Self) {
+    ) -> (Cluster<ServerCluster, engine_rocks::RocksEngine>, Self) {
         let (cluster, store, ctx) = new_raft_storage_with_store_count::<Api>(count, key);
         let storage = Self { store, ctx };
         (cluster, storage)
     }
 
-    pub fn update_with_key_byte(&mut self, cluster: &mut Cluster<ServerCluster>, key: &[u8]) {
+    pub fn update_with_key_byte(&mut self, cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>, key: &[u8]) {
         // ensure the leader of range which contains current key has been elected
         cluster.must_get(key);
         let region = cluster.get_region(key);
@@ -68,7 +68,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     pub fn delete_ok_for_cluster(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         key: &[u8],
         start_ts: impl Into<TimeStamp>,
         commit_ts: impl Into<TimeStamp>,
@@ -87,7 +87,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     fn get_from_cluster(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         key: &[u8],
         ts: impl Into<TimeStamp>,
     ) -> Option<Value> {
@@ -105,7 +105,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     pub fn get_none_from_cluster(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         key: &[u8],
         ts: impl Into<TimeStamp>,
     ) {
@@ -114,7 +114,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     pub fn put_ok_for_cluster(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         key: &[u8],
         value: &[u8],
         start_ts: impl Into<TimeStamp>,
@@ -127,7 +127,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     pub fn batch_put_ok_for_cluster<'a>(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         keys: &[impl AsRef<[u8]>],
         vals: impl Iterator<Item = &'a [u8]>,
         start_ts: impl Into<TimeStamp>,
@@ -151,7 +151,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     fn two_pc_ok_for_cluster(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         prewrite_mutations: Vec<Mutation>,
         key: &[u8],
         commit_keys: Vec<Key>,
@@ -195,7 +195,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     pub fn gc_ok_for_cluster(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         region_key: &[u8],
         safe_point: impl Into<TimeStamp>,
     ) {
@@ -213,7 +213,7 @@ impl<Api: APIVersion> AssertionStorage<SimulateEngine, Api> {
 
     pub fn test_txn_store_gc3_for_cluster(
         &mut self,
-        cluster: &mut Cluster<ServerCluster>,
+        cluster: &mut Cluster<ServerCluster, engine_rocks::RocksEngine>,
         key_prefix: u8,
     ) {
         let key_len = 10_000;

@@ -33,7 +33,7 @@ use tikv_util::HandyRwLock;
 use txn_types::TimeStamp;
 
 pub struct TestSuite {
-    pub cluster: Cluster<ServerCluster>,
+    pub cluster: Cluster<ServerCluster, engine_rocks::RocksEngine>,
     pub endpoints: HashMap<u64, LazyWorker<Task>>,
     pub tikv_cli: TikvClient,
     pub context: Context,

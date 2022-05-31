@@ -24,3 +24,4 @@ tikv = { path = "../../", default-features = false }
 tikv_util = { path = "../tikv_util", default-features = false }
 collections = { path = "../collections" }
 txn_types = { path = "../txn_types", default-features = false }
+engine_rocks = { path = "../engine_rocks", default-features = false }

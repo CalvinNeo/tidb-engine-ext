@@ -5145,6 +5145,7 @@ dependencies = [
  "collections",
  "concurrency_manager",
  "crc64fast",
+ "engine_rocks",
  "engine_traits",
  "external_storage_export",
  "file_system",
@@ -5256,6 +5257,7 @@ version = "0.0.1"
 dependencies = [
  "api_version",
  "collections",
+ "engine_rocks",
  "futures 0.3.15",
  "kvproto",
  "pd_client",
