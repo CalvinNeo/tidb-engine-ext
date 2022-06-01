@@ -394,7 +394,6 @@ where
             write_batch_size: self.batch_size,
             coprocessor_host: self.coprocessor_host.clone(),
         };
-        tikv_util::info!("!!!! apply hahaha");
         s.apply(options)?;
         self.coprocessor_host.post_apply_snapshot(&region, &snap_key);
 
@@ -759,7 +758,6 @@ where
                 });
             }
             task @ Task::Apply { .. } => {
-                tikv_util::info!("!!!!! prehandle_snapshot");
                 fail_point!("on_region_worker_apply", true, |_| {});
                 match self.ctx.pre_handle_snapshot(&task) {
                     Ok(()) => (),

@@ -1377,7 +1377,6 @@ where
         let include_region =
             req.get_header().get_region_epoch().get_version() >= self.last_merge_version;
         check_region_epoch(req, &self.region, include_region)?;
-        tikv_util::info!("!!!!! exec_raft_cmd");
         if req.has_admin_request() {
             self.exec_admin_cmd(ctx, req)
         } else {
