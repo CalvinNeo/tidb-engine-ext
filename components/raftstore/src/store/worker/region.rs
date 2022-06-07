@@ -767,7 +767,12 @@ where
                 }
                 // to makes sure applying snapshots in order.
                 self.pending_applies.push_back(task);
-                self.handle_pending_applies();
+                if self.ctx.engine.can_apply_snapshot() {
+                    tikv_util::info!("!!!!! handle do");
+                    self.handle_pending_applies();
+                } else {
+                    tikv_util::info!("!!!!! handle do not");
+                }
                 if !self.pending_applies.is_empty() {
                     // delay the apply and retry later
                     SNAP_COUNTER.apply.delay.inc()
@@ -799,6 +804,7 @@ where
     R: CasualRouter<EK> + Send + Clone + 'static,
 {
     fn on_timeout(&mut self) {
+        tikv_util::debug!("!!!!! on_timeout region");
         self.handle_pending_applies();
         self.clean_stale_tick += 1;
         if self.clean_stale_tick >= STALE_PEER_CHECK_TICK {

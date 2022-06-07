@@ -122,7 +122,7 @@ pub trait ApplySnapshotObserver: Coprocessor {
     /// Hook to pre-handle received snapshot.
     fn pre_handle_snapshot(&self, _: &mut ObserverContext<'_>, peer_id: u64, snap_key: &crate::store::SnapKey, ssts: &[crate::store::snap::CfFile]) {}
 
-    // Hook when the whole snapshot is applied
+    /// Hook when the whole snapshot is applied
     fn post_apply_snapshot(&self, _: &mut ObserverContext<'_>, snap_key: &crate::store::SnapKey) {}
 }
 

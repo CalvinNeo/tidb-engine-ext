@@ -457,7 +457,6 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
                 }
                 let p = batch.normals[fsm_cnt].as_mut().unwrap();
 
-                tikv_util::info!("!!!! handle_normal begin");
                 let res = self.handler.handle_normal(p);
                 if p.is_stopped() {
                     p.policy = Some(ReschedulePolicy::Remove);
@@ -484,7 +483,6 @@ impl<N: Fsm, C: Fsm, Handler: PollHandler<N, C>> Poller<N, C, Handler> {
                 batch.schedule(&self.router, r, false);
             }
         }
-        tikv_util::info!("!!!! handle_normal x");
         if let Some(fsm) = batch.control.take() {
             self.router.control_scheduler.schedule(fsm);
             info!("poller will exit, release the left ControlFsm");
