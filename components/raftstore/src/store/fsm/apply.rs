@@ -571,7 +571,7 @@ where
     ) {
         if !delegate.pending_remove {
             // !!!!! should remove this
-            println!("!!!!! finish_for write {} {}", delegate.id, delegate.apply_state.applied_index);
+            tikv_util::debug!("!!!!! finish_for write {} {}", delegate.id, delegate.apply_state.applied_index);
             // delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, false);
@@ -1270,6 +1270,26 @@ where
         ctx.host.address_apply_result(&self.region, &cmd, &self.apply_state, &RegionState {
             peer_id: self.id(),
             pending_remove: self.pending_remove,
+            modified_region: match exec_result {
+                ApplyResult::Res(ref e) => {
+                    match e {
+                        ExecResult::SplitRegion { ref derived, .. } => {
+                            Some(derived.clone())
+                        },
+                        ExecResult::PrepareMerge { ref region, .. } => {
+                            Some(region.clone())
+                        },
+                        ExecResult::CommitMerge { ref region, .. } => {
+                            Some(region.clone())
+                        },
+                        ExecResult::RollbackMerge { ref region, .. } => {
+                            Some(region.clone())
+                        },
+                        _ => None,
+                    }
+                },
+                _ => None,
+            }
         });
 
         if let ApplyResult::Res(ref exec_result) = exec_result {

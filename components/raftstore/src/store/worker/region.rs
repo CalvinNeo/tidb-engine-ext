@@ -768,10 +768,10 @@ where
                 // to makes sure applying snapshots in order.
                 self.pending_applies.push_back(task);
                 if self.ctx.engine.can_apply_snapshot() {
-                    tikv_util::info!("!!!!! handle do");
+                    tikv_util::info!("!!!!! can handle pending applies");
                     self.handle_pending_applies();
                 } else {
-                    tikv_util::info!("!!!!! handle do not");
+                    tikv_util::info!("!!!!! can not handle pending applies");
                 }
                 if !self.pending_applies.is_empty() {
                     // delay the apply and retry later

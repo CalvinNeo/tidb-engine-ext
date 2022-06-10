@@ -71,6 +71,7 @@ impl<'a> ObserverContext<'a> {
 pub struct RegionState {
     pub peer_id: u64,
     pub pending_remove: bool,
+    pub modified_region: Option<Region>,
 }
 
 pub trait AdminObserver: Coprocessor {
@@ -85,6 +86,9 @@ pub trait AdminObserver: Coprocessor {
     /// Hook to call after applying admin request.
     /// For now, the `region` in `ObserverContext` is an empty region.
     fn post_apply_admin(&self, _: &mut ObserverContext<'_>, _: &AdminResponse) {}
+
+    /// Hook before exec admin request, returns whether we should skip this admin.
+    fn pre_exec_admin(&self, _: &mut ObserverContext<'_>, _: &AdminRequest) -> bool { false }
 
     /// Hook to call immediately after exec command
     fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) {}
@@ -105,6 +109,8 @@ pub trait QueryObserver: Coprocessor {
     /// For now, the `region` in `ObserverContext` is an empty region.
     fn post_apply_query(&self, _: &mut ObserverContext<'_>, _: &Cmd) {}
 
+    /// Hook before exec write request, returns whether we should skip this write.
+    fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request]) -> bool { false }
     /// Hook to call immediately after exec command
     fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, _: &RaftApplyState, region_state: &RegionState) {}
 }

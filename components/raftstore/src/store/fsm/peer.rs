@@ -290,6 +290,7 @@ where
             "replicate peer";
             "region_id" => region_id,
             "peer_id" => peer.get_id(),
+            "store_id" => peer.get_store_id(),
         );
 
         let mut region = metapb::Region::default();

@@ -429,6 +429,26 @@ impl<E: KvEngine> CoprocessorHost<E> {
         }
     }
 
+    pub fn pre_exec(&self, region: &Region, req: &RaftCmdRequest) {
+        if !req.has_admin_request() {
+            let query = req.get_requests();
+            loop_ob!(
+                region,
+                &self.registry.query_observers,
+                pre_exec_query,
+                query,
+            );
+        } else {
+            let admin = req.get_admin_request();
+            loop_ob!(
+                region,
+                &self.registry.admin_observers,
+                pre_exec_admin,
+                admin,
+            );
+        }
+    }
+
     pub fn post_apply_plain_kvs_from_snapshot(
         &self,
         region: &Region,
@@ -455,9 +475,6 @@ impl<E: KvEngine> CoprocessorHost<E> {
     }
 
     pub fn pre_handle_snapshot(&self, region: &Region, peer_id: u64, snap_key: &crate::store::SnapKey, ssts: &[crate::store::snap::CfFile]) {
-        for i in self.registry.apply_snapshot_observers.iter() {
-            tikv_util::info!("!!!!! x {:?}", 1);
-        }
         loop_ob!(
             region,
             &self.registry.apply_snapshot_observers,
