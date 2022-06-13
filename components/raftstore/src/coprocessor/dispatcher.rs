@@ -429,7 +429,7 @@ impl<E: KvEngine> CoprocessorHost<E> {
         }
     }
 
-    pub fn pre_exec(&self, region: &Region, req: &RaftCmdRequest) {
+    pub fn pre_exec(&self, region: &Region, req: &RaftCmdRequest, should_skip: &mut bool) {
         if !req.has_admin_request() {
             let query = req.get_requests();
             loop_ob!(
@@ -437,7 +437,8 @@ impl<E: KvEngine> CoprocessorHost<E> {
                 &self.registry.query_observers,
                 pre_exec_query,
                 query,
-            );
+                should_skip,
+            )
         } else {
             let admin = req.get_admin_request();
             loop_ob!(
@@ -445,7 +446,8 @@ impl<E: KvEngine> CoprocessorHost<E> {
                 &self.registry.admin_observers,
                 pre_exec_admin,
                 admin,
-            );
+                should_skip,
+            )
         }
     }
 

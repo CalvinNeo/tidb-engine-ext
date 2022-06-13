@@ -74,7 +74,10 @@ impl engine_traits::WriteBatch for RocksWriteBatch {
         self.wb.is_empty()
     }
 
-    fn should_write_to_engine(&self) -> bool {
+    fn should_write_to_engine(&self, is_finished: bool) -> bool {
+        if is_finished {
+            return true;
+        }
         self.count() > RocksEngine::WRITE_BATCH_MAX_KEYS
     }
 

@@ -32,7 +32,7 @@ impl WriteBatch for PanicWriteBatch {
     fn is_empty(&self) -> bool {
         panic!()
     }
-    fn should_write_to_engine(&self) -> bool {
+    fn should_write_to_engine(&self, is_finished: bool) -> bool {
         panic!()
     }
 

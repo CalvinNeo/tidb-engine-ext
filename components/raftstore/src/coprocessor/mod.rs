@@ -88,7 +88,7 @@ pub trait AdminObserver: Coprocessor {
     fn post_apply_admin(&self, _: &mut ObserverContext<'_>, _: &AdminResponse) {}
 
     /// Hook before exec admin request, returns whether we should skip this admin.
-    fn pre_exec_admin(&self, _: &mut ObserverContext<'_>, _: &AdminRequest) -> bool { false }
+    fn pre_exec_admin(&self, _: &mut ObserverContext<'_>, _: &AdminRequest, should_skip: &mut bool) {}
 
     /// Hook to call immediately after exec command
     fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) {}
@@ -110,7 +110,7 @@ pub trait QueryObserver: Coprocessor {
     fn post_apply_query(&self, _: &mut ObserverContext<'_>, _: &Cmd) {}
 
     /// Hook before exec write request, returns whether we should skip this write.
-    fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request]) -> bool { false }
+    fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request], should_skip: &mut bool) {}
     /// Hook to call immediately after exec command
     fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, _: &RaftApplyState, region_state: &RegionState) {}
 }

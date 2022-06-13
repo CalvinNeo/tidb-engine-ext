@@ -95,7 +95,7 @@ pub trait WriteBatch: Mutable {
     /// Whether the number of commands exceeds WRITE_BATCH_MAX_KEYS
     ///
     /// If so, the `write` method should be called.
-    fn should_write_to_engine(&self) -> bool;
+    fn should_write_to_engine(&self, is_finished: bool) -> bool;
 
     /// Clears the WriteBatch of all commands
     ///

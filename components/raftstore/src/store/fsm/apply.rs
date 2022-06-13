@@ -475,8 +475,7 @@ where
     pub fn commit(&mut self, delegate: &mut ApplyDelegate<EK>) {
         if delegate.last_flush_applied_index < delegate.apply_state.get_applied_index() {
             // !!!!! should remove this
-            println!("!!!!! commit write");
-            // delegate.write_apply_state(self.kv_wb_mut());
+            delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, true);
     }
@@ -569,10 +568,13 @@ where
         delegate: &mut ApplyDelegate<EK>,
         results: VecDeque<ExecResult<EK::Snapshot>>,
     ) {
+        if self.kv_wb().should_write_to_engine(true) {
+
+        }
         if !delegate.pending_remove {
             // !!!!! should remove this
             tikv_util::debug!("!!!!! finish_for write {} {}", delegate.id, delegate.apply_state.applied_index);
-            // delegate.write_apply_state(self.kv_wb_mut());
+            delegate.write_apply_state(self.kv_wb_mut());
         }
         self.commit_opt(delegate, false);
         self.apply_res.push(ApplyRes {
@@ -1397,6 +1399,18 @@ where
         let include_region =
             req.get_header().get_region_epoch().get_version() >= self.last_merge_version;
         check_region_epoch(req, &self.region, include_region)?;
+
+        let mut should_skip = false;
+        ctx.host.pre_exec(&self.region, req, &mut should_skip);
+        if should_skip {
+            let mut resp = RaftCmdResponse::default();
+            if !req.get_header().get_uuid().is_empty() {
+                let uuid = req.get_header().get_uuid().to_vec();
+                resp.mut_header().set_uuid(uuid);
+            }
+            resp.set_admin_response(AdminResponse::new());
+            return Ok((resp, ApplyResult::None));
+        }
         if req.has_admin_request() {
             self.exec_admin_cmd(ctx, req)
         } else {
