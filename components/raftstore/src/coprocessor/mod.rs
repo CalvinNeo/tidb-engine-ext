@@ -111,8 +111,12 @@ pub trait QueryObserver: Coprocessor {
 
     /// Hook before exec write request, returns whether we should skip this write.
     fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request], should_skip: &mut bool) {}
-    /// Hook to call immediately after exec command
+
+    /// Hook to call immediately after exec command.
     fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, _: &RaftApplyState, region_state: &RegionState) {}
+
+    /// Hook when observe empty cmd, probably caused by leadership change.
+    fn on_empty_cmd(&self, _: &mut ObserverContext<'_>, index: u64, term: u64) {}
 }
 
 pub trait ApplySnapshotObserver: Coprocessor {

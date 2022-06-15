@@ -429,6 +429,16 @@ impl<E: KvEngine> CoprocessorHost<E> {
         }
     }
 
+    pub fn on_empty_cmd(&self, region: &Region, index: u64, term: u64) {
+        loop_ob!(
+            region,
+            &self.registry.query_observers,
+            on_empty_cmd,
+            index,
+            term,
+        );
+    }
+
     pub fn pre_exec(&self, region: &Region, req: &RaftCmdRequest, should_skip: &mut bool) {
         if !req.has_admin_request() {
             let query = req.get_requests();

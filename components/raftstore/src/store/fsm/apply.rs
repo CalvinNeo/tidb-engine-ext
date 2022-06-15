@@ -1071,8 +1071,10 @@ where
             }
 
             return self.process_raft_cmd(apply_ctx, index, term, cmd);
+        } else {
+            // we should observe empty cmd, aka leader change
+            apply_ctx.host.on_empty_cmd(&self.region, index, term);
         }
-        // TOOD(cdc): should we observe empty cmd, aka leader change?
 
         self.apply_state.set_applied_index(index);
         self.applied_index_term = term;
@@ -2830,7 +2832,7 @@ pub fn is_conf_change_cmd(msg: &RaftCmdRequest) -> bool {
     req.has_change_peer() || req.has_change_peer_v2()
 }
 
-fn check_sst_for_ingestion(sst: &SstMeta, region: &Region) -> Result<()> {
+pub fn check_sst_for_ingestion(sst: &SstMeta, region: &Region) -> Result<()> {
     let uuid = sst.get_uuid();
     if let Err(e) = UuidBuilder::from_slice(uuid) {
         return Err(box_err!("invalid uuid {:?}: {:?}", uuid, e));
