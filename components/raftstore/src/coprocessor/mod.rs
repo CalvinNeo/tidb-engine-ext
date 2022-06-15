@@ -91,7 +91,7 @@ pub trait AdminObserver: Coprocessor {
     fn pre_exec_admin(&self, _: &mut ObserverContext<'_>, _: &AdminRequest, should_skip: &mut bool) {}
 
     /// Hook to call immediately after exec command
-    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) {}
+    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) -> bool { false }
 }
 
 pub trait QueryObserver: Coprocessor {
@@ -113,7 +113,7 @@ pub trait QueryObserver: Coprocessor {
     fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request], should_skip: &mut bool) {}
 
     /// Hook to call immediately after exec command.
-    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, _: &RaftApplyState, region_state: &RegionState) {}
+    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, _: &RaftApplyState, region_state: &RegionState) -> bool { false }
 
     /// Hook when observe empty cmd, probably caused by leadership change.
     fn on_empty_cmd(&self, _: &mut ObserverContext<'_>, index: u64, term: u64) {}

@@ -1271,7 +1271,7 @@ where
         self.applied_index_term = term;
 
         let cmd = Cmd::new(index, term, req.clone(), resp.clone());
-        ctx.host.address_apply_result(&self.region, &cmd, &self.apply_state, &RegionState {
+        let should_write_apply_state = ctx.host.address_apply_result(&self.region, &cmd, &self.apply_state, &RegionState {
             peer_id: self.id(),
             pending_remove: self.pending_remove,
             modified_region: match exec_result {
@@ -1295,6 +1295,11 @@ where
                 _ => None,
             }
         });
+
+        if should_write_apply_state {
+            info!("persist apply state"; "region_id" => self.region_id(), "peer_id" => self.id(), "state" => ?self.apply_state);
+            self.write_apply_state(ctx.kv_wb_mut());
+        }
 
         if let ApplyResult::Res(ref exec_result) = exec_result {
             match *exec_result {
