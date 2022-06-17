@@ -324,7 +324,7 @@ where
 
     fn get_region_state(&self, region_id: u64) -> Result<RegionLocalState> {
         let region_key = keys::region_state_key(region_id);
-        let mut region_state: RegionLocalState =
+        let region_state: RegionLocalState =
             match box_try!(self.engine.get_msg_cf(CF_RAFT, &region_key)) {
                 Some(state) => state,
                 None => {
@@ -337,8 +337,23 @@ where
         Ok(region_state)
     }
 
+    fn get_apply_state(&self, region_id: u64) -> Result<RaftApplyState> {
+        let state_key = keys::apply_state_key(region_id);
+        let mut apply_state: RaftApplyState =
+            match box_try!(self.engine.get_msg_cf(CF_RAFT, &state_key)) {
+                Some(state) => state,
+                None => {
+                    return Err(box_err!(
+                            "failed to get apply_state from {}",
+                            log_wrappers::Value::key(&state_key)
+                        ));
+                }
+            };
+        Ok(apply_state)
+    }
+
     /// Applies snapshot data of the Region.
-    fn apply_snap(&mut self, region_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
+    fn apply_snap(&mut self, region_id: u64, abort: Arc<AtomicUsize>, peer_id: u64) -> Result<()> {
         info!("begin apply snap data"; "region_id" => region_id);
         fail_point!("region_apply_snap", |_| { Ok(()) });
         check_abort(&abort)?;
@@ -363,17 +378,7 @@ where
         check_abort(&abort)?;
         fail_point!("apply_snap_cleanup_range");
 
-        let state_key = keys::apply_state_key(region_id);
-        let apply_state: RaftApplyState =
-            match box_try!(self.engine.get_msg_cf(CF_RAFT, &state_key)) {
-                Some(state) => state,
-                None => {
-                    return Err(box_err!(
-                        "failed to get raftstate from {}",
-                        log_wrappers::Value::key(&state_key)
-                    ));
-                }
-            };
+        let apply_state: RaftApplyState = self.get_apply_state(region_id)?;
         let term = apply_state.get_truncated_state().get_term();
         let idx = apply_state.get_truncated_state().get_index();
         let snap_key = SnapKey::new(region_id, term, idx);
@@ -395,7 +400,7 @@ where
             coprocessor_host: self.coprocessor_host.clone(),
         };
         s.apply(options)?;
-        self.coprocessor_host.post_apply_snapshot(&region, &snap_key);
+        self.coprocessor_host.post_apply_snapshot(&region, peer_id, &snap_key, &s);
 
         let mut wb = self.engine.write_batch();
         region_state.set_state(PeerState::Normal);
@@ -413,7 +418,7 @@ where
     }
 
     /// Tries to apply the snapshot of the specified Region. It calls `apply_snap` to do the actual work.
-    fn handle_apply(&mut self, region_id: u64, status: Arc<AtomicUsize>) {
+    fn handle_apply(&mut self, region_id: u64, status: Arc<AtomicUsize>, peer_id: u64) {
         let _ = status.compare_exchange(
             JOB_STATUS_PENDING,
             JOB_STATUS_RUNNING,
@@ -425,7 +430,7 @@ where
         // let timer = apply_histogram.start_coarse_timer();
         let start = Instant::now();
 
-        match self.apply_snap(region_id, Arc::clone(&status)) {
+        match self.apply_snap(region_id, Arc::clone(&status), peer_id) {
             Ok(()) => {
                 status.swap(JOB_STATUS_FINISHED, Ordering::SeqCst);
                 SNAP_COUNTER.apply.success.inc();
@@ -613,48 +618,33 @@ where
             Task::Apply { region_id, status, peer_id } => {
                 (region_id, status.clone(), peer_id)
             },
-            _ => return Err(box_err!("invalid apply task")),
+            _ => panic!("invalid apply snapshot task"),
         };
-        let region_state = self.get_region_state(*region_id);
-        match region_state {
-            Ok(region_state) => {
-                let abort = status.clone();
-                let timer = Instant::now();
-                check_abort(&abort)?;
-                let region = region_state.get_region().clone();
-                let state_key = keys::apply_state_key(*region_id);
 
-                let apply_state: RaftApplyState =
-                    match box_try!(self.engine.get_msg_cf(CF_RAFT, &state_key)) {
-                        Some(state) => state,
-                        None => {
-                            return Err(box_err!(
-                                "failed to get raftstate from {}",
-                                log_wrappers::Value::key(&state_key)
-                            ));
-                        }
-                    };
-                let term = apply_state.get_truncated_state().get_term();
-                let idx = apply_state.get_truncated_state().get_index();
-                let snap_key = SnapKey::new(*region_id, term, idx);
-                let s = box_try!(self.mgr.get_snapshot_for_applying(&snap_key));
-                if !s.exists() {
-                    return Err(box_err!("missing snapshot file {}", s.path()));
-                }
-                check_abort(&abort)?;
-                self.coprocessor_host.pre_handle_snapshot(&region, *peer_id, &snap_key, &s.cf_files);
-                info!(
-                    "pre handle snapshot";
-                    "region_id" => region_id,
-                    "peer_id" => peer_id,
-                    "state" => ?apply_state,
-                    "time_takes" => ?timer.saturating_elapsed(),
-                );
-            },
-            Err(e) => {
-                panic!("region not found {:?}", e);
-            }
+        let region_state = self.get_region_state(*region_id)?;
+        let apply_state = self.get_apply_state(*region_id)?;
+
+        let abort = status.clone();
+        let timer = Instant::now();
+        check_abort(&abort)?;
+        let region = region_state.get_region().clone();
+
+        let term = apply_state.get_truncated_state().get_term();
+        let idx = apply_state.get_truncated_state().get_index();
+        let snap_key = SnapKey::new(*region_id, term, idx);
+        let s = box_try!(self.mgr.get_snapshot_for_applying(&snap_key));
+        if !s.exists() {
+            return Err(box_err!("missing snapshot file {}", s.path()));
         }
+        check_abort(&abort)?;
+        self.coprocessor_host.pre_handle_snapshot(&region, *peer_id, &snap_key, &s);
+        info!(
+            "pre handle snapshot";
+            "region_id" => region_id,
+            "peer_id" => peer_id,
+            "state" => ?apply_state,
+            "time_takes" => ?timer.saturating_elapsed(),
+        );
         Ok(())
     }
 }
@@ -715,7 +705,7 @@ where
                 break;
             }
             if let Some(Task::Apply { region_id, status, peer_id }) = self.pending_applies.pop_front() {
-                self.ctx.handle_apply(region_id, status);
+                self.ctx.handle_apply(region_id, status, peer_id);
             }
         }
     }
@@ -759,12 +749,7 @@ where
             }
             task @ Task::Apply { .. } => {
                 fail_point!("on_region_worker_apply", true, |_| {});
-                match self.ctx.pre_handle_snapshot(&task) {
-                    Ok(()) => (),
-                    Err(e) => {
-                        tikv_util::info!("!!!!! prehandle_snapshot err {:?}", e);
-                    },
-                }
+                self.ctx.pre_handle_snapshot(&task);
                 // to makes sure applying snapshots in order.
                 self.pending_applies.push_back(task);
                 if self.ctx.engine.can_apply_snapshot() {

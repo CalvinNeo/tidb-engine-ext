@@ -485,23 +485,25 @@ impl<E: KvEngine> CoprocessorHost<E> {
         );
     }
 
-    pub fn pre_handle_snapshot(&self, region: &Region, peer_id: u64, snap_key: &crate::store::SnapKey, cf_files: &[crate::store::snap::CfFile]) {
+    pub fn pre_handle_snapshot(&self, region: &Region, peer_id: u64, snap_key: &crate::store::SnapKey, snap: &crate::store::Snapshot) {
         loop_ob!(
             region,
             &self.registry.apply_snapshot_observers,
             pre_handle_snapshot,
             peer_id,
             snap_key,
-            cf_files,
+            snap,
         );
     }
 
-    pub fn post_apply_snapshot(&self, region: &Region, snap_key: &crate::store::SnapKey) {
+    pub fn post_apply_snapshot(&self, region: &Region, peer_id: u64, snap_key: &crate::store::SnapKey, snap: &crate::store::Snapshot) {
         loop_ob!(
             region,
             &self.registry.apply_snapshot_observers,
             post_apply_snapshot,
+            peer_id,
             snap_key,
+            snap,
         );
     }
 

@@ -130,10 +130,10 @@ pub trait ApplySnapshotObserver: Coprocessor {
     fn apply_sst(&self, _: &mut ObserverContext<'_>, _: CfName, _path: &str) {}
 
     /// Hook to pre-handle received snapshot.
-    fn pre_handle_snapshot(&self, _: &mut ObserverContext<'_>, peer_id: u64, snap_key: &crate::store::SnapKey, _: &[crate::store::snap::CfFile]) {}
+    fn pre_handle_snapshot(&self, _: &mut ObserverContext<'_>, peer_id: u64, snap_key: &crate::store::SnapKey, _: &crate::store::Snapshot) {}
 
     /// Hook when the whole snapshot is applied
-    fn post_apply_snapshot(&self, _: &mut ObserverContext<'_>, snap_key: &crate::store::SnapKey) {}
+    fn post_apply_snapshot(&self, _: &mut ObserverContext<'_>, peer_id: u64, snap_key: &crate::store::SnapKey, _: &crate::store::Snapshot) {}
 }
 
 /// SplitChecker is invoked during a split check scan, and decides to use
