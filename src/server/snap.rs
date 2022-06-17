@@ -253,6 +253,7 @@ impl RecvSnapContext {
                 return Err(e);
             }
         }
+        debug!("!!!!! finish msg {:?}", self.raft_msg);
         if let Err(e) = raft_router.send_raft_msg(self.raft_msg) {
             return Err(box_err!("{} failed to send snapshot to raft: {}", key, e));
         }
