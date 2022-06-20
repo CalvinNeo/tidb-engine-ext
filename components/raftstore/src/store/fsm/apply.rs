@@ -1235,32 +1235,42 @@ where
         let mut origin_epoch = None;
         // Remember if the raft cmd fails to be applied, it must have no side effects.
         // E.g. `RaftApplyState` must not be changed.
-        let (resp, exec_result) = match self.exec_raft_cmd(ctx, req) {
-            Ok(a) => {
-                ctx.kv_wb_mut().pop_save_point().unwrap();
-                if req.has_admin_request() {
-                    origin_epoch = Some(self.region.get_region_epoch().clone());
-                }
-                a
+        let (resp, exec_result) = if ctx.host.pre_exec(&self.region, req) {
+            let mut resp = RaftCmdResponse::default();
+            if !req.get_header().get_uuid().is_empty() {
+                let uuid = req.get_header().get_uuid().to_vec();
+                resp.mut_header().set_uuid(uuid);
             }
-            Err(e) => {
-                // clear dirty values.
-                ctx.kv_wb_mut().rollback_to_save_point().unwrap();
-                match e {
-                    Error::EpochNotMatch(..) => debug!(
+            (resp, ApplyResult::None)
+        } else {
+            let (resp, exec_result) = match self.exec_raft_cmd(ctx, req) {
+                Ok(a) => {
+                    ctx.kv_wb_mut().pop_save_point().unwrap();
+                    if req.has_admin_request() {
+                        origin_epoch = Some(self.region.get_region_epoch().clone());
+                    }
+                    a
+                }
+                Err(e) => {
+                    // clear dirty values.
+                    ctx.kv_wb_mut().rollback_to_save_point().unwrap();
+                    match e {
+                        Error::EpochNotMatch(..) => debug!(
                         "epoch not match";
                         "region_id" => self.region_id(),
                         "peer_id" => self.id(),
                         "err" => ?e
                     ),
-                    _ => error!(?e;
+                        _ => error!(?e;
                         "execute raft command";
                         "region_id" => self.region_id(),
                         "peer_id" => self.id(),
                     ),
+                    }
+                    (cmd_resp::new_error(e), ApplyResult::None)
                 }
-                (cmd_resp::new_error(e), ApplyResult::None)
-            }
+            };
+            (resp, exec_result)
         };
         if let ApplyResult::WaitMergeSource(_) = exec_result {
             return (resp, exec_result);
@@ -1270,7 +1280,7 @@ where
         self.applied_index_term = term;
 
         let cmd = Cmd::new(index, term, req.clone(), resp.clone());
-        let should_write_apply_state = ctx.host.address_apply_result(&self.region, &cmd, &self.apply_state, &RegionState {
+        let should_write = ctx.host.post_exec(&self.region, &cmd, &self.apply_state, &RegionState {
             peer_id: self.id(),
             pending_remove: self.pending_remove,
             modified_region: match exec_result {
@@ -1294,11 +1304,6 @@ where
                 _ => None,
             }
         });
-
-        if should_write_apply_state {
-            info!("persist apply state"; "region_id" => self.region_id(), "peer_id" => self.id(), "state" => ?self.apply_state);
-            self.write_apply_state(ctx.kv_wb_mut());
-        }
 
         if let ApplyResult::Res(ref exec_result) = exec_result {
             match *exec_result {
@@ -1348,6 +1353,11 @@ where
                     self.region.get_region_epoch()
                 );
             }
+        }
+
+        if should_write {
+            info!("persist data and apply state"; "region_id" => self.region_id(), "peer_id" => self.id(), "state" => ?self.apply_state);
+            ctx.commit(self);
         }
 
         (resp, exec_result)
@@ -1406,17 +1416,6 @@ where
             req.get_header().get_region_epoch().get_version() >= self.last_merge_version;
         check_region_epoch(req, &self.region, include_region)?;
 
-        let mut should_skip = false;
-        ctx.host.pre_exec(&self.region, req, &mut should_skip);
-        if should_skip {
-            let mut resp = RaftCmdResponse::default();
-            if !req.get_header().get_uuid().is_empty() {
-                let uuid = req.get_header().get_uuid().to_vec();
-                resp.mut_header().set_uuid(uuid);
-            }
-            resp.set_admin_response(AdminResponse::new());
-            return Ok((resp, ApplyResult::None));
-        }
         if req.has_admin_request() {
             self.exec_admin_cmd(ctx, req)
         } else {

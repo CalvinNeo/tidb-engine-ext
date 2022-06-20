@@ -407,12 +407,12 @@ impl<E: KvEngine> CoprocessorHost<E> {
         }
     }
 
-    pub fn address_apply_result(&self, region: &Region, cmd: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) -> bool {
+    pub fn post_exec(&self, region: &Region, cmd: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) -> bool {
         let mut ctx = ObserverContext::new(region);
         if !cmd.response.has_admin_response() {
             for observer in &self.registry.query_observers {
                 let observer = observer.observer.inner();
-                if observer.address_apply_result(&mut ctx, cmd, apply_state, region_state) {
+                if observer.post_exec_query(&mut ctx, cmd, apply_state, region_state) {
                     return true;
                 }
             }
@@ -420,7 +420,7 @@ impl<E: KvEngine> CoprocessorHost<E> {
         } else {
             for observer in &self.registry.admin_observers {
                 let observer = observer.observer.inner();
-                if observer.address_apply_result(&mut ctx, cmd, apply_state, region_state) {
+                if observer.post_exec_admin(&mut ctx, cmd, apply_state, region_state) {
                     return true;
                 }
             }
@@ -438,25 +438,26 @@ impl<E: KvEngine> CoprocessorHost<E> {
         );
     }
 
-    pub fn pre_exec(&self, region: &Region, req: &RaftCmdRequest, should_skip: &mut bool) {
-        if !req.has_admin_request() {
-            let query = req.get_requests();
-            loop_ob!(
-                region,
-                &self.registry.query_observers,
-                pre_exec_query,
-                query,
-                should_skip,
-            )
+    pub fn pre_exec(&self, region: &Region, cmd: &RaftCmdRequest) -> bool {
+        let mut ctx = ObserverContext::new(region);
+        if !cmd.has_admin_request() {
+            let query = cmd.get_requests();
+            for observer in &self.registry.query_observers {
+                let observer = observer.observer.inner();
+                if observer.pre_exec_query(&mut ctx, query) {
+                    return true;
+                }
+            }
+            false
         } else {
-            let admin = req.get_admin_request();
-            loop_ob!(
-                region,
-                &self.registry.admin_observers,
-                pre_exec_admin,
-                admin,
-                should_skip,
-            )
+            let admin = cmd.get_admin_request();
+            for observer in &self.registry.admin_observers {
+                let observer = observer.observer.inner();
+                if observer.pre_exec_admin(&mut ctx, admin) {
+                    return true;
+                }
+            }
+            false
         }
     }
 

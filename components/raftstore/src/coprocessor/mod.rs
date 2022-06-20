@@ -88,10 +88,11 @@ pub trait AdminObserver: Coprocessor {
     fn post_apply_admin(&self, _: &mut ObserverContext<'_>, _: &AdminResponse) {}
 
     /// Hook before exec admin request, returns whether we should skip this admin.
-    fn pre_exec_admin(&self, _: &mut ObserverContext<'_>, _: &AdminRequest, should_skip: &mut bool) {}
+    fn pre_exec_admin(&self, _: &mut ObserverContext<'_>, _: &AdminRequest) -> bool { false }
 
     /// Hook to call immediately after exec command
-    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) -> bool { false }
+    /// Will be a special persistence after this exec if a observer returns true.
+    fn post_exec_admin(&self, _: &mut ObserverContext<'_>, _: &Cmd, apply_state: &RaftApplyState, region_state: &RegionState) -> bool { false }
 }
 
 pub trait QueryObserver: Coprocessor {
@@ -110,10 +111,11 @@ pub trait QueryObserver: Coprocessor {
     fn post_apply_query(&self, _: &mut ObserverContext<'_>, _: &Cmd) {}
 
     /// Hook before exec write request, returns whether we should skip this write.
-    fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request], should_skip: &mut bool) {}
+    fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request]) -> bool { false }
 
-    /// Hook to call immediately after exec command.
-    fn address_apply_result(&self, _: &mut ObserverContext<'_>, _: &Cmd, _: &RaftApplyState, region_state: &RegionState) -> bool { false }
+    /// Hook to call immediately after exec command
+    /// Will be a special persistence after this exec if a observer returns true.
+    fn post_exec_query(&self, _: &mut ObserverContext<'_>, _: &Cmd, _: &RaftApplyState, region_state: &RegionState) -> bool { false }
 
     /// Hook when observe empty cmd, probably caused by leadership change.
     fn on_empty_cmd(&self, _: &mut ObserverContext<'_>, index: u64, term: u64) {}
