@@ -1237,6 +1237,7 @@ where
         // E.g. `RaftApplyState` must not be changed.
         let (resp, exec_result) = if ctx.host.pre_exec(&self.region, req) {
             let mut resp = RaftCmdResponse::default();
+            debug!("!!!! filtered index {} term {}", index, term);
             if !req.get_header().get_uuid().is_empty() {
                 let uuid = req.get_header().get_uuid().to_vec();
                 resp.mut_header().set_uuid(uuid);
