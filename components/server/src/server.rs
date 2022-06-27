@@ -119,6 +119,7 @@ use crate::{memory::*, raft_engine_switch::*, setup::*, util::ffi_server_info};
 #[inline]
 fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
     config: TiKvConfig,
+    proxy_config: ProxyConfig,
     engine_store_server_helper: &EngineStoreServerHelper,
 ) {
     let mut tikv = TiKvServer::<CER>::init(config);
@@ -223,7 +224,7 @@ fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
 
 /// Run a TiKV server. Returns when the server is shutdown by the user, in which
 /// case the server will be properly stopped.
-pub unsafe fn run_tikv(config: TiKvConfig, engine_store_server_helper: &EngineStoreServerHelper) {
+pub unsafe fn run_tikv(config: TiKvConfig, proxy_config: ProxyConfig, engine_store_server_helper: &EngineStoreServerHelper) {
     // Sets the global logger ASAP.
     // It is okay to use the config w/o `validate()`,
     // because `initial_logger()` handles various conditions.
@@ -243,9 +244,9 @@ pub unsafe fn run_tikv(config: TiKvConfig, engine_store_server_helper: &EngineSt
 
     dispatch_api_version!(config.storage.api_version(), {
         if !config.raft_engine.enable {
-            run_impl::<RocksEngine, API>(config, engine_store_server_helper)
+            run_impl::<RocksEngine, API>(config, proxy_config, engine_store_server_helper)
         } else {
-            run_impl::<RaftLogEngine, API>(config, engine_store_server_helper)
+            run_impl::<RaftLogEngine, API>(config, proxy_config, engine_store_server_helper)
         }
     })
 }

@@ -237,15 +237,47 @@ pub unsafe fn run_proxy(
     crate::setup::overwrite_config_with_cmd_args(&mut config, &matches);
     config.logger_compatible_adjust();
 
+    let mut proxy_unrecognized_keys = Vec::new();
+    // Double read the same file for proxy-specific arguments.
+    let mut proxy_config = matches.value_of_os("config").map_or_else(
+        engine_store_ffi::config::ProxyConfig::default,
+        |path| {
+            let path = Path::new(path);
+            engine_store_ffi::config::ProxyConfig::from_file(
+                path,
+                if is_config_check {
+                    Some(&mut proxy_unrecognized_keys)
+                } else {
+                    None
+                },
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "invalid auto generated proxy configuration file {}, err {}",
+                    path.display(),
+                    e
+                );
+            })
+        },
+    );
+
     if is_config_check {
         validate_and_persist_config(&mut config, false);
-        ensure_no_unrecognized_config(&unrecognized_keys);
+        match engine_store_ffi::config::ensure_no_common_unrecognized_keys(
+            &proxy_unrecognized_keys,
+            &unrecognized_keys,
+        ) {
+            Ok(_) => (),
+            Err(e) => {
+                server::fatal!("unknown configuration options: {}", e);
+            }
+        }
         println!("config check successful");
         process::exit(0)
     }
 
     config.raft_store.engine_store_server_helper = engine_store_server_helper as *const _ as isize;
-    crate::server::run_tikv(config, engine_store_server_helper);
+    crate::server::run_tikv(config, proxy_config, engine_store_server_helper);
 }
 
 fn check_engine_label(matches: &clap::ArgMatches<'_>) {
