@@ -568,14 +568,14 @@ where
         delegate: &mut ApplyDelegate<EK>,
         results: VecDeque<ExecResult<EK::Snapshot>>,
     ) {
-        if !delegate.pending_remove {
-            // !!!!! should remove this
-            tikv_util::debug!("!!!!! finish_for write {} {}", delegate.id, delegate.apply_state.applied_index);
-            if self.kv_wb().should_write_to_engine(true) {
+        if self.kv_wb().should_write_to_engine(true) {
+            if !delegate.pending_remove {
+                // !!!!! should remove this
+                tikv_util::debug!("!!!!! finish_for write {} {}", delegate.id, delegate.apply_state.applied_index);
                 delegate.write_apply_state(self.kv_wb_mut());
             }
+            self.commit_opt(delegate, false);
         }
-        self.commit_opt(delegate, false);
         self.apply_res.push(ApplyRes {
             region_id: delegate.region_id(),
             apply_state: delegate.apply_state.clone(),
@@ -1237,7 +1237,6 @@ where
         // E.g. `RaftApplyState` must not be changed.
         let (resp, exec_result) = if ctx.host.pre_exec(&self.region, req) {
             let mut resp = RaftCmdResponse::default();
-            debug!("!!!! filtered index {} term {}", index, term);
             if !req.get_header().get_uuid().is_empty() {
                 let uuid = req.get_header().get_uuid().to_vec();
                 resp.mut_header().set_uuid(uuid);

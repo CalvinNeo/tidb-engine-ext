@@ -624,6 +624,7 @@ impl<T: Simulator<EK>, EK: KvEngine> Cluster<T, EK> {
     /// Must be called after `create_engines`.
     pub fn bootstrap_region(&mut self) -> Result<()> {
         for (i, engines) in self.dbs.iter().enumerate() {
+            debug!("!!!!!! bootstrap_region {}", i);
             let id = i as u64 + 1;
             self.engines.insert(id, engines.clone());
             let store_meta = Arc::new(Mutex::new(StoreMeta::new(PENDING_MSG_CAP)));

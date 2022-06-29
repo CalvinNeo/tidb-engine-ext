@@ -95,4 +95,11 @@ pub trait MiscExt: CFNamesExt + FlowControlFactorsExt {
     ) -> Result<Option<(u64, u64)>>;
 
     fn is_stalled_or_stopped(&self) -> bool;
+
+    fn compute_total_capacity(&self, _: &[StoreStatInfo]) -> Option<u64> { None }
+}
+
+pub struct StoreStatInfo<'a> {
+    pub path: &'a str,
+    pub capacity: u64,
 }
