@@ -613,8 +613,8 @@ where
         Ok(())
     }
 
-    fn pre_handle_snapshot(&self, task: &Task<EK::Snapshot>) -> Result<()> {
-        let (region_id, status, peer_id) = match task {
+    fn pre_apply_snapshot(&self, task: &Task<EK::Snapshot>) -> Result<()> {
+        let (region_id, abort, peer_id) = match task {
             Task::Apply { region_id, status, peer_id } => {
                 (region_id, status.clone(), peer_id)
             },
@@ -624,10 +624,8 @@ where
         let region_state = self.get_region_state(*region_id)?;
         let apply_state = self.get_apply_state(*region_id)?;
 
-        let abort = status.clone();
         let timer = Instant::now();
         check_abort(&abort)?;
-        let region = region_state.get_region().clone();
 
         let term = apply_state.get_truncated_state().get_term();
         let idx = apply_state.get_truncated_state().get_index();
@@ -637,7 +635,7 @@ where
             return Err(box_err!("missing snapshot file {}", s.path()));
         }
         check_abort(&abort)?;
-        self.coprocessor_host.pre_handle_snapshot(&region, *peer_id, &snap_key, &s);
+        self.coprocessor_host.pre_handle_snapshot(region_state.get_region(), *peer_id, &snap_key, &s);
         info!(
             "pre handle snapshot";
             "region_id" => region_id,
@@ -749,7 +747,9 @@ where
             }
             task @ Task::Apply { .. } => {
                 fail_point!("on_region_worker_apply", true, |_| {});
-                self.ctx.pre_handle_snapshot(&task);
+                if let Err(_) = self.ctx.pre_apply_snapshot(&task) {
+                    ()
+                }
                 // to makes sure applying snapshots in order.
                 self.pending_applies.push_back(task);
                 if self.ctx.engine.can_apply_snapshot() {
