@@ -80,19 +80,23 @@ pub trait EngineCreator<EK: KvEngine> {
 struct RocksEngineCreator {
 }
 
-impl EngineCreator<RocksEngine> for RocksEngineCreator {
+impl<EK: KvEngine> EngineCreator<EK> for RocksEngineCreator {
     fn create_test_engine(
         &self,
-        router: Option<RaftRouter<engine_rocks::RocksEngine, RaftTestEngine>>,
+        router: Option<RaftRouter<EK, RaftTestEngine>>,
         limiter: Option<Arc<IORateLimiter>>,
         cfg: &Config,
     ) -> (
-        Engines<engine_rocks::RocksEngine, RaftTestEngine>,
+        Engines<EK, RaftTestEngine>,
         Option<Arc<DataKeyManager>>,
         TempDir,
         LazyWorker<String>,
     ) {
         let (engines, key_mgr, dir, worker) = create_test_engine(router, limiter, cfg);
+        let engines = Engines::<EK, RaftTestEngine> {
+            kv: engines.kv,
+            raft: engines.raft
+        };
         (engines, key_mgr, dir, worker)
     }
 }
