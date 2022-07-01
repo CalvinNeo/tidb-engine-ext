@@ -62,6 +62,43 @@ pub trait Simulator = GeneralSimulator<engine_rocks::RocksEngine>;
 // isn't allocated by pd, and node id, store id are same.
 // E,g, for node 1, the node id and store id are both 1.
 
+pub trait EngineCreator<EK: KvEngine> {
+    fn create_test_engine(
+        router: Option<RaftRouter<EK, RaftTestEngine>>,
+        limiter: Option<Arc<IORateLimiter>>,
+        cfg: &Config,
+    ) -> (
+        Engines<EK, RaftTestEngine>,
+        Option<Arc<DataKeyManager>>,
+        TempDir,
+        LazyWorker<String>,
+    );
+}
+
+struct RocksEngineCreator<EK: KvEngine> {
+    _phantom: std::marker::PhantomData<EK>,
+}
+
+impl<EK: KvEngine> EngineCreator<EK> for RocksEngineCreator<EK> {
+    fn create_test_engine(
+        router: Option<RaftRouter<RocksEngine, RaftTestEngine>>,
+        limiter: Option<Arc<IORateLimiter>>,
+        cfg: &Config,
+    ) -> (
+        Engines<EK, RaftTestEngine>,
+        Option<Arc<DataKeyManager>>,
+        TempDir,
+        LazyWorker<String>,
+    ) {
+        let (engines, key_mgr, dir, worker) = create_test_engine(router, limiter, cfg);
+        let engines = Engines::<EK, RaftTestEngine> {
+            kv: engines.kv,
+            raft: engines.raft,
+        };
+        (engines, key_mgr, dir, worker)
+    }
+}
+
 pub trait GeneralSimulator<EK: KvEngine> {
     // Pass 0 to let pd allocate a node id if db is empty.
     // If node id > 0, the node must be created in db already,
@@ -236,7 +273,7 @@ impl<T: GeneralSimulator<EK>, EK: KvEngine> GeneralCluster<T, EK> {
 
     fn create_engine(&mut self, router: Option<RaftRouter<EK, RaftTestEngine>>) {
         let (engines, key_manager, dir, sst_worker) =
-            create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
+            EngineCreator::<EK>::create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
         self.dbs.push(engines);
         self.key_managers.push(key_manager);
         self.paths.push(dir);
