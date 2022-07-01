@@ -51,6 +51,8 @@ use tikv_util::timer::GLOBAL_TIMER_HANDLE;
 use tikv_util::topn::TopN;
 use tikv_util::worker::{Runnable, RunnableWithTimer, ScheduleError, Scheduler};
 use tikv_util::{box_err, box_try, debug, error, info, thd_name, warn};
+use engine_traits::Engines;
+use crate::coprocessor::CoprocessorHost;
 
 type RecordPairVec = Vec<pdpb::RecordPair>;
 
@@ -779,6 +781,7 @@ where
     snap_mgr: SnapManager,
     remote: Remote<yatp::task::future::TaskCell>,
     slow_score: SlowScore,
+    coprocessor_host: CoprocessorHost<EK>,
 }
 
 impl<EK, ER, T> Runner<EK, ER, T>
@@ -802,6 +805,7 @@ where
         remote: Remote<yatp::task::future::TaskCell>,
         collector_reg_handle: CollectorRegHandle,
         region_read_progress: RegionReadProgressRegistry,
+        coprocessor_host: CoprocessorHost<EK>,
     ) -> Runner<EK, ER, T> {
         let interval = store_heartbeat_interval / Self::INTERVAL_DIVISOR;
         let mut stats_monitor = StatsMonitor::new(
@@ -835,6 +839,7 @@ where
             snap_mgr,
             remote,
             slow_score: SlowScore::new(cfg.inspect_interval.0),
+            coprocessor_host,
         }
     }
 
@@ -1029,6 +1034,7 @@ where
         send_detailed_report: bool,
         dr_autosync_status: Option<StoreDrAutoSyncStatus>,
     ) {
+        debug!("!!!!!!! handle_store_heartbeat");
         let disk_stats = match fs2::statvfs(store_info.kv_engine.path()) {
             Err(e) => {
                 error!(
@@ -1069,35 +1075,37 @@ where
 
         stats = collect_report_read_peer_stats(HOTSPOT_REPORT_CAPACITY, report_peers, stats);
 
-        let disk_cap = disk_stats.total_space();
-        let capacity = if store_info.capacity == 0 || disk_cap < store_info.capacity {
-            disk_cap
+        let (capacity, used_size, available) = if let Some(engine_size) = self.coprocessor_host.on_compute_engine_size() {
+            (engine_size.capacity, engine_size.used, engine_size.avail)
         } else {
-            store_info.capacity
-        };
-        let capacity = 50 * 1024 * 1024 * 1024;
-        stats.set_capacity(capacity);
-
-        let used_size = self.snap_mgr.get_total_snap_size().unwrap()
-            + store_info
+            let disk_cap = disk_stats.total_space();
+            let capacity = if store_info.capacity == 0 || disk_cap < store_info.capacity {
+                disk_cap
+            } else {
+                store_info.capacity
+            };
+            let used_size = self.snap_mgr.get_total_snap_size().unwrap()
+                + store_info
                 .kv_engine
                 .get_engine_used_size()
                 .expect("kv engine used size")
-            + store_info
+                + store_info
                 .raft_engine
                 .get_engine_size()
                 .expect("raft engine used size");
+            let mut available = capacity.checked_sub(used_size).unwrap_or_default();
+            // We only care about rocksdb SST file size, so we should check disk available here.
+            available = cmp::min(available, disk_stats.available_space());
+            (capacity, used_size, available)
+        };
+
+        stats.set_capacity(capacity);
         stats.set_used_size(used_size);
-
-        let mut available = capacity.checked_sub(used_size).unwrap_or_default();
-        // We only care about rocksdb SST file size, so we should check disk available here.
-        available = cmp::min(available, disk_stats.available_space());
-
         if available == 0 {
             warn!("no available space");
         }
-
         stats.set_available(available);
+
         stats.set_bytes_read(
             self.store_stat.engine_total_bytes_read - self.store_stat.engine_last_total_bytes_read,
         );

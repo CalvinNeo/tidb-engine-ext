@@ -26,7 +26,7 @@ pub use self::config::{Config, ConsistencyCheckMethod};
 pub use self::consistency_check::{ConsistencyCheckObserver, Raw as RawConsistencyCheckObserver};
 pub use self::dispatcher::{
     BoxAdminObserver, BoxApplySnapshotObserver, BoxCmdObserver, BoxConsistencyCheckObserver,
-    BoxQueryObserver, BoxRegionChangeObserver, BoxRoleObserver, BoxSplitCheckObserver,
+    BoxQueryObserver, BoxRegionChangeObserver, BoxRoleObserver, BoxSplitCheckObserver, BoxPdTaskObserver,
     CoprocessorHost, Registry,
 };
 pub use self::error::{Error, Result};
@@ -68,6 +68,7 @@ impl<'a> ObserverContext<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct RegionState {
     pub peer_id: u64,
     pub pending_remove: bool,
@@ -169,6 +170,18 @@ pub trait SplitCheckObserver<E>: Coprocessor {
         _: &E,
         policy: CheckPolicy,
     );
+}
+
+#[derive(Debug, Default)]
+pub struct EngineSize {
+    pub capacity: u64,
+    pub used: u64,
+    pub avail: u64,
+}
+
+pub trait PdTaskObserver: Coprocessor {
+    /// Compute capacity/used/available size of this store.
+    fn on_compute_engine_size(&self, _: &mut Option<EngineSize>) {}
 }
 
 pub struct RoleChange {
