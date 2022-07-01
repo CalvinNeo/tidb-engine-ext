@@ -611,7 +611,7 @@ impl ServerCluster {
     }
 }
 
-impl Simulator for ServerCluster {
+impl GeneralSimulator<engine_rocks::RocksEngine> for ServerCluster {
     fn run_node(
         &mut self,
         node_id: u64,

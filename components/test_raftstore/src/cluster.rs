@@ -14,10 +14,7 @@ use crossbeam::channel::TrySendError;
 use encryption_export::DataKeyManager;
 use engine_rocks::{raw::DB, Compat, RocksEngine, RocksSnapshot};
 use engine_test::raft::RaftTestEngine;
-use engine_traits::{
-    CompactExt, Engines, Iterable, MiscExt, Mutable, Peekable, RaftEngineReadOnly, WriteBatch,
-    WriteBatchExt, CF_DEFAULT, CF_RAFT,
-};
+use engine_traits::{CompactExt, Engines, Iterable, MiscExt, Mutable, Peekable, RaftEngineReadOnly, WriteBatch, WriteBatchExt, CF_DEFAULT, CF_RAFT, KvEngine};
 use file_system::IORateLimiter;
 use futures::executor::block_on;
 use kvproto::{
@@ -57,12 +54,15 @@ use tikv_util::{
 use super::*;
 use crate::Config;
 
+pub type Cluster<T> = GeneralCluster<T, engine_rocks::RocksEngine>;
+pub trait Simulator = GeneralSimulator<engine_rocks::RocksEngine>;
+
 // We simulate 3 or 5 nodes, each has a store.
 // Sometimes, we use fixed id to test, which means the id
 // isn't allocated by pd, and node id, store id are same.
 // E,g, for node 1, the node id and store id are both 1.
 
-pub trait Simulator {
+pub trait GeneralSimulator<EK: KvEngine> {
     // Pass 0 to let pd allocate a node id if db is empty.
     // If node id > 0, the node must be created in db already,
     // and the node id must be the same as given argument.
@@ -72,11 +72,11 @@ pub trait Simulator {
         &mut self,
         node_id: u64,
         cfg: Config,
-        engines: Engines<RocksEngine, RaftTestEngine>,
+        engines: Engines<EK, RaftTestEngine>,
         store_meta: Arc<Mutex<StoreMeta>>,
         key_manager: Option<Arc<DataKeyManager>>,
-        router: RaftRouter<RocksEngine, RaftTestEngine>,
-        system: RaftBatchSystem<RocksEngine, RaftTestEngine>,
+        router: RaftRouter<EK, RaftTestEngine>,
+        system: RaftBatchSystem<EK, RaftTestEngine>,
     ) -> ServerResult<u64>;
     fn stop_node(&mut self, node_id: u64);
     fn get_node_ids(&self) -> HashSet<u64>;
@@ -98,7 +98,7 @@ pub trait Simulator {
     fn send_raft_msg(&mut self, msg: RaftMessage) -> Result<()>;
     fn get_snap_dir(&self, node_id: u64) -> String;
     fn get_snap_mgr(&self, node_id: u64) -> &SnapManager;
-    fn get_router(&self, node_id: u64) -> Option<RaftRouter<RocksEngine, RaftTestEngine>>;
+    fn get_router(&self, node_id: u64) -> Option<RaftRouter<EK, RaftTestEngine>>;
     fn add_send_filter(&mut self, node_id: u64, filter: Box<dyn Filter>);
     fn clear_send_filters(&mut self, node_id: u64);
     fn add_recv_filter(&mut self, node_id: u64, filter: Box<dyn Filter>);
@@ -151,17 +151,17 @@ pub trait Simulator {
     }
 }
 
-pub struct Cluster<T: Simulator> {
+pub struct GeneralCluster<T: GeneralSimulator<EK>, EK: KvEngine> {
     pub cfg: Config,
     leaders: HashMap<u64, metapb::Peer>,
     pub count: usize,
 
     pub paths: Vec<TempDir>,
-    pub dbs: Vec<Engines<RocksEngine, RaftTestEngine>>,
+    pub dbs: Vec<Engines<EK, RaftTestEngine>>,
     pub store_metas: HashMap<u64, Arc<Mutex<StoreMeta>>>,
     key_managers: Vec<Option<Arc<DataKeyManager>>>,
     pub io_rate_limiter: Option<Arc<IORateLimiter>>,
-    pub engines: HashMap<u64, Engines<RocksEngine, RaftTestEngine>>,
+    pub engines: HashMap<u64, Engines<EK, RaftTestEngine>>,
     key_managers_map: HashMap<u64, Option<Arc<DataKeyManager>>>,
     pub labels: HashMap<u64, HashMap<String, String>>,
     group_props: HashMap<u64, GroupProperties>,
@@ -171,7 +171,7 @@ pub struct Cluster<T: Simulator> {
     pub pd_client: Arc<TestPdClient>,
 }
 
-impl<T: Simulator> Cluster<T> {
+impl<T: GeneralSimulator<EK>, EK: KvEngine> GeneralCluster<T, EK> {
     // Create the default Store cluster.
     pub fn new(
         id: u64,
@@ -179,9 +179,9 @@ impl<T: Simulator> Cluster<T> {
         sim: Arc<RwLock<T>>,
         pd_client: Arc<TestPdClient>,
         api_version: ApiVersion,
-    ) -> Cluster<T> {
+    ) -> GeneralCluster<T, EK> {
         // TODO: In the future, maybe it's better to test both case where `use_delete_range` is true and false
-        Cluster {
+        GeneralCluster {
             cfg: Config {
                 tikv: new_tikv_config_with_api_ver(id, api_version),
                 prefer_mem: true,
@@ -222,10 +222,10 @@ impl<T: Simulator> Cluster<T> {
     }
 
     /// Engines in a just created cluster are not bootstraped, which means they are not associated
-    /// with a `node_id`. Call `Cluster::start` can bootstrap all nodes in the cluster.
+    /// with a `node_id`. Call `GeneralCluster::start` can bootstrap all nodes in the cluster.
     ///
     /// However sometimes a node can be bootstrapped externally. This function can be called to
-    /// mark them as bootstrapped in `Cluster`.
+    /// mark them as bootstrapped in `GeneralCluster`.
     pub fn set_bootstrapped(&mut self, node_id: u64, offset: usize) {
         let engines = self.dbs[offset].clone();
         let key_mgr = self.key_managers[offset].clone();
@@ -234,7 +234,7 @@ impl<T: Simulator> Cluster<T> {
         assert!(self.sst_workers_map.insert(node_id, offset).is_none());
     }
 
-    fn create_engine(&mut self, router: Option<RaftRouter<RocksEngine, RaftTestEngine>>) {
+    fn create_engine(&mut self, router: Option<RaftRouter<EK, RaftTestEngine>>) {
         let (engines, key_manager, dir, sst_worker) =
             create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
         self.dbs.push(engines);
@@ -372,14 +372,14 @@ impl<T: Simulator> Cluster<T> {
     }
 
     pub fn get_engine(&self, node_id: u64) -> Arc<DB> {
-        Arc::clone(self.engines[&node_id].kv.as_inner())
+        Arc::clone(self.engines[&node_id].kv.bad_downcast())
     }
 
     pub fn get_raft_engine(&self, node_id: u64) -> RaftTestEngine {
         self.engines[&node_id].raft.clone()
     }
 
-    pub fn get_all_engines(&self, node_id: u64) -> Engines<RocksEngine, RaftTestEngine> {
+    pub fn get_all_engines(&self, node_id: u64) -> Engines<EK, RaftTestEngine> {
         self.engines[&node_id].clone()
     }
 
@@ -743,7 +743,7 @@ impl<T: Simulator> Cluster<T> {
         let half = self.engines.len() / 2;
         let mut qualified_cnt = 0;
         for (id, engines) in &self.engines {
-            if !condition(engines.kv.as_inner()) {
+            if !condition(engines.kv.bad_downcast()) {
                 debug!("store {} is not qualified yet.", id);
                 continue;
             }
@@ -1357,7 +1357,7 @@ impl<T: Simulator> Cluster<T> {
         &mut self,
         region: &metapb::Region,
         split_key: &[u8],
-        cb: Callback<RocksSnapshot>,
+        cb: Callback<EK::Snapshot>,
     ) {
         let leader = self.leader_of_region(region.get_id()).unwrap();
         let router = self.sim.rl().get_router(leader.get_store_id()).unwrap();
@@ -1771,7 +1771,7 @@ impl<T: Simulator> Cluster<T> {
     }
 }
 
-impl<T: Simulator> Drop for Cluster<T> {
+impl<T: GeneralSimulator<EK>, EK: KvEngine> Drop for GeneralCluster<T, EK> {
     fn drop(&mut self) {
         test_util::clear_failpoints();
         self.shutdown();

@@ -214,7 +214,7 @@ impl NodeCluster {
     }
 }
 
-impl Simulator for NodeCluster {
+impl GeneralSimulator<engine_rocks::RocksEngine> for NodeCluster {
     fn run_node(
         &mut self,
         node_id: u64,

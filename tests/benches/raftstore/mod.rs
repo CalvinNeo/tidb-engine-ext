@@ -18,7 +18,7 @@ fn enc_write_kvs(db: &Arc<DB>, kvs: &[(Vec<u8>, Vec<u8>)]) {
     wb.write().unwrap();
 }
 
-fn prepare_cluster<T: Simulator>(cluster: &mut Cluster<T>, initial_kvs: &[(Vec<u8>, Vec<u8>)]) {
+fn prepare_cluster<T: Simulator<engine_rocks::RocksEngine>>(cluster: &mut Cluster<T>, initial_kvs: &[(Vec<u8>, Vec<u8>)]) {
     cluster.run();
     for engines in cluster.engines.values() {
         enc_write_kvs(engines.kv.as_inner(), initial_kvs);
