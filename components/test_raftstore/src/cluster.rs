@@ -64,6 +64,7 @@ pub trait Simulator = GeneralSimulator<engine_rocks::RocksEngine>;
 
 pub trait EngineCreator<EK: KvEngine> {
     fn create_test_engine(
+        &self,
         router: Option<RaftRouter<EK, RaftTestEngine>>,
         limiter: Option<Arc<IORateLimiter>>,
         cfg: &Config,
@@ -75,26 +76,23 @@ pub trait EngineCreator<EK: KvEngine> {
     );
 }
 
-struct RocksEngineCreator<EK: KvEngine> {
-    _phantom: std::marker::PhantomData<EK>,
+#[derive(Default)]
+struct RocksEngineCreator {
 }
 
-impl<EK: KvEngine> EngineCreator<EK> for RocksEngineCreator<EK> {
+impl EngineCreator<RocksEngine> for RocksEngineCreator {
     fn create_test_engine(
-        router: Option<RaftRouter<RocksEngine, RaftTestEngine>>,
+        &self,
+        router: Option<RaftRouter<engine_rocks::RocksEngine, RaftTestEngine>>,
         limiter: Option<Arc<IORateLimiter>>,
         cfg: &Config,
     ) -> (
-        Engines<EK, RaftTestEngine>,
+        Engines<engine_rocks::RocksEngine, RaftTestEngine>,
         Option<Arc<DataKeyManager>>,
         TempDir,
         LazyWorker<String>,
     ) {
         let (engines, key_mgr, dir, worker) = create_test_engine(router, limiter, cfg);
-        let engines = Engines::<EK, RaftTestEngine> {
-            kv: engines.kv,
-            raft: engines.raft,
-        };
         (engines, key_mgr, dir, worker)
     }
 }
@@ -272,8 +270,9 @@ impl<T: GeneralSimulator<EK>, EK: KvEngine> GeneralCluster<T, EK> {
     }
 
     fn create_engine(&mut self, router: Option<RaftRouter<EK, RaftTestEngine>>) {
+        let c = RocksEngineCreator::default();
         let (engines, key_manager, dir, sst_worker) =
-            EngineCreator::<EK>::create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
+            c.create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
         self.dbs.push(engines);
         self.key_managers.push(key_manager);
         self.paths.push(dir);
