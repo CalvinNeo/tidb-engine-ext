@@ -62,44 +62,47 @@ pub trait Simulator = GeneralSimulator<engine_rocks::RocksEngine>;
 // isn't allocated by pd, and node id, store id are same.
 // E,g, for node 1, the node id and store id are both 1.
 
-pub trait EngineCreator<EK: KvEngine> {
-    fn create_test_engine(
-        &self,
-        router: Option<RaftRouter<EK, RaftTestEngine>>,
-        limiter: Option<Arc<IORateLimiter>>,
-        cfg: &Config,
-    ) -> (
-        Engines<EK, RaftTestEngine>,
-        Option<Arc<DataKeyManager>>,
-        TempDir,
-        LazyWorker<String>,
-    );
-}
+// pub trait EngineCreator<EK: KvEngine> {
+//     fn create_test_engine(
+//         &self,
+//         router: Option<RaftRouter<EK, RaftTestEngine>>,
+//         limiter: Option<Arc<IORateLimiter>>,
+//         cfg: &Config,
+//     ) -> (
+//         Engines<EK, RaftTestEngine>,
+//         Option<Arc<DataKeyManager>>,
+//         TempDir,
+//         LazyWorker<String>,
+//     );
+// }
+//
+// #[derive(Default)]
+// struct RocksEngineCreator {
+// }
+//
+// impl<EK: KvEngine> EngineCreator<EK> for RocksEngineCreator {
+//     fn create_test_engine(
+//         &self,
+//         router: Option<RaftRouter<EK, RaftTestEngine>>,
+//         limiter: Option<Arc<IORateLimiter>>,
+//         cfg: &Config,
+//     ) -> (
+//         Engines<EK, RaftTestEngine>,
+//         Option<Arc<DataKeyManager>>,
+//         TempDir,
+//         LazyWorker<String>,
+//     ) {
+//         let (engines, key_mgr, dir, worker) = create_test_engine(router, limiter, cfg);
+//         let engines = Engines::<EK, RaftTestEngine> {
+//             kv: engines.kv,
+//             raft: engines.raft
+//         };
+//         (engines, key_mgr, dir, worker)
+//     }
+// }
 
-#[derive(Default)]
-struct RocksEngineCreator {
-}
-
-impl<EK: KvEngine> EngineCreator<EK> for RocksEngineCreator {
-    fn create_test_engine(
-        &self,
-        router: Option<RaftRouter<EK, RaftTestEngine>>,
-        limiter: Option<Arc<IORateLimiter>>,
-        cfg: &Config,
-    ) -> (
-        Engines<EK, RaftTestEngine>,
-        Option<Arc<DataKeyManager>>,
-        TempDir,
-        LazyWorker<String>,
-    ) {
-        let (engines, key_mgr, dir, worker) = create_test_engine(router, limiter, cfg);
-        let engines = Engines::<EK, RaftTestEngine> {
-            kv: engines.kv,
-            raft: engines.raft
-        };
-        (engines, key_mgr, dir, worker)
-    }
-}
+type TestKvEngineFactory<EK> = fn(Option<RaftRouter<EK, RocksEngine>>, limiter: Option<Arc<IORateLimiter>>, &Config) -> (
+    Engines<EK, RocksEngine>, Option<Arc<DataKeyManager>>, TempDir);
 
 pub trait GeneralSimulator<EK: KvEngine> {
     // Pass 0 to let pd allocate a node id if db is empty.
@@ -274,9 +277,10 @@ impl<T: GeneralSimulator<EK>, EK: KvEngine> GeneralCluster<T, EK> {
     }
 
     fn create_engine(&mut self, router: Option<RaftRouter<EK, RaftTestEngine>>) {
-        let c = RocksEngineCreator::default();
+        // let c = RocksEngineCreator::default();
+        let fac = create_test_engine;
         let (engines, key_manager, dir, sst_worker) =
-            c.create_test_engine(router, self.io_rate_limiter.clone(), &self.cfg);
+            fac(router, self.io_rate_limiter.clone(), &self.cfg);
         self.dbs.push(engines);
         self.key_managers.push(key_manager);
         self.paths.push(dir);

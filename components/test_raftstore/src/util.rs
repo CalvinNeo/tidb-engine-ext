@@ -622,6 +622,56 @@ pub fn must_contains_error(resp: &RaftCmdResponse, msg: &str) {
     assert!(err_msg.contains(msg), "{:?}", resp);
 }
 
+// pub fn create_test_engine(
+//     // TODO: pass it in for all cases.
+//     router: Option<RaftRouter<RocksEngine, RocksEngine>>,
+//     limiter: Option<Arc<IORateLimiter>>,
+//     cfg: &Config,
+// ) -> (
+//     Engines<RocksEngine, RocksEngine>,
+//     Option<Arc<DataKeyManager>>,
+//     TempDir,
+//     LazyWorker<String>,
+// ) {
+//     let dir = test_util::temp_dir("test_cluster", cfg.prefer_mem);
+//     let mut cfg = cfg.clone();
+//     cfg.storage.data_dir = dir.path().to_str().unwrap().to_string();
+//     let key_manager =
+//         data_key_manager_from_config(&cfg.security.encryption, dir.path().to_str().unwrap())
+//             .unwrap()
+//             .map(Arc::new);
+//
+//     let env = get_env(key_manager.clone(), limiter).unwrap();
+//     let cache = cfg.storage.block_cache.build_shared_cache();
+//
+//     let raft_path = dir.path().join("raft");
+//     let raft_path_str = raft_path.to_str().unwrap();
+//
+//     let mut raft_db_opt = cfg.raftdb.build_opt();
+//     raft_db_opt.set_env(env.clone());
+//
+//     let raft_cfs_opt = cfg.raftdb.build_cf_opts(&cache);
+//     let raft_engine = Arc::new(
+//         engine_rocks::raw_util::new_engine_opt(raft_path_str, raft_db_opt, raft_cfs_opt).unwrap(),
+//     );
+//
+//     let sst_worker = LazyWorker::new("sst-recovery");
+//     let scheduler = sst_worker.scheduler();
+//     let mut raft_engine = RocksEngine::from_db(raft_engine);
+//     raft_engine.set_shared_block_cache(cache.is_some());
+//     let mut builder = KvEngineFactoryBuilder::new(env, &cfg, dir.path());
+//     if let Some(cache) = cache {
+//         builder = builder.block_cache(cache);
+//     }
+//     if let Some(router) = router {
+//         builder = builder.compaction_filter_router(router);
+//     }
+//     let factory = builder.build();
+//     let engine = factory.create_shared_db().unwrap();
+//     let engines = Engines::new(engine, raft_engine);
+//     (engines, key_manager, dir, sst_worker)
+// }
+
 pub fn create_test_engine(
     // TODO: pass it in for all cases.
     router: Option<RaftRouter<RocksEngine, RaftTestEngine>>,
