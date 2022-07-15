@@ -14,7 +14,6 @@ use std::{
 };
 
 use engine_rocks::{
-    options::RocksReadOptions,
     rocks_metrics::{
         flush_engine_histogram_metrics, flush_engine_iostall_properties, flush_engine_properties,
         flush_engine_ticker_metrics,

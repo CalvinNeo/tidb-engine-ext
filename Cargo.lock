@@ -81,15 +81,31 @@ name = "api_version"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "codec",
- "engine_traits",
+ "codec 0.0.1",
+ "engine_traits 0.0.1",
  "kvproto",
- "match_template",
+ "match_template 0.0.1",
  "panic_hook",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
- "txn_types",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
+ "txn_types 0.1.0",
+]
+
+[[package]]
+name = "api_version"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "bitflags",
+ "codec 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "engine_traits 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "kvproto",
+ "match_template 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "thiserror",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "txn_types 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
@@ -276,7 +292,7 @@ dependencies = [
  "slog",
  "slog-global",
  "thiserror",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tokio",
  "url",
 ]
@@ -298,7 +314,7 @@ dependencies = [
  "oauth2",
  "slog",
  "slog-global",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tokio",
  "url",
 ]
@@ -393,27 +409,27 @@ dependencies = [
 name = "backup"
 version = "0.0.1"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "async-channel",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crc64fast",
- "encryption",
- "engine_rocks",
- "engine_traits",
- "error_code",
+ "encryption 0.0.1",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "external_storage",
  "external_storage_export",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "futures-util",
  "grpcio",
  "hex 0.4.2",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
- "log_wrappers",
- "online_config",
+ "log_wrappers 0.0.1",
+ "online_config 0.1.0",
  "pd_client",
  "prometheus",
  "raft",
@@ -428,11 +444,11 @@ dependencies = [
  "thiserror",
  "tidb_query_common",
  "tikv",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
  "tokio-stream",
- "txn_types",
+ "txn_types 0.1.0",
  "yatp",
 ]
 
@@ -448,21 +464,21 @@ dependencies = [
  "crossbeam-channel",
  "dashmap",
  "engine_panic",
- "engine_rocks",
- "engine_traits",
- "error_code",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "etcd-client",
  "external_storage",
  "external_storage_export",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "grpcio",
  "hex 0.4.2",
  "kvproto",
  "lazy_static",
- "log_wrappers",
- "online_config",
+ "log_wrappers 0.0.1",
+ "online_config 0.1.0",
  "openssl",
  "pd_client",
  "prometheus",
@@ -480,12 +496,12 @@ dependencies = [
  "thiserror",
  "tidb_query_datatype",
  "tikv",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.2",
- "txn_types",
+ "txn_types 0.1.0",
  "url",
  "uuid",
  "walkdir",
@@ -502,21 +518,21 @@ checksum = "904dfeac50f3cdaba28fc6f57fdcddb75f49ed61346676a78c4ffe55877802fd"
 name = "batch-system"
 version = "0.1.0"
 dependencies = [
- "collections",
+ "collections 0.1.0",
  "criterion",
  "crossbeam",
  "derive_more",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "lazy_static",
- "online_config",
+ "online_config 0.1.0",
  "prometheus",
  "serde",
  "serde_derive",
  "slog",
  "slog-global",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
@@ -701,6 +717,16 @@ name = "case_macros"
 version = "0.1.0"
 
 [[package]]
+name = "case_macros"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+
+[[package]]
+name = "case_macros"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv#5ae20e21af29e6f5c63abbd4db8a481dc04539b6"
+
+[[package]]
 name = "cast"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -710,15 +736,15 @@ checksum = "926013f2860c46252efceabb19f4a6b308197505082c609025aa6706c011d427"
 name = "causal_ts"
 version = "0.0.1"
 dependencies = [
- "api_version",
- "engine_rocks",
- "engine_traits",
- "error_code",
+ "api_version 0.1.0",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "fail",
  "futures 0.3.15",
  "kvproto",
  "lazy_static",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "parking_lot 0.12.0",
  "pd_client",
  "prometheus",
@@ -730,10 +756,10 @@ dependencies = [
  "slog-global",
  "test_raftstore",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
- "txn_types",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
@@ -749,24 +775,24 @@ dependencies = [
 name = "cdc"
 version = "0.0.1"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "bitflags",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "criterion",
  "crossbeam",
- "engine_rocks",
- "engine_traits",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
  "fail",
  "futures 0.3.15",
  "futures-timer",
  "getset",
  "grpcio",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
- "log_wrappers",
- "online_config",
+ "log_wrappers 0.0.1",
+ "online_config 0.1.0",
  "pd_client",
  "prometheus",
  "prometheus-static-metric",
@@ -784,9 +810,9 @@ dependencies = [
  "thiserror",
  "tikv",
  "tikv_kv",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tokio",
- "txn_types",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
@@ -873,7 +899,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "derive_more",
- "error_code",
+ "error_code 0.0.1",
  "fail",
  "futures-io",
  "kvproto",
@@ -883,7 +909,7 @@ dependencies = [
  "protobuf",
  "rusoto_core",
  "thiserror",
- "tikv_util",
+ "tikv_util 0.1.0",
  "url",
 ]
 
@@ -902,14 +928,27 @@ version = "0.0.1"
 dependencies = [
  "byteorder",
  "bytes",
- "error_code",
+ "error_code 0.0.1",
  "libc 0.2.125",
  "panic_hook",
  "protobuf",
  "rand 0.8.3",
  "static_assertions",
  "thiserror",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
+]
+
+[[package]]
+name = "codec"
+version = "0.0.1"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "byteorder",
+ "error_code 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "libc 0.2.125",
+ "static_assertions",
+ "thiserror",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
@@ -917,7 +956,16 @@ name = "collections"
 version = "0.1.0"
 dependencies = [
  "fxhash",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
+]
+
+[[package]]
+name = "collections"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "fxhash",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
@@ -931,10 +979,10 @@ dependencies = [
  "kvproto",
  "parking_lot 0.12.0",
  "rand 0.8.3",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
- "txn_types",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
@@ -1355,17 +1403,17 @@ dependencies = [
  "crc32fast",
  "crossbeam",
  "derive_more",
- "engine_traits",
- "error_code",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "futures-util",
  "hex 0.4.2",
  "kvproto",
  "lazy_static",
  "matches",
- "online_config",
+ "online_config 0.1.0",
  "openssl",
  "prometheus",
  "protobuf",
@@ -1377,10 +1425,45 @@ dependencies = [
  "tempfile",
  "test_util",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "encryption"
+version = "0.0.1"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "async-trait",
+ "byteorder",
+ "bytes",
+ "crc32fast",
+ "crossbeam",
+ "derive_more",
+ "engine_traits 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "error_code 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "fail",
+ "file_system 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "futures 0.3.15",
+ "futures-util",
+ "hex 0.4.2",
+ "kvproto",
+ "lazy_static",
+ "online_config 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "openssl",
+ "prometheus",
+ "protobuf",
+ "rand 0.8.3",
+ "serde",
+ "serde_derive",
+ "slog",
+ "slog-global",
+ "thiserror",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tokio",
 ]
 
 [[package]]
@@ -1391,9 +1474,9 @@ dependencies = [
  "aws",
  "cloud",
  "derive_more",
- "encryption",
- "error_code",
- "file_system",
+ "encryption 0.0.1",
+ "error_code 0.0.1",
+ "file_system 0.1.0",
  "kvproto",
  "openssl",
  "protobuf",
@@ -1401,39 +1484,39 @@ dependencies = [
  "slog",
  "slog-global",
  "structopt",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
 name = "engine_panic"
 version = "0.0.1"
 dependencies = [
- "engine_traits",
+ "engine_traits 0.0.1",
  "kvproto",
  "raft",
- "tikv_alloc",
- "tikv_util",
- "txn_types",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
 name = "engine_rocks"
 version = "0.0.1"
 dependencies = [
- "api_version",
- "case_macros",
- "collections",
+ "api_version 0.1.0",
+ "case_macros 0.1.0",
+ "collections 0.1.0",
  "derive_more",
- "encryption",
- "engine_traits",
+ "encryption 0.0.1",
+ "engine_traits 0.0.1",
  "fail",
- "file_system",
- "keys",
+ "file_system 0.1.0",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "num_cpus",
- "online_config",
+ "online_config 0.1.0",
  "prometheus",
  "prometheus-static-metric",
  "protobuf",
@@ -1447,22 +1530,59 @@ dependencies = [
  "slog-global",
  "slog_derive",
  "tempfile",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "time",
  "toml",
- "txn_types",
+ "txn_types 0.1.0",
+]
+
+[[package]]
+name = "engine_rocks"
+version = "0.0.1"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "api_version 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "case_macros 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "collections 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "derive_more",
+ "encryption 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "engine_traits 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "fail",
+ "file_system 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "keys 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "kvproto",
+ "lazy_static",
+ "log_wrappers 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "num_cpus",
+ "online_config 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "prometheus",
+ "prometheus-static-metric",
+ "protobuf",
+ "raft",
+ "regex",
+ "rocksdb",
+ "serde",
+ "serde_derive",
+ "slog",
+ "slog-global",
+ "slog_derive",
+ "tempfile",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "time",
+ "txn_types 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
 name = "engine_rocks_helper"
 version = "0.1.0"
 dependencies = [
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_test",
  "fail",
  "futures 0.3.15",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
  "pd_client",
@@ -1472,44 +1592,44 @@ dependencies = [
  "slog",
  "slog-global",
  "tempfile",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
 name = "engine_test"
 version = "0.0.1"
 dependencies = [
- "encryption",
+ "encryption 0.0.1",
  "engine_panic",
- "engine_rocks",
- "engine_traits",
- "file_system",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
+ "file_system 0.1.0",
  "raft_log_engine",
  "tempfile",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
 name = "engine_tiflash"
 version = "0.0.1"
 dependencies = [
- "api_version",
- "case_macros",
- "collections",
+ "api_version 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "case_macros 0.1.0 (git+https://github.com/tikv/tikv)",
+ "collections 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "derive_more",
- "encryption",
- "engine_rocks",
- "engine_traits",
+ "encryption 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "engine_rocks 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "engine_traits 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "fail",
- "file_system",
- "keys",
+ "file_system 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "keys 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "kvproto",
  "lazy_static",
  "libc 0.2.125",
- "log_wrappers",
+ "log_wrappers 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "num_cpus",
- "online_config",
+ "online_config 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "prometheus",
  "prometheus-static-metric",
  "protobuf",
@@ -1523,11 +1643,11 @@ dependencies = [
  "slog-global",
  "slog_derive",
  "tempfile",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "time",
  "toml",
- "txn_types",
+ "txn_types 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "yatp",
 ]
 
@@ -1535,12 +1655,12 @@ dependencies = [
 name = "engine_traits"
 version = "0.0.1"
 dependencies = [
- "case_macros",
- "error_code",
+ "case_macros 0.1.0",
+ "error_code 0.0.1",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "kvproto",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "protobuf",
  "raft",
  "serde",
@@ -1548,10 +1668,32 @@ dependencies = [
  "slog",
  "slog-global",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "toml",
- "txn_types",
+ "txn_types 0.1.0",
+]
+
+[[package]]
+name = "engine_traits"
+version = "0.0.1"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "case_macros 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "error_code 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "fail",
+ "file_system 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "kvproto",
+ "log_wrappers 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "protobuf",
+ "raft",
+ "serde",
+ "slog",
+ "slog-global",
+ "thiserror",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "txn_types 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
@@ -1559,10 +1701,10 @@ name = "engine_traits_tests"
 version = "0.0.1"
 dependencies = [
  "engine_test",
- "engine_traits",
+ "engine_traits 0.0.1",
  "panic_hook",
  "tempfile",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
 ]
 
 [[package]]
@@ -1607,7 +1749,20 @@ dependencies = [
  "lazy_static",
  "raft",
  "serde",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
+]
+
+[[package]]
+name = "error_code"
+version = "0.0.1"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "grpcio",
+ "kvproto",
+ "lazy_static",
+ "raft",
+ "serde",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
@@ -1645,11 +1800,11 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "bytes",
- "encryption",
- "engine_traits",
+ "encryption 0.0.1",
+ "engine_traits 0.0.1",
  "fail",
  "ffi-support",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "futures-executor",
  "futures-io",
@@ -1669,8 +1824,8 @@ dependencies = [
  "slog-global",
  "structopt",
  "tempfile",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
  "tokio-util 0.7.2",
  "url",
@@ -1684,11 +1839,11 @@ dependencies = [
  "aws",
  "azure",
  "cloud",
- "encryption",
- "engine_traits",
+ "encryption 0.0.1",
+ "engine_traits 0.0.1",
  "external_storage",
  "ffi-support",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "futures-executor",
  "futures-io",
@@ -1710,7 +1865,7 @@ dependencies = [
  "slog-term",
  "structopt",
  "tempfile",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tokio",
  "tokio-util 0.7.2",
  "url",
@@ -1748,7 +1903,7 @@ name = "file_system"
 version = "0.1.0"
 dependencies = [
  "bcc",
- "collections",
+ "collections 0.1.0",
  "crc32fast",
  "crossbeam-utils 0.8.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "fs2",
@@ -1756,7 +1911,7 @@ dependencies = [
  "libc 0.2.125",
  "maligned",
  "nix 0.23.0",
- "online_config",
+ "online_config 0.1.0",
  "openssl",
  "parking_lot 0.12.0",
  "prometheus",
@@ -1768,8 +1923,36 @@ dependencies = [
  "strum",
  "tempfile",
  "thread_local",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
+ "tokio",
+]
+
+[[package]]
+name = "file_system"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "collections 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "crc32fast",
+ "crossbeam-utils 0.8.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fs2",
+ "lazy_static",
+ "libc 0.2.125",
+ "nix 0.23.0",
+ "online_config 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "openssl",
+ "parking_lot 0.12.0",
+ "prometheus",
+ "prometheus-static-metric",
+ "rand 0.8.3",
+ "serde",
+ "slog",
+ "slog-global",
+ "strum",
+ "thread_local",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
  "tokio",
 ]
 
@@ -2050,7 +2233,7 @@ dependencies = [
  "anyhow",
  "byteorder",
  "tidb_query_datatype",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
@@ -2112,7 +2295,7 @@ dependencies = [
  "slog-global",
  "tame-gcs",
  "tame-oauth",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tokio",
  "url",
 ]
@@ -2524,7 +2707,7 @@ dependencies = [
 name = "into_other"
 version = "0.0.1"
 dependencies = [
- "engine_traits",
+ "engine_traits 0.0.1",
  "kvproto",
  "raft",
 ]
@@ -2619,11 +2802,24 @@ version = "0.1.0"
 dependencies = [
  "byteorder",
  "kvproto",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "panic_hook",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
+]
+
+[[package]]
+name = "keys"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "byteorder",
+ "kvproto",
+ "log_wrappers 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "thiserror",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
@@ -2842,7 +3038,19 @@ dependencies = [
  "protobuf",
  "slog",
  "slog-term",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
+]
+
+[[package]]
+name = "log_wrappers"
+version = "0.0.1"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "hex 0.4.2",
+ "protobuf",
+ "slog",
+ "slog-term",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]
@@ -2864,6 +3072,16 @@ checksum = "7e88c3cbe8288f77f293e48a28b3232e3defd203a6d839fa7f68ea4329e83464"
 [[package]]
 name = "match_template"
 version = "0.0.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "match_template"
+version = "0.0.1"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3057,11 +3275,11 @@ dependencies = [
 name = "mock-engine-store"
 version = "0.0.1"
 dependencies = [
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_test",
- "engine_traits",
+ "engine_traits 0.0.1",
  "fail",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "protobuf",
  "proxy_server",
@@ -3069,7 +3287,7 @@ dependencies = [
  "server",
  "slog",
  "slog-global",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
@@ -3146,23 +3364,23 @@ dependencies = [
 name = "new-mock-engine-store"
 version = "0.0.1"
 dependencies = [
- "api_version",
- "collections",
+ "api_version 0.1.0",
+ "collections 0.1.0",
  "concurrency_manager",
  "crossbeam",
- "encryption",
+ "encryption 0.0.1",
  "encryption_export",
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_test",
  "engine_tiflash",
- "engine_traits",
+ "engine_traits 0.0.1",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "pd_client",
  "protobuf",
  "proxy_server",
@@ -3176,7 +3394,7 @@ dependencies = [
  "test_raftstore",
  "test_util",
  "tikv",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
@@ -3466,15 +3684,34 @@ checksum = "87f3e037eac156d1775da914196f0f37741a274155e34a0b7e427c35d2a2ecb9"
 name = "online_config"
 version = "0.1.0"
 dependencies = [
- "online_config_derive",
+ "online_config_derive 0.1.0",
  "serde",
  "serde_derive",
  "toml",
 ]
 
 [[package]]
+name = "online_config"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "online_config_derive 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "serde",
+]
+
+[[package]]
 name = "online_config_derive"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "online_config_derive"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3635,15 +3872,15 @@ checksum = "c5d65c4d95931acda4498f675e332fcbdc9a06705cd07086c510e9b6009cd1c1"
 name = "pd_client"
 version = "0.1.0"
 dependencies = [
- "collections",
- "error_code",
+ "collections 0.1.0",
+ "error_code 0.0.1",
  "fail",
  "futures 0.3.15",
  "grpcio",
  "kvproto",
  "lazy_static",
  "log",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "prometheus",
  "security",
  "semver 0.10.0",
@@ -3652,11 +3889,11 @@ dependencies = [
  "slog",
  "slog-global",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
  "tokio-timer",
- "txn_types",
+ "txn_types 0.1.0",
  "yatp",
 ]
 
@@ -3950,7 +4187,7 @@ dependencies = [
  "callgrind",
  "gperftools",
  "lazy_static",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
  "valgrind_request",
 ]
 
@@ -4102,36 +4339,36 @@ dependencies = [
 name = "proxy_server"
 version = "0.0.1"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "backup",
  "backup-stream",
  "causal_ts",
  "cdc",
  "chrono",
  "clap",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crossbeam",
- "encryption",
+ "encryption 0.0.1",
  "encryption_export",
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_rocks_helper",
- "engine_traits",
- "error_code",
- "file_system",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
+ "file_system 0.1.0",
  "fs2",
  "futures 0.3.15",
  "grpcio",
  "grpcio-health",
  "hex 0.4.2",
  "itertools 0.10.0",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "libc 0.2.125",
  "log",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "nix 0.23.0",
- "online_config",
+ "online_config 0.1.0",
  "pd_client",
  "prometheus",
  "protobuf",
@@ -4152,11 +4389,11 @@ dependencies = [
  "slog-global",
  "tempfile",
  "tikv",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
  "toml",
- "txn_types",
+ "txn_types 0.1.0",
  "yatp",
 ]
 
@@ -4237,13 +4474,13 @@ dependencies = [
 name = "raft_log_engine"
 version = "0.0.1"
 dependencies = [
- "encryption",
- "engine_traits",
- "file_system",
+ "encryption 0.0.1",
+ "engine_traits 0.0.1",
+ "file_system 0.1.0",
  "kvproto",
  "lazy_static",
  "num_cpus",
- "online_config",
+ "online_config 0.1.0",
  "protobuf",
  "raft",
  "raft-engine",
@@ -4251,7 +4488,7 @@ dependencies = [
  "serde_derive",
  "slog",
  "slog-global",
- "tikv_util",
+ "tikv_util 0.1.0",
  "time",
 ]
 
@@ -4263,21 +4500,21 @@ dependencies = [
  "bitflags",
  "byteorder",
  "bytes",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crc32fast",
  "crossbeam",
  "derivative",
- "encryption",
+ "encryption 0.0.1",
  "encryption_export",
  "engine_panic",
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_test",
  "engine_tiflash",
- "engine_traits",
- "error_code",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "fs2",
  "futures 0.3.15",
  "futures-util",
@@ -4285,13 +4522,13 @@ dependencies = [
  "grpcio-health",
  "into_other",
  "itertools 0.10.0",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
  "log",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "memory_trace_macros",
- "online_config",
+ "online_config 0.1.0",
  "openssl",
  "ordered-float 2.7.0",
  "panic_hook",
@@ -4315,11 +4552,11 @@ dependencies = [
  "test_sst_importer",
  "thiserror",
  "tidb_query_datatype",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "time",
  "tokio",
- "txn_types",
+ "txn_types 0.1.0",
  "uuid",
  "yatp",
 ]
@@ -4600,19 +4837,19 @@ dependencies = [
 name = "resolved_ts"
 version = "0.0.1"
 dependencies = [
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crossbeam",
- "engine_rocks",
- "engine_traits",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
  "fail",
  "futures 0.3.15",
  "grpcio",
  "hex 0.4.2",
  "kvproto",
  "lazy_static",
- "log_wrappers",
- "online_config",
+ "log_wrappers 0.0.1",
+ "online_config 0.1.0",
  "panic_hook",
  "pd_client",
  "prometheus",
@@ -4628,16 +4865,16 @@ dependencies = [
  "thiserror",
  "tikv",
  "tikv_kv",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tokio",
- "txn_types",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
 name = "resource_metering"
 version = "0.0.1"
 dependencies = [
- "collections",
+ "collections 0.1.0",
  "crossbeam",
  "futures 0.3.15",
  "grpcio",
@@ -4645,7 +4882,7 @@ dependencies = [
  "lazy_static",
  "libc 0.2.125",
  "log",
- "online_config",
+ "online_config 0.1.0",
  "pdqselect",
  "pin-project",
  "procinfo",
@@ -4656,7 +4893,7 @@ dependencies = [
  "slog",
  "slog-global",
  "thread-id",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
@@ -4920,14 +5157,14 @@ checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
 name = "security"
 version = "0.0.1"
 dependencies = [
- "collections",
- "encryption",
+ "collections 0.1.0",
+ "encryption 0.0.1",
  "grpcio",
  "serde",
  "serde_derive",
  "serde_json",
  "tempfile",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
@@ -5111,36 +5348,36 @@ dependencies = [
 name = "server"
 version = "0.0.1"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "backup",
  "backup-stream",
  "causal_ts",
  "cdc",
  "chrono",
  "clap",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crossbeam",
- "encryption",
+ "encryption 0.0.1",
  "encryption_export",
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_rocks_helper",
- "engine_traits",
- "error_code",
- "file_system",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
+ "file_system 0.1.0",
  "fs2",
  "futures 0.3.15",
  "grpcio",
  "grpcio-health",
  "hex 0.4.2",
  "itertools 0.10.0",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "libc 0.2.125",
  "log",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "nix 0.23.0",
- "online_config",
+ "online_config 0.1.0",
  "pd_client",
  "prometheus",
  "protobuf",
@@ -5160,11 +5397,11 @@ dependencies = [
  "slog-global",
  "tempfile",
  "tikv",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
  "toml",
- "txn_types",
+ "txn_types 0.1.0",
  "yatp",
 ]
 
@@ -5343,22 +5580,22 @@ checksum = "6e63cff320ae2c57904679ba7cb63280a3dc4613885beafb148ee7bf9aa9042d"
 name = "sst_importer"
 version = "0.1.0"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "crc32fast",
  "dashmap",
- "encryption",
- "engine_rocks",
- "engine_traits",
- "error_code",
+ "encryption 0.0.1",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "external_storage_export",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "futures-util",
  "grpcio",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "openssl",
  "prometheus",
  "serde",
@@ -5369,10 +5606,10 @@ dependencies = [
  "test_sst_importer",
  "test_util",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tokio",
- "txn_types",
+ "txn_types 0.1.0",
  "uuid",
 ]
 
@@ -5619,14 +5856,14 @@ dependencies = [
 name = "test_backup"
 version = "0.0.1"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "backup",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crc64fast",
- "engine_traits",
+ "engine_traits 0.0.1",
  "external_storage_export",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "futures-executor",
  "futures-util",
@@ -5638,18 +5875,18 @@ dependencies = [
  "test_raftstore",
  "tidb_query_common",
  "tikv",
- "tikv_util",
- "txn_types",
+ "tikv_util 0.1.0",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
 name = "test_coprocessor"
 version = "0.0.1"
 dependencies = [
- "api_version",
- "collections",
+ "api_version 0.1.0",
+ "collections 0.1.0",
  "concurrency_manager",
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "futures 0.3.15",
  "kvproto",
  "protobuf",
@@ -5658,16 +5895,16 @@ dependencies = [
  "tidb_query_common",
  "tidb_query_datatype",
  "tikv",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tipb",
- "txn_types",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
 name = "test_pd"
 version = "0.0.1"
 dependencies = [
- "collections",
+ "collections 0.1.0",
  "fail",
  "futures 0.3.15",
  "grpcio",
@@ -5676,33 +5913,33 @@ dependencies = [
  "security",
  "slog",
  "slog-global",
- "tikv_util",
+ "tikv_util 0.1.0",
 ]
 
 [[package]]
 name = "test_raftstore"
 version = "0.0.1"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "backtrace",
  "causal_ts",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crossbeam",
  "encryption_export",
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_rocks_helper",
  "engine_test",
- "engine_traits",
+ "engine_traits 0.0.1",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "grpcio",
  "grpcio-health",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "mock-engine-store",
  "pd_client",
  "protobuf",
@@ -5718,10 +5955,10 @@ dependencies = [
  "tempfile",
  "test_util",
  "tikv",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tokio",
  "tokio-timer",
- "txn_types",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
@@ -5729,9 +5966,9 @@ name = "test_sst_importer"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
- "engine_rocks",
- "engine_traits",
- "keys",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
+ "keys 0.1.0",
  "kvproto",
  "uuid",
 ]
@@ -5740,16 +5977,16 @@ dependencies = [
 name = "test_storage"
 version = "0.0.1"
 dependencies = [
- "api_version",
- "collections",
+ "api_version 0.1.0",
+ "collections 0.1.0",
  "futures 0.3.15",
  "kvproto",
  "pd_client",
  "raftstore",
  "test_raftstore",
  "tikv",
- "tikv_util",
- "txn_types",
+ "tikv_util 0.1.0",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
@@ -5757,7 +5994,7 @@ name = "test_util"
 version = "0.0.1"
 dependencies = [
  "backtrace",
- "collections",
+ "collections 0.1.0",
  "encryption_export",
  "fail",
  "grpcio",
@@ -5768,7 +6005,7 @@ dependencies = [
  "slog",
  "slog-global",
  "tempfile",
- "tikv_util",
+ "tikv_util 0.1.0",
  "time",
 ]
 
@@ -5776,40 +6013,40 @@ dependencies = [
 name = "tests"
 version = "0.0.1"
 dependencies = [
- "api_version",
+ "api_version 0.1.0",
  "arrow",
  "batch-system",
  "byteorder",
  "causal_ts",
  "cdc",
- "collections",
+ "collections 0.1.0",
  "concurrency_manager",
  "crc64fast",
  "criterion",
  "criterion-cpu-time",
  "criterion-perf-events",
  "crossbeam",
- "encryption",
- "engine_rocks",
+ "encryption 0.0.1",
+ "engine_rocks 0.0.1",
  "engine_rocks_helper",
  "engine_tiflash",
- "engine_traits",
- "error_code",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "external_storage_export",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "grpcio",
  "grpcio-health",
  "hyper",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "libc 0.2.125",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "mock-engine-store",
  "more-asserts",
  "new-mock-engine-store",
- "online_config",
+ "online_config 0.1.0",
  "panic_hook",
  "paste",
  "pd_client",
@@ -5844,13 +6081,13 @@ dependencies = [
  "tidb_query_executors",
  "tidb_query_expr",
  "tikv",
- "tikv_util",
+ "tikv_util 0.1.0",
  "time",
  "tipb",
  "tipb_helper",
  "tokio",
  "toml",
- "txn_types",
+ "txn_types 0.1.0",
  "uuid",
 ]
 
@@ -5907,13 +6144,13 @@ dependencies = [
 name = "tidb_query_aggr"
 version = "0.0.1"
 dependencies = [
- "match_template",
+ "match_template 0.0.1",
  "panic_hook",
  "tidb_query_codegen",
  "tidb_query_common",
  "tidb_query_datatype",
  "tidb_query_expr",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tipb",
  "tipb_helper",
 ]
@@ -5936,15 +6173,15 @@ dependencies = [
  "anyhow",
  "byteorder",
  "derive_more",
- "error_code",
+ "error_code 0.0.1",
  "kvproto",
  "lazy_static",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "prometheus",
  "prometheus-static-metric",
  "serde_json",
  "thiserror",
- "tikv_util",
+ "tikv_util 0.1.0",
  "time",
 ]
 
@@ -5958,15 +6195,15 @@ dependencies = [
  "bstr",
  "chrono",
  "chrono-tz",
- "codec",
- "collections",
+ "codec 0.0.1",
+ "collections 0.1.0",
  "encoding_rs 0.8.29 (git+https://github.com/xiongjiwei/encoding_rs.git?rev=68e0bc5a72a37a78228d80cd98047326559cf43c)",
- "error_code",
+ "error_code 0.0.1",
  "hex 0.4.2",
  "kvproto",
  "lazy_static",
- "log_wrappers",
- "match_template",
+ "log_wrappers 0.0.1",
+ "match_template 0.0.1",
  "nom 5.1.0",
  "num 0.3.0",
  "num-derive",
@@ -5981,8 +6218,8 @@ dependencies = [
  "static_assertions",
  "thiserror",
  "tidb_query_common",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
  "tipb",
 ]
 
@@ -5991,14 +6228,14 @@ name = "tidb_query_executors"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "codec",
- "collections",
+ "codec 0.0.1",
+ "collections 0.1.0",
  "fail",
  "futures 0.3.15",
  "itertools 0.10.0",
  "kvproto",
- "log_wrappers",
- "match_template",
+ "log_wrappers 0.0.1",
+ "match_template 0.0.1",
  "protobuf",
  "slog",
  "slog-global",
@@ -6008,7 +6245,7 @@ dependencies = [
  "tidb_query_common",
  "tidb_query_datatype",
  "tidb_query_expr",
- "tikv_util",
+ "tikv_util 0.1.0",
  "tipb",
  "tipb_helper",
  "yatp",
@@ -6022,12 +6259,12 @@ dependencies = [
  "bstr",
  "byteorder",
  "chrono",
- "codec",
- "file_system",
+ "codec 0.0.1",
+ "file_system 0.1.0",
  "flate2",
  "hex 0.4.2",
- "log_wrappers",
- "match_template",
+ "log_wrappers 0.0.1",
+ "match_template 0.0.1",
  "num 0.3.0",
  "num-traits",
  "openssl",
@@ -6043,7 +6280,7 @@ dependencies = [
  "tidb_query_codegen",
  "tidb_query_common",
  "tidb_query_datatype",
- "tikv_util",
+ "tikv_util 0.1.0",
  "time",
  "tipb",
  "tipb_helper",
@@ -6056,17 +6293,17 @@ name = "tikv"
 version = "6.1.0"
 dependencies = [
  "anyhow",
- "api_version",
+ "api_version 0.1.0",
  "async-stream 0.2.0",
  "async-trait",
  "backtrace",
  "batch-system",
  "byteorder",
- "case_macros",
+ "case_macros 0.1.0",
  "causal_ts",
  "chrono",
- "codec",
- "collections",
+ "codec 0.0.1",
+ "collections 0.1.0",
  "concurrency_manager",
  "coprocessor_plugin_api",
  "crc32fast",
@@ -6074,15 +6311,15 @@ dependencies = [
  "crossbeam",
  "encryption_export",
  "engine_panic",
- "engine_rocks",
+ "engine_rocks 0.0.1",
  "engine_test",
  "engine_tiflash",
- "engine_traits",
+ "engine_traits 0.0.1",
  "engine_traits_tests",
- "error_code",
+ "error_code 0.0.1",
  "example_plugin",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "futures-executor",
  "futures-timer",
@@ -6096,14 +6333,14 @@ dependencies = [
  "hyper-tls",
  "into_other",
  "itertools 0.10.0",
- "keys",
+ "keys 0.1.0",
  "kvproto",
  "lazy_static",
  "libc 0.2.125",
  "libloading",
  "log",
- "log_wrappers",
- "match_template",
+ "log_wrappers 0.0.1",
+ "match_template 0.0.1",
  "memory_trace_macros",
  "mime",
  "more-asserts",
@@ -6112,7 +6349,7 @@ dependencies = [
  "notify",
  "num-traits",
  "num_cpus",
- "online_config",
+ "online_config 0.1.0",
  "openssl",
  "panic_hook",
  "parking_lot 0.12.0",
@@ -6155,16 +6392,16 @@ dependencies = [
  "tidb_query_datatype",
  "tidb_query_executors",
  "tidb_query_expr",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
  "tikv_kv",
- "tikv_util",
+ "tikv_util 0.1.0",
  "time",
  "tipb",
  "tokio",
  "tokio-openssl",
  "tokio-timer",
  "toml",
- "txn_types",
+ "txn_types 0.1.0",
  "url",
  "uuid",
  "walkdir",
@@ -6221,21 +6458,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tikv_alloc"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "fxhash",
+ "lazy_static",
+ "libc 0.2.125",
+]
+
+[[package]]
 name = "tikv_kv"
 version = "0.1.0"
 dependencies = [
  "backtrace",
  "engine_panic",
- "engine_rocks",
- "engine_traits",
- "error_code",
+ "engine_rocks 0.0.1",
+ "engine_traits 0.0.1",
+ "error_code 0.0.1",
  "fail",
- "file_system",
+ "file_system 0.1.0",
  "futures 0.3.15",
  "into_other",
- "keys",
+ "keys 0.1.0",
  "kvproto",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "panic_hook",
  "pd_client",
  "prometheus",
@@ -6246,8 +6493,8 @@ dependencies = [
  "slog_derive",
  "tempfile",
  "thiserror",
- "tikv_util",
- "txn_types",
+ "tikv_util 0.1.0",
+ "txn_types 0.1.0",
 ]
 
 [[package]]
@@ -6259,13 +6506,13 @@ dependencies = [
  "byteorder",
  "bytes",
  "chrono",
- "codec",
- "collections",
+ "codec 0.0.1",
+ "collections 0.1.0",
  "cpu-time",
  "crc32fast",
  "crossbeam",
  "derive_more",
- "error_code",
+ "error_code 0.0.1",
  "fail",
  "futures 0.3.15",
  "futures-util",
@@ -6276,11 +6523,11 @@ dependencies = [
  "lazy_static",
  "libc 0.2.125",
  "log",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "nix 0.23.0",
  "num-traits",
  "num_cpus",
- "online_config",
+ "online_config 0.1.0",
  "openssl",
  "page_size",
  "panic_hook",
@@ -6302,7 +6549,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "thiserror",
- "tikv_alloc",
+ "tikv_alloc 0.1.0",
  "time",
  "tokio",
  "tokio-executor",
@@ -6310,6 +6557,64 @@ dependencies = [
  "toml",
  "url",
  "utime",
+ "yatp",
+]
+
+[[package]]
+name = "tikv_util"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "async-speed-limit",
+ "backtrace",
+ "byteorder",
+ "bytes",
+ "chrono",
+ "codec 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "collections 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "cpu-time",
+ "crc32fast",
+ "crossbeam",
+ "derive_more",
+ "error_code 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "fail",
+ "futures 0.3.15",
+ "futures-util",
+ "grpcio",
+ "http",
+ "kvproto",
+ "lazy_static",
+ "libc 0.2.125",
+ "log",
+ "log_wrappers 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "nix 0.23.0",
+ "num-traits",
+ "num_cpus",
+ "online_config 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "openssl",
+ "page_size",
+ "procfs",
+ "procinfo",
+ "prometheus",
+ "prometheus-static-metric",
+ "protobuf",
+ "rand 0.8.3",
+ "rusoto_core",
+ "serde",
+ "serde_json",
+ "slog",
+ "slog-async",
+ "slog-global",
+ "slog-json",
+ "slog-term",
+ "sysinfo",
+ "thiserror",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "time",
+ "tokio",
+ "tokio-executor",
+ "tokio-timer",
+ "url",
  "yatp",
 ]
 
@@ -6349,7 +6654,7 @@ dependencies = [
 name = "tipb_helper"
 version = "0.0.1"
 dependencies = [
- "codec",
+ "codec 0.0.1",
  "tidb_query_datatype",
  "tipb",
 ]
@@ -6632,18 +6937,37 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "byteorder",
- "codec",
- "collections",
- "error_code",
+ "codec 0.0.1",
+ "collections 0.1.0",
+ "error_code 0.0.1",
  "farmhash",
  "kvproto",
- "log_wrappers",
+ "log_wrappers 0.0.1",
  "panic_hook",
  "rand 0.8.3",
  "slog",
  "thiserror",
- "tikv_alloc",
- "tikv_util",
+ "tikv_alloc 0.1.0",
+ "tikv_util 0.1.0",
+]
+
+[[package]]
+name = "txn_types"
+version = "0.1.0"
+source = "git+https://github.com/tikv/tikv?branch=release-6.1#38199a73bbe44065145bdb319cd8c95f16285cea"
+dependencies = [
+ "bitflags",
+ "byteorder",
+ "codec 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "collections 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "error_code 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "farmhash",
+ "kvproto",
+ "log_wrappers 0.0.1 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "slog",
+ "thiserror",
+ "tikv_alloc 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
+ "tikv_util 0.1.0 (git+https://github.com/tikv/tikv?branch=release-6.1)",
 ]
 
 [[package]]

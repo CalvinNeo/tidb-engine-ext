@@ -24,23 +24,23 @@ compat_new_proxy = []
 nortcheck = []
 
 [dependencies]
-api_version = { path = "../components/api_version", default-features = false }
-case_macros = { path = "../components/case_macros" }
-collections = { path = "../components/collections", default-features = false }
+api_version = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
+case_macros = { git = "https://github.com/tikv/tikv" }
+collections = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
 
 derive_more = "0.99.3"
-encryption = { path = "../components/encryption", default-features = false }
-engine_rocks = { path = "../components/engine_rocks", default-features = false }
-engine_traits = { path = "../components/engine_traits", default-features = false }
+encryption = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
+engine_rocks = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
+engine_traits = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
 fail = "0.5"
-file_system = { path = "../components/file_system", default-features = false }
-keys = { path = "../components/keys", default-features = false }
+file_system = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
+keys = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
 kvproto = { git = "https://github.com/pingcap/kvproto.git" }
 lazy_static = "1.4.0"
 libc = "0.2"
-log_wrappers = { path = "../components/log_wrappers" }
+log_wrappers = { git = "https://github.com/tikv/tikv", branch = "release-6.1" }
 num_cpus = "1"
-online_config = { path = "../components/online_config" }
+online_config = { git = "https://github.com/tikv/tikv", branch = "release-6.1" }
 prometheus = { version = "0.13", features = ["nightly"] }
 prometheus-static-metric = "0.5"
 protobuf = "2"
@@ -52,10 +52,10 @@ slog = { version = "2.3", features = ["max_level_trace", "release_max_level_debu
 slog-global = { version = "0.1", git = "https://github.com/breeswish/slog-global.git", rev = "d592f88e4dbba5eb439998463054f1a44fbf17b9" }
 slog_derive = "0.2"
 tempfile = "3.0"
-tikv_alloc = { path = "../components/tikv_alloc" }
-tikv_util = { path = "../components/tikv_util", default-features = false }
+tikv_alloc = { git = "https://github.com/tikv/tikv", branch = "release-6.1" }
+tikv_util = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
 time = "0.1"
-txn_types = { path = "../components/txn_types", default-features = false }
+txn_types = { git = "https://github.com/tikv/tikv", branch = "release-6.1", default-features = false }
 yatp = { git = "https://github.com/tikv/yatp.git", branch = "master" }
 
 [dependencies.rocksdb]
