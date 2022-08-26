@@ -238,7 +238,8 @@ impl<Store: MetaStore> MetadataClient<Store> {
     }
 
     /// watch event stream from the revision(exclusive).
-    /// the revision would usually come from a WithRevision struct(which indices the revision of the inner item).
+    /// the revision would usually come from a WithRevision struct(which indices
+    /// the revision of the inner item).
     pub async fn events_from(&self, revision: i64) -> Result<Subscription<MetadataEvent>> {
         let watcher = self
             .meta_store
@@ -317,8 +318,8 @@ impl<Store: MetaStore> MetadataClient<Store> {
         })
     }
 
-    /// Perform a two-phase bisection search algorithm for the intersection of all ranges
-    /// and the specificated range (usually region range.)
+    /// Perform a two-phase bisection search algorithm for the intersection of
+    /// all ranges and the specificated range (usually region range.)
     /// TODO: explain the algorithm?
     pub async fn range_overlap_of_task(
         &self,
@@ -435,8 +436,8 @@ impl<Store: MetaStore> MetadataClient<Store> {
     }
 
     /// insert a task with ranges into the metadata store.
-    /// the current abstraction of metadata store doesn't support transaction API.
-    /// Hence this function is non-transactional and only for testing.
+    /// the current abstraction of metadata store doesn't support transaction
+    /// API. Hence this function is non-transactional and only for testing.
     pub async fn insert_task_with_range(
         &self,
         task: &StreamTask,

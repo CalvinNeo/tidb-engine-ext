@@ -150,7 +150,8 @@ impl Resolver {
     /// `min_ts` advances the resolver even if there is no write.
     /// Return None means the resolver is not initialized.
     pub fn resolve(&mut self, min_ts: TimeStamp) -> TimeStamp {
-        // The `Resolver` is stopped, not need to advance, just return the current `resolved_ts`
+        // The `Resolver` is stopped, not need to advance, just return the current
+        // `resolved_ts`
         if self.stopped {
             return self.resolved_ts;
         }

@@ -284,7 +284,8 @@ where
     async fn starts_flush_ticks(router: Router) {
         loop {
             // check every 15s.
-            // TODO: maybe use global timer handle in the `tikv_utils::timer` (instead of enabling timing in the current runtime)?
+            // TODO: maybe use global timer handle in the `tikv_utils::timer` (instead of
+            // enabling timing in the current runtime)?
             tokio::time::sleep(Duration::from_secs(FLUSH_STORAGE_INTERVAL / 20)).await;
             debug!("backup stream trigger flush tick");
             router.tick().await;
@@ -433,15 +434,18 @@ where
                 return;
             }
         };
-        // Stale data is accpetable, while stale locks may block the checkpoint advancing.
-        // Let L be the instant some key locked, U be the instant it unlocked,
-        // +---------*-------L-----------U--*-------------+
-        //           ^   ^----(1)----^      ^ We get the snapshot for initial scanning at here.
-        //           +- If we issue refresh resolver at here, and the cmd batch (1) is the last cmd batch of the first observing.
-        //              ...the background initial scanning may keep running, and the lock would be sent to the scanning.
-        //              ...note that (1) is the last cmd batch of first observing, so the unlock event would never be sent to us.
-        //              ...then the lock would get an eternal life in the resolver :|
-        //                 (Before we refreshing the resolver for this region again)
+        // Stale data is accpetable, while stale locks may block the checkpoint
+        // advancing. Let L be the instant some key locked, U be the instant it
+        // unlocked, +---------*-------L-----------U--*-------------+
+        //           ^   ^----(1)----^      ^ We get the snapshot for initial scanning
+        // at here.           +- If we issue refresh resolver at here, and the
+        // cmd batch (1) is the last cmd batch of the first observing.
+        //              ...the background initial scanning may keep running, and the
+        // lock would be sent to the scanning.              ...note that (1) is
+        // the last cmd batch of first observing, so the unlock event would never be
+        // sent to us.              ...then the lock would get an eternal life
+        // in the resolver :|                 (Before we refreshing the resolver
+        // for this region again)
         if batch.pitr_id != resolver.value().handle.id {
             debug!("stale command"; "region_id" => %region_id, "now" => ?resolver.value().handle.id, "remote" => ?batch.pitr_id);
             return;
@@ -679,7 +683,8 @@ where
         info
     }
 
-    /// unload a task from memory: this would stop observe the changes required by the task temporarily.
+    /// unload a task from memory: this would stop observe the changes required
+    /// by the task temporarily.
     fn unload_task(&self, task: &str) -> Option<StreamBackupTaskInfo> {
         let router = self.range_router.clone();
 
@@ -719,7 +724,8 @@ where
     ) {
         let start = Instant::now_coarse();
         // NOTE: Maybe push down the resolve step to the router?
-        //       Or if there are too many duplicated `Flush` command, we may do some useless works.
+        //       Or if there are too many duplicated `Flush` command, we may do some
+        // useless works.
         let new_rts = Self::try_resolve(&concurrency_manager, pd_cli.clone(), resolvers).await;
         #[cfg(feature = "failpoints")]
         fail::fail_point!("delay_on_flush");
@@ -802,7 +808,8 @@ where
     }
 
     /// Start observe over some region.
-    /// This would modify some internal state, and delegate the task to InitialLoader::observe_over.
+    /// This would modify some internal state, and delegate the task to
+    /// InitialLoader::observe_over.
     fn observe_over(&self, region: &Region, handle: ObserveHandle) -> Result<()> {
         let init = self.make_initial_loader();
         let region_id = region.get_id();
@@ -837,8 +844,9 @@ where
 
         // we should not spawn initial scanning tasks to the tokio blocking pool
         // beacuse it is also used for converting sync File I/O to async. (for now!)
-        // In that condition, if we blocking for some resouces(for example, the `MemoryQuota`)
-        // at the block threads, we may meet some ghosty deadlock.
+        // In that condition, if we blocking for some resouces(for example, the
+        // `MemoryQuota`) at the block threads, we may meet some ghosty
+        // deadlock.
         self.spawn_at_scan_pool(move || {
             let begin = Instant::now_coarse();
             match init.do_initial_scan(&region, last_checkpoint, snap) {
@@ -1130,8 +1138,9 @@ pub enum Task {
     /// FatalError pauses the task and set the error.
     FatalError(String, Box<Error>),
     /// Run the callback when see this message. Only for test usage.
-    /// NOTE: Those messages for testing are not guared by `#[cfg(test)]` for now, because
-    ///       the integration test would not enable test config when compiling (why?)
+    /// NOTE: Those messages for testing are not guared by `#[cfg(test)]` for
+    /// now, because       the integration test would not enable test config
+    /// when compiling (why?)
     Sync(
         // Run the closure if ...
         Box<dyn FnOnce() + Send>,
@@ -1154,7 +1163,8 @@ pub enum ObserveOp {
         region: Region,
         // if `true`, would scan and sink change from the global checkpoint ts.
         // Note: maybe we'd better make it Option<TimeStamp> to make it more generic,
-        //       but that needs the `observer` know where the checkpoint is, which is a little dirty...
+        //       but that needs the `observer` know where the checkpoint is, which is a little
+        // dirty...
         needs_initial_scanning: bool,
     },
     Stop {

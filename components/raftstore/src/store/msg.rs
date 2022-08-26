@@ -80,9 +80,9 @@ pub type TestCallback = Box<dyn FnOnce(PeerInternalStat) + Send>;
 
 /// Variants of callbacks for `Msg`.
 ///  - `Read`: a callback for read only requests including `StatusRequest`,
-///         `GetRequest` and `SnapRequest`
+///    `GetRequest` and `SnapRequest`
 ///  - `Write`: a callback for write only requests including `AdminRequest`
-///          `PutRequest`, `DeleteRequest` and `DeleteRangeRequest`.
+///    `PutRequest`, `DeleteRequest` and `DeleteRangeRequest`.
 pub enum Callback<S: Snapshot> {
     /// No callback.
     None,
@@ -91,12 +91,14 @@ pub enum Callback<S: Snapshot> {
     /// Write callback.
     Write {
         cb: WriteCallback,
-        /// `proposed_cb` is called after a request is proposed to the raft group successfully.
-        /// It's used to notify the caller to move on early because it's very likely the request
+        /// `proposed_cb` is called after a request is proposed to the raft
+        /// group successfully. It's used to notify the caller to move
+        /// on early because it's very likely the request
         /// will be applied to the raftstore.
         proposed_cb: Option<ExtCallback>,
-        /// `committed_cb` is called after a request is committed and before it's being applied, and
-        /// it's guaranteed that the request will be successfully applied soon.
+        /// `committed_cb` is called after a request is committed and before
+        /// it's being applied, and it's guaranteed that the request
+        /// will be successfully applied soon.
         committed_cb: Option<ExtCallback>,
         request_times: SmallVec<[Instant; 4]>,
     },
@@ -286,18 +288,20 @@ pub enum MergeResultKind {
     /// Its target peer applys `CommitMerge` log.
     FromTargetLog,
     /// Its target peer receives snapshot.
-    /// In step 1, this peer should mark `pending_move` is true and destroy its apply fsm.
-    /// Then its target peer will remove this peer data and apply snapshot atomically.
+    /// In step 1, this peer should mark `pending_move` is true and destroy its
+    /// apply fsm. Then its target peer will remove this peer data and apply
+    /// snapshot atomically.
     FromTargetSnapshotStep1,
     /// In step 2, this peer should destroy its peer fsm.
     FromTargetSnapshotStep2,
-    /// This peer is no longer needed by its target peer so it can be destroyed by itself.
-    /// It happens if and only if its target peer has been removed by conf change.
+    /// This peer is no longer needed by its target peer so it can be destroyed
+    /// by itself. It happens if and only if its target peer has been
+    /// removed by conf change.
     Stale,
 }
 
-/// Some significant messages sent to raftstore. Raftstore will dispatch these messages to Raft
-/// groups to update some important internal status.
+/// Some significant messages sent to raftstore. Raftstore will dispatch these
+/// messages to Raft groups to update some important internal status.
 #[derive(Debug)]
 pub enum SignificantMsg<SK>
 where
@@ -377,7 +381,8 @@ pub enum CasualMessage<EK: KvEngine> {
         hash: Vec<u8>,
     },
 
-    /// Approximate size of target region. This message can only be sent by split-check thread.
+    /// Approximate size of target region. This message can only be sent by
+    /// split-check thread.
     RegionApproximateSize {
         size: u64,
     },
@@ -562,15 +567,16 @@ pub enum PeerMsg<EK: KvEngine> {
     /// leader of the target raft group. If it's failed to be sent, callback
     /// usually needs to be called before dropping in case of resource leak.
     RaftCommand(RaftCommand<EK::Snapshot>),
-    /// Tick is periodical task. If target peer doesn't exist there is a potential
-    /// that the raft node will not work anymore.
+    /// Tick is periodical task. If target peer doesn't exist there is a
+    /// potential that the raft node will not work anymore.
     Tick(PeerTick),
     /// Result of applying committed entries. The message can't be lost.
     ApplyRes {
         res: ApplyTaskRes<EK::Snapshot>,
     },
-    /// Message that can't be lost but rarely created. If they are lost, real bad
-    /// things happen like some peers will be considered dead in the group.
+    /// Message that can't be lost but rarely created. If they are lost, real
+    /// bad things happen like some peers will be considered dead in the
+    /// group.
     SignificantMsg(SignificantMsg<EK::Snapshot>),
     /// Start the FSM.
     Start,
@@ -629,8 +635,8 @@ where
         invalid_ssts: Vec<SstMeta>,
     },
 
-    // Clear region size and keys for all regions in the range, so we can force them to re-calculate
-    // their size later.
+    // Clear region size and keys for all regions in the range, so we can force them to
+    // re-calculate their size later.
     ClearRegionSizeInRange {
         start_key: Vec<u8>,
         end_key: Vec<u8>,

@@ -846,7 +846,8 @@ pub fn gen_engine_store_server_helper(
 }
 
 /// # Safety
-/// The lifetime of `engine_store_server_helper` is definitely longer than `ENGINE_STORE_SERVER_HELPER_PTR`.
+/// The lifetime of `engine_store_server_helper` is definitely longer than
+/// `ENGINE_STORE_SERVER_HELPER_PTR`.
 pub unsafe fn init_engine_store_server_helper(engine_store_server_helper: *const u8) {
     let ptr = &ENGINE_STORE_SERVER_HELPER_PTR as *const _ as *mut _;
     *ptr = engine_store_server_helper;

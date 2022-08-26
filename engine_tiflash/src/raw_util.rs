@@ -38,8 +38,8 @@ pub fn new_engine(
     new_engine_opt(path, db_opts, cf_opts)
 }
 
-// /// Turns "dynamic level size" off for the existing column family which was off before.
-// /// Column families are small, HashMap isn't necessary.
+// /// Turns "dynamic level size" off for the existing column family which was
+// off before. /// Column families are small, HashMap isn't necessary.
 // fn adjust_dynamic_level_bytes(
 //     cf_descs: &[CColumnFamilyDescriptor],
 //     cf_options: &mut CFOptions<'_>,
@@ -56,15 +56,15 @@ pub fn new_engine(
 //                 .get_level_compaction_dynamic_level_bytes()
 //         {
 //             warn!(
-//                 "change dynamic_level_bytes for existing column family is danger";
-//                 "old_value" => existed_dynamic_level_bytes,
-//                 "new_value" => cf_options.options.get_level_compaction_dynamic_level_bytes(),
-//             );
+//                 "change dynamic_level_bytes for existing column family is
+// danger";                 "old_value" => existed_dynamic_level_bytes,
+//                 "new_value" =>
+// cf_options.options.get_level_compaction_dynamic_level_bytes(),             );
 //         }
 //         cf_options
 //             .options
-//             .set_level_compaction_dynamic_level_bytes(existed_dynamic_level_bytes);
-//     }
+//             
+// .set_level_compaction_dynamic_level_bytes(existed_dynamic_level_bytes);     }
 // }
 
 pub fn new_engine_opt(
@@ -85,9 +85,10 @@ pub fn db_exist(path: &str) -> bool {
         return false;
     }
 
-    // If path is not an empty directory, and current file exists, we say db exists. If path is not an empty directory
-    // but db has not been created, `DB::list_column_families` fails and we can clean up
-    // the directory by this indication.
+    // If path is not an empty directory, and current file exists, we say db exists.
+    // If path is not an empty directory but db has not been created,
+    // `DB::list_column_families` fails and we can clean up the directory by
+    // this indication.
     fs::read_dir(&path).unwrap().next().is_some()
 }
 

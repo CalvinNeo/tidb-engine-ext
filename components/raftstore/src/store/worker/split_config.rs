@@ -14,9 +14,13 @@ pub(crate) const DEFAULT_SAMPLE_NUM: usize = 20;
 const DEFAULT_QPS_THRESHOLD: usize = 3000;
 const DEFAULT_BYTE_THRESHOLD: usize = 30 * 1024 * 1024;
 
-// We get balance score by abs(sample.left-sample.right)/(sample.right+sample.left). It will be used to measure left and right balance
+// We get balance score by
+// abs(sample.left-sample.right)/(sample.right+sample.left). It will be used to
+// measure left and right balance
 const DEFAULT_SPLIT_BALANCE_SCORE: f64 = 0.25;
-// We get contained score by sample.contained/(sample.right+sample.left+sample.contained). It will be used to avoid to split regions requested by range.
+// We get contained score by
+// sample.contained/(sample.right+sample.left+sample.contained). It will be used
+// to avoid to split regions requested by range.
 const DEFAULT_SPLIT_CONTAINED_SCORE: f64 = 0.5;
 
 lazy_static! {

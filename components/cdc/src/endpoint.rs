@@ -321,8 +321,8 @@ pub struct Endpoint<T, E> {
     timer: SteadyTimer,
     tso_worker: Runtime,
     store_meta: Arc<StdMutex<StoreMeta>>,
-    /// The concurrency manager for transactions. It's needed for CDC to check locks when
-    /// calculating resolved_ts.
+    /// The concurrency manager for transactions. It's needed for CDC to check
+    /// locks when calculating resolved_ts.
     concurrency_manager: ConcurrencyManager,
 
     config: CdcConfig,
@@ -382,7 +382,8 @@ impl<T: 'static + RaftStoreRouter<E>, E: KvEngine> Endpoint<T, E> {
             .build()
             .unwrap();
 
-        // Initialized for the first time, subsequent adjustments will be made based on configuration updates.
+        // Initialized for the first time, subsequent adjustments will be made based on
+        // configuration updates.
         let scan_concurrency_semaphore =
             Arc::new(Semaphore::new(config.incremental_scan_concurrency));
         let old_value_cache = OldValueCache::new(config.old_value_cache_memory_quota);
@@ -453,7 +454,8 @@ impl<T: 'static + RaftStoreRouter<E>, E: KvEngine> Endpoint<T, E> {
             "current config" => ?self.config,
             "change" => ?change
         );
-        // Update the config here. The following adjustments will all use the new values.
+        // Update the config here. The following adjustments will all use the new
+        // values.
         self.config.update(change.clone());
 
         // Maybe the cache will be lost due to smaller capacity,
@@ -463,8 +465,8 @@ impl<T: 'static + RaftStoreRouter<E>, E: KvEngine> Endpoint<T, E> {
                 .resize(self.config.old_value_cache_memory_quota);
         }
 
-        // Maybe the limit will be exceeded for a while after the concurrency becomes smaller,
-        // but it is acceptable.
+        // Maybe the limit will be exceeded for a while after the concurrency becomes
+        // smaller, but it is acceptable.
         if change.get("incremental_scan_concurrency").is_some() {
             self.scan_concurrency_semaphore =
                 Arc::new(Semaphore::new(self.config.incremental_scan_concurrency))
@@ -1003,8 +1005,8 @@ impl<T: 'static + RaftStoreRouter<E>, E: KvEngine> Endpoint<T, E> {
             let mut min_ts = min_ts_pd;
             let mut min_ts_min_lock = min_ts_pd;
 
-            // Sync with concurrency manager so that it can work correctly when optimizations
-            // like async commit is enabled.
+            // Sync with concurrency manager so that it can work correctly when
+            // optimizations like async commit is enabled.
             // Note: This step must be done before scheduling `Task::MinTS` task, and the
             // resolver must be checked in or after `Task::MinTS`' execution.
             cm.update_max_ts(min_ts);

@@ -21,8 +21,8 @@ use raftstore::{
 use crate::CausalTsProvider;
 
 /// CausalObserver appends timestamp for RawKV V2 data,
-/// and invoke causal_ts_provider.flush() on specified event, e.g. leader transfer, snapshot apply.
-/// Should be used ONLY when API v2 is enabled.
+/// and invoke causal_ts_provider.flush() on specified event, e.g. leader
+/// transfer, snapshot apply. Should be used ONLY when API v2 is enabled.
 pub struct CausalObserver<Ts: CausalTsProvider> {
     causal_ts_provider: Arc<Ts>,
 }
@@ -35,7 +35,8 @@ impl<Ts: CausalTsProvider> Clone for CausalObserver<Ts> {
     }
 }
 
-// Causal observer's priority should be higher than all other observers, to avoid being bypassed.
+// Causal observer's priority should be higher than all other observers, to
+// avoid being bypassed.
 const CAUSAL_OBSERVER_PRIORITY: u32 = 0;
 
 impl<Ts: CausalTsProvider + 'static> CausalObserver<Ts> {
@@ -108,8 +109,8 @@ impl<Ts: CausalTsProvider> RoleObserver for CausalObserver<Ts> {
         // In scenario of frequent leader transfer, the observing of change from
         // follower to leader by `on_role_change` would be later than the real role
         // change in raft state and adjacent write commands.
-        // This would lead to the late of flush, and violate causality. See issue #12498.
-        // So we observe role change to Candidate to fix this issue.
+        // This would lead to the late of flush, and violate causality. See issue
+        // #12498. So we observe role change to Candidate to fix this issue.
         // Also note that when there is only one peer, it would become leader directly.
         if role_change.state == StateRole::Candidate
             || (ctx.region().peers.len() == 1 && role_change.state == StateRole::Leader)
@@ -130,11 +131,12 @@ impl<Ts: CausalTsProvider> RegionChangeObserver for CausalObserver<Ts> {
             return;
         }
 
-        // In the scenario of region merge, the target region would merge some entries from source
-        // region with larger timestamps (when leader of source region is in another store with
-        // larger TSO batch than the store of target region's leader).
-        // So we need a flush after commit merge. See issue #12680.
-        // TODO: do not need flush if leaders of source & target region are in the same store.
+        // In the scenario of region merge, the target region would merge some entries
+        // from source region with larger timestamps (when leader of source
+        // region is in another store with larger TSO batch than the store of
+        // target region's leader). So we need a flush after commit merge. See
+        // issue #12680. TODO: do not need flush if leaders of source & target
+        // region are in the same store.
         if let RegionChangeEvent::Update(RegionChangeReason::CommitMerge) = event {
             self.flush_timestamp(ctx.region(), REASON_REGION_MERGE);
         }

@@ -16,7 +16,7 @@ use crate::{
 };
 
 macro_rules! report_write_perf_context {
-    ($ctx: expr, $metric: ident) => {
+    ($ctx:expr, $metric:ident) => {
         if $ctx.perf_level != PerfLevel::Disable {
             $ctx.write = WritePerfContext::capture();
             observe_perf_context_type!($ctx, $metric, write_wal_time);
@@ -32,7 +32,7 @@ macro_rules! report_write_perf_context {
 }
 
 macro_rules! observe_perf_context_type {
-    ($s:expr, $metric: expr, $v:ident) => {
+    ($s:expr, $metric:expr, $v:ident) => {
         $metric.$v.observe(($s.write.$v) as f64 / 1e9);
     };
 }
@@ -166,7 +166,8 @@ pub struct PerfContextStatistics {
 }
 
 impl PerfContextStatistics {
-    /// Create an instance which stores instant statistics values, retrieved at creation.
+    /// Create an instance which stores instant statistics values, retrieved at
+    /// creation.
     pub fn new(perf_level: PerfLevel, kind: PerfContextKind) -> Self {
         PerfContextStatistics {
             perf_level,

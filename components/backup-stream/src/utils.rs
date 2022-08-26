@@ -30,8 +30,9 @@ pub fn wrap_key(v: Vec<u8>) -> Vec<u8> {
 }
 
 /// Transform a str to a [`engine_traits::CfName`]\(`&'static str`).
-/// If the argument isn't one of `""`, `"DEFAULT"`, `"default"`, `"WRITE"`, `"write"`, `"LOCK"`, `"lock"`...
-/// returns "ERR_CF". (Which would be ignored then.)
+/// If the argument isn't one of `""`, `"DEFAULT"`, `"default"`, `"WRITE"`,
+/// `"write"`, `"LOCK"`, `"lock"`... returns "ERR_CF". (Which would be ignored
+/// then.)
 pub fn cf_name(s: &str) -> CfName {
     match s {
         "" | "DEFAULT" | "default" => CF_DEFAULT,
@@ -133,7 +134,8 @@ pub type Slot<T> = Mutex<T>;
 /// NOTE: Maybe we can use dashmap for replacing the RwLock.
 pub type SlotMap<K, V, S = RandomState> = RwLock<HashMap<K, Slot<V>, S>>;
 
-/// Like `..=val`(a.k.a. `RangeToInclusive`), but allows `val` being a reference to DSTs.
+/// Like `..=val`(a.k.a. `RangeToInclusive`), but allows `val` being a reference
+/// to DSTs.
 struct RangeToInclusiveRef<'a, T: ?Sized>(&'a T);
 
 impl<'a, T: ?Sized> RangeBounds<T> for RangeToInclusiveRef<'a, T> {
@@ -175,7 +177,8 @@ pub type SegmentSet<T> = SegmentMap<T, ()>;
 
 impl<K: Ord, V: Default> SegmentMap<K, V> {
     /// Try to add a element into the segment tree, with default value.
-    /// (This is useful when using the segment tree as a `Set`, i.e. `SegmentMap<T, ()>`)
+    /// (This is useful when using the segment tree as a `Set`, i.e.
+    /// `SegmentMap<T, ()>`)
     ///
     /// - If no overlapping, insert the range into the tree and returns `true`.
     /// - If overlapping detected, do nothing and return `false`.
@@ -251,8 +254,8 @@ impl<K: Ord, V> SegmentMap<K, V> {
             return Some(overlap_with_start);
         }
         // |--s----+-----+----e----|
-        // Otherwise, the possibility of being overlapping would be there are some sub range
-        // of the queried range...
+        // Otherwise, the possibility of being overlapping would be there are some sub
+        // range of the queried range...
         // |--s----+----e----+-----|
         // ...Or the end key is contained by some Range.
         // For faster query, we merged the two cases together.
@@ -270,7 +273,8 @@ impl<K: Ord, V> SegmentMap<K, V> {
         covered_by_the_range.map(|(k, v)| (k, &v.range_end, &v.item))
     }
 
-    /// Check whether the range is overlapping with any range in the segment tree.
+    /// Check whether the range is overlapping with any range in the segment
+    /// tree.
     pub fn is_overlapping<R>(&self, range: (&R, &R)) -> bool
     where
         K: Borrow<R>,
@@ -285,8 +289,8 @@ impl<K: Ord, V> SegmentMap<K, V> {
 }
 
 /// transform a [`RaftCmdRequest`] to `(key, value, cf)` triple.
-/// once it contains a write request, extract it, and return `Left((key, value, cf))`,
-/// otherwise return the request itself via `Right`.
+/// once it contains a write request, extract it, and return `Left((key, value,
+/// cf))`, otherwise return the request itself via `Right`.
 pub fn request_to_triple(mut req: Request) -> Either<(Vec<u8>, Vec<u8>, CfName), Request> {
     let (key, value, cf) = match req.get_cmd_type() {
         CmdType::Put => {
@@ -303,11 +307,11 @@ pub fn request_to_triple(mut req: Request) -> Either<(Vec<u8>, Vec<u8>, CfName),
 }
 
 /// `try_send!(s: Scheduler<T>, task: T)` tries to send a task to the scheduler,
-/// once meet an error, would report it, with the current file and line (so it is made as a macro).    
-/// returns whether it success.
+/// once meet an error, would report it, with the current file and line (so it
+/// is made as a macro). returns whether it success.
 #[macro_export(crate)]
 macro_rules! try_send {
-    ($s: expr, $task: expr) => {
+    ($s:expr, $task:expr) => {
         match $s.schedule($task) {
             Err(err) => {
                 $crate::errors::Error::from(err).report(concat!(
@@ -325,9 +329,10 @@ macro_rules! try_send {
     };
 }
 
-/// a hacky macro which allow us enable all debug log via the feature `backup_stream_debug`.
-/// because once we enable debug log for all crates, it would soon get too verbose to read.
-/// using this macro now we can enable debug log level for the crate only (even compile time...).
+/// a hacky macro which allow us enable all debug log via the feature
+/// `backup_stream_debug`. because once we enable debug log for all crates, it
+/// would soon get too verbose to read. using this macro now we can enable debug
+/// log level for the crate only (even compile time...).
 #[macro_export(crate)]
 macro_rules! debug {
     ($($t: tt)+) => {
@@ -375,7 +380,8 @@ pub fn record_cf_stat(cf_name: &str, stat: &CfStatistics) {
     );
 }
 
-/// a shortcut for handing the result return from `Router::on_events`, when any faliure, send a fatal error to the `doom_messenger`.
+/// a shortcut for handing the result return from `Router::on_events`, when any
+/// faliure, send a fatal error to the `doom_messenger`.
 pub fn handle_on_event_result(doom_messenger: &Scheduler<Task>, result: Vec<(String, Result<()>)>) {
     for (task, res) in result.into_iter() {
         if let Err(err) = res {

@@ -70,7 +70,8 @@ impl Snapshot for WithRevision<SlashEtcStore> {
             .map(|(k, v)| KeyValue(MetaKey(k.clone()), v.clone()))
             .collect::<Vec<_>>();
         // use iterator operations (instead of collect all kv pairs in the range)
-        // if the test case get too slow. (How can we figure out whether there are more?)
+        // if the test case get too slow. (How can we figure out whether there are
+        // more?)
         if extra.desc_order {
             kvs.reverse();
         }

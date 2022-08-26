@@ -408,7 +408,8 @@ impl SstImporter {
             }
             if check_key_in_range(&key, 0, start_key, end_key).is_err() {
                 // key not in range, we can simply skip this key here.
-                // the client make sure the correct region will download and apply the same file.
+                // the client make sure the correct region will download and apply the same
+                // file.
                 INPORTER_APPLY_COUNT
                     .with_label_values(&["key_not_in_region"])
                     .inc();
@@ -549,7 +550,8 @@ impl SstImporter {
                 return Ok(None);
             }
 
-            // range contained the entire SST, no need to iterate, just moving the file is ok
+            // range contained the entire SST, no need to iterate, just moving the file is
+            // ok
             let mut range = Range::default();
             range.set_start(start_key);
             range.set_end(last_key.to_vec());
@@ -820,7 +822,7 @@ mod tests {
         // Test ImportDir::ingest()
 
         let db_path = temp_dir.path().join("db");
-        let env = get_env(key_manager.clone(), None /*io_rate_limiter*/).unwrap();
+        let env = get_env(key_manager.clone(), None /* io_rate_limiter */).unwrap();
         let db = new_test_engine_with_env(db_path.to_str().unwrap(), &[CF_DEFAULT], env);
 
         let cases = vec![(0, 10), (5, 15), (10, 20), (0, 100)];
@@ -1223,7 +1225,7 @@ mod tests {
         .unwrap();
 
         let db_path = temp_dir.path().join("db");
-        let env = get_env(Some(key_manager), None /*io_rate_limiter*/).unwrap();
+        let env = get_env(Some(key_manager), None /* io_rate_limiter */).unwrap();
         let db = new_test_engine_with_env(db_path.to_str().unwrap(), DATA_CFS, env.clone());
 
         let range = importer
@@ -1459,8 +1461,8 @@ mod tests {
             // key3 = "zt9102_r07", value3 = "pqrst", len = 15
             // key4 = "zt9102_r13", value4 = "www", len = 13
             // total_bytes = (13 + 13 + 15 + 13) + 4 * 8 = 86
-            // don't no why each key has extra 8 byte length in raw_key_size(), but it seems tolerable.
-            // https://docs.rs/rocks/0.1.0/rocks/table_properties/struct.TableProperties.html#method.raw_key_size
+            // don't no why each key has extra 8 byte length in raw_key_size(), but it seems
+            // tolerable. https://docs.rs/rocks/0.1.0/rocks/table_properties/struct.TableProperties.html#method.raw_key_size
             assert_eq!(meta_info.total_bytes, 86);
             assert_eq!(meta_info.total_kvs, 4);
 

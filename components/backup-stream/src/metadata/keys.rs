@@ -8,7 +8,8 @@ const PATH_NEXT_BACKUP_TS: &str = "/checkpoint";
 const PATH_RANGES: &str = "/ranges";
 const PATH_PAUSE: &str = "/pause";
 const PATH_LAST_ERROR: &str = "/last-error";
-// Note: maybe use something like `const_fmt` for concatenating constant strings?
+// Note: maybe use something like `const_fmt` for concatenating constant
+// strings?
 const TASKS_PREFIX: &str = "/tidb/br-stream/info/";
 
 /// A key that associates to some metadata.
@@ -57,7 +58,8 @@ impl KeyValue {
     }
 
     /// Take the start-key and end-key from a metadata key-value pair.
-    /// example: `KeyValue(<prefix>/ranges/<start-key>, <end-key>) -> (<start-key>, <end-key>)`
+    /// example: `KeyValue(<prefix>/ranges/<start-key>, <end-key>) ->
+    /// (<start-key>, <end-key>)`
     pub fn take_range(&mut self, task_name: &str) -> (Vec<u8>, Vec<u8>) {
         let prefix_len = MetaKey::ranges_prefix_len(task_name);
         (self.take_key()[prefix_len..].to_vec(), self.take_value())

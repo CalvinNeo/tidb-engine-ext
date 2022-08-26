@@ -232,7 +232,7 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
             self.cfg
                 .storage
                 .io_rate_limit
-                .build(true /*enable_statistics*/),
+                .build(true /* enable_statistics */),
         ));
         for _ in 0..self.count {
             self.create_engine(None);
@@ -513,8 +513,8 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
         }
     }
 
-    // It's similar to `ask_split`, the difference is the msg, it sends, is `Msg::SplitRegion`,
-    // and `region` will not be embedded to that msg.
+    // It's similar to `ask_split`, the difference is the msg, it sends, is
+    // `Msg::SplitRegion`, and `region` will not be embedded to that msg.
     // Caller must ensure that the `split_key` is in the `region`.
     pub fn split_region(
         &mut self,

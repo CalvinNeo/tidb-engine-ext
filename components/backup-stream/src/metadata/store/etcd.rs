@@ -50,13 +50,14 @@ impl From<EventType> for KvEventType {
 
 impl From<etcd_client::KeyValue> for KeyValue {
     fn from(kv: etcd_client::KeyValue) -> Self {
-        // TODO: we can move out the vector in the KeyValue struct here. (instead of copying.)
-        // But that isn't possible for now because:
+        // TODO: we can move out the vector in the KeyValue struct here. (instead of
+        // copying.) But that isn't possible for now because:
         // - The raw KV pair(defined by the protocol buffer of etcd) is private.
-        // - That did could be exported by `pub-fields` feature of the client.
-        //   However that feature isn't published in theirs Cargo.toml (Is that a mistake?).
-        // - Indeed, we can use `mem::transmute` here because `etcd_client::KeyValue` has `#[repr(transparent)]`.
-        //   But before here become a known bottle neck, I'm not sure whether it's worthwhile for involving unsafe code.
+        // - That did could be exported by `pub-fields` feature of the client. However
+        //   that feature isn't published in theirs Cargo.toml (Is that a mistake?).
+        // - Indeed, we can use `mem::transmute` here because `etcd_client::KeyValue`
+        //   has `#[repr(transparent)]`. But before here become a known bottle neck, I'm
+        //   not sure whether it's worthwhile for involving unsafe code.
         KeyValue(MetaKey(kv.key().to_owned()), kv.value().to_owned())
     }
 }
@@ -64,7 +65,7 @@ impl From<etcd_client::KeyValue> for KeyValue {
 /// Prepare the etcd options required by the keys.
 /// Return the start key for requesting.
 macro_rules! prepare_opt {
-    ($opt: ident, $keys: expr) => {
+    ($opt:ident, $keys:expr) => {
         match $keys {
             Keys::Prefix(key) => {
                 $opt = $opt.with_prefix();

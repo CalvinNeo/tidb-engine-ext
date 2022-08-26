@@ -213,7 +213,8 @@ impl Collector for ThreadsCollector {
 }
 
 /// Gets thread ids of the given process id.
-/// WARN: Don't call this function frequently. Otherwise there will be a lot of memory fragments.
+/// WARN: Don't call this function frequently. Otherwise there will be a lot of
+/// memory fragments.
 pub fn get_thread_ids(pid: pid_t) -> Result<Vec<pid_t>> {
     let mut tids: Vec<i32> = fs::read_dir(format!("/proc/{}/task", pid))?
         .filter_map(|task| {
@@ -244,7 +245,8 @@ pub fn get_thread_ids(pid: pid_t) -> Result<Vec<pid_t>> {
     Ok(tids)
 }
 
-/// Sanitizes the thread name. Keeps `a-zA-Z0-9_:`, replaces `-` and ` ` with `_`, and drops the others.
+/// Sanitizes the thread name. Keeps `a-zA-Z0-9_:`, replaces `-` and ` ` with
+/// `_`, and drops the others.
 ///
 /// Examples:
 ///
@@ -411,7 +413,8 @@ impl ThreadInfoStatistics {
                 self.tid_names.entry(tid).or_insert(name);
 
                 // To get a percentage result,
-                // we pre-multiply `cpu_time` by 100 here rather than inside the `update_metric`.
+                // we pre-multiply `cpu_time` by 100 here rather than inside the
+                // `update_metric`.
                 let cpu_time = cpu_total(&stat) * 100.0;
                 update_metric(
                     &mut self.metrics_total.cpu_times,

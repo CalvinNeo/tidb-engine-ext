@@ -57,9 +57,10 @@ impl<EK: Engine, L: LockManager> ConfigManager for StorageConfigManger<EK, L> {
             if let Some(size) = block_cache.remove("capacity") {
                 if size != ConfigValue::None {
                     let s: ReadableSize = size.into();
-                    // Hack: since all CFs in both kvdb and raftdb share a block cache, we can change
-                    // the size through any of them. Here we change it through default CF in kvdb.
-                    // A better way to do it is to hold the cache reference somewhere, and use it to
+                    // Hack: since all CFs in both kvdb and raftdb share a block cache, we can
+                    // change the size through any of them. Here we change it
+                    // through default CF in kvdb. A better way to do it is to
+                    // hold the cache reference somewhere, and use it to
                     // change cache size.
                     let opt = self.kvdb.get_options_cf(CF_DEFAULT).unwrap(); // FIXME unwrap
                     opt.set_block_cache_capacity(s.0)?;

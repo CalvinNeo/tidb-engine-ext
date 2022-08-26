@@ -99,7 +99,8 @@ fn test_config() {
     assert_eq!(unknown.is_err(), true);
     assert_eq!(unknown.unwrap_err(), "nosense, rocksdb.z");
 
-    // Need run this test with ENGINE_LABEL_VALUE=tiflash, otherwise will fatal exit.
+    // Need run this test with ENGINE_LABEL_VALUE=tiflash, otherwise will fatal
+    // exit.
     server::setup::validate_and_persist_config(&mut config, true);
 
     // Will not override ProxyConfig
@@ -152,7 +153,8 @@ fn test_store_stats() {
         cluster.must_send_store_heartbeat(*id);
     }
     std::thread::sleep(std::time::Duration::from_millis(1000));
-    // let resp = block_on(pd_client.store_heartbeat(Default::default(), None, None)).unwrap();
+    // let resp = block_on(pd_client.store_heartbeat(Default::default(), None,
+    // None)).unwrap();
     for id in cluster.engines.keys() {
         let store_stat = pd_client.get_store_stats(*id).unwrap();
         assert_eq!(store_stat.get_capacity(), 444444);
@@ -314,7 +316,8 @@ fn test_leadership_change_impl(filter: bool) {
     // Wait until all nodes have (k2, v2), then transfer leader.
     check_key(&cluster, b"k2", b"v2", Some(true), None, None);
     if filter {
-        // We should also filter normal kv, since a empty result can also be invoke pose_exec.
+        // We should also filter normal kv, since a empty result can also be invoke
+        // pose_exec.
         fail::cfg("on_post_exec_normal", "return(false)").unwrap();
     }
     let prev_states = collect_all_states(&cluster, region_id);
@@ -474,8 +477,8 @@ fn test_kv_write() {
         cluster.must_put(k.as_bytes(), v.as_bytes());
     }
 
-    // We can read from mock-store's memory, we are not sure if we can read from disk,
-    // since there may be or may not be a CompactLog.
+    // We can read from mock-store's memory, we are not sure if we can read from
+    // disk, since there may be or may not be a CompactLog.
     for i in 11..30 {
         let k = format!("k{}", i);
         let v = format!("v{}", i);
@@ -554,8 +557,8 @@ fn test_consistency_check() {
 
 #[test]
 fn test_old_compact_log() {
-    // If we just return None for CompactLog, the region state in ApplyFsm will change.
-    // Because there is no rollback in new implementation.
+    // If we just return None for CompactLog, the region state in ApplyFsm will
+    // change. Because there is no rollback in new implementation.
     // This is a ERROR state.
     let (mut cluster, pd_client) = new_mock_cluster(0, 3);
     cluster.run();
@@ -707,7 +710,8 @@ fn test_compact_log() {
     cluster.shutdown();
 }
 
-// TODO(tiflash) Test a KV will not be write twice by not only handle_put but also observer. When we fully enable engine_tiflash.
+// TODO(tiflash) Test a KV will not be write twice by not only handle_put but
+// also observer. When we fully enable engine_tiflash.
 
 pub fn new_ingest_sst_cmd(meta: SstMeta) -> Request {
     let mut cmd = Request::default();

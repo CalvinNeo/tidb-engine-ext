@@ -339,8 +339,8 @@ pub unsafe fn run_tikv_proxy(
     })
 }
 
-/// Run a TiKV server only for decryption. Returns when the server is shutdown by the user, in which
-/// case the server will be properly stopped.
+/// Run a TiKV server only for decryption. Returns when the server is shutdown
+/// by the user, in which case the server will be properly stopped.
 pub unsafe fn run_tikv_only_decryption(
     config: TiKvConfig,
     proxy_config: ProxyConfig,
@@ -440,7 +440,7 @@ impl<CER: ConfiguredRaftEngine> TiKvServer<CER> {
             .register_config(cfg_controller, self.config.storage.block_cache.shared);
 
         let engines_info = Arc::new(EnginesResourceInfo::new(
-            &engines, 180, /*max_samples_to_preserve*/
+            &engines, 180, // max_samples_to_preserve
         ));
 
         (engines, engines_info)
@@ -588,7 +588,8 @@ impl<ER: RaftEngine> TiKvServer<ER> {
     ///
     /// #  Fatal errors
     ///
-    /// - If `dynamic config` feature is enabled and failed to register config to PD
+    /// - If `dynamic config` feature is enabled and failed to register config
+    ///   to PD
     /// - If some critical configs (like data dir) are differrent from last run
     /// - If the config can't pass `validate()`
     /// - If the max open file descriptor limit is not high enough to support
@@ -715,9 +716,10 @@ impl<ER: RaftEngine> TiKvServer<ER> {
             );
         }
 
-        // We truncate a big file to make sure that both raftdb and kvdb of TiKV have enough space
-        // to do compaction and region migration when TiKV recover. This file is created in
-        // data_dir rather than db_path, because we must not increase store size of db_path.
+        // We truncate a big file to make sure that both raftdb and kvdb of TiKV have
+        // enough space to do compaction and region migration when TiKV recover.
+        // This file is created in data_dir rather than db_path, because we must
+        // not increase store size of db_path.
         let disk_stats = fs2::statvfs(&self.config.storage.data_dir).unwrap();
         let mut capacity = disk_stats.total_space();
         if self.config.raft_store.capacity.0 > 0 {
@@ -847,7 +849,8 @@ impl<ER: RaftEngine> TiKvServer<ER> {
         // Create cdc.
         // let mut cdc_worker = Box::new(LazyWorker::new("cdc"));
         // let cdc_scheduler = cdc_worker.scheduler();
-        // let txn_extra_scheduler = cdc::CdcTxnExtraScheduler::new(cdc_scheduler.clone());
+        // let txn_extra_scheduler =
+        // cdc::CdcTxnExtraScheduler::new(cdc_scheduler.clone());
         //
         // self.engines
         //     .as_mut()
@@ -861,7 +864,8 @@ impl<ER: RaftEngine> TiKvServer<ER> {
         //     tikv::config::Module::PessimisticTxn,
         //     Box::new(lock_mgr.config_manager()),
         // );
-        // lock_mgr.register_detector_role_change_observer(self.coprocessor_host.as_mut().unwrap());
+        // lock_mgr.register_detector_role_change_observer(self.coprocessor_host.
+        // as_mut().unwrap());
 
         let engines = self.engines.as_ref().unwrap();
 
@@ -1160,17 +1164,19 @@ impl<ER: RaftEngine> TiKvServer<ER> {
         // // Start backup stream
         // if self.config.backup_stream.enable {
         //     // Create backup stream.
-        //     let mut backup_stream_worker = Box::new(LazyWorker::new("backup-stream"));
+        //     let mut backup_stream_worker =
+        // Box::new(LazyWorker::new("backup-stream"));
         //     let backup_stream_scheduler = backup_stream_worker.scheduler();
         //
         //     // Register backup-stream observer.
-        //     let backup_stream_ob = BackupStreamObserver::new(backup_stream_scheduler.clone());
+        //     let backup_stream_ob =
+        // BackupStreamObserver::new(backup_stream_scheduler.clone());
         //     backup_stream_ob.register_to(self.coprocessor_host.as_mut().unwrap());
         //     // Register config manager.
         //     cfg_controller.register(
         //         tikv::config::Module::BackupStream,
-        //         Box::new(BackupStreamConfigManager(backup_stream_worker.scheduler())),
-        //     );
+        //         Box::new(BackupStreamConfigManager(backup_stream_worker.
+        // scheduler())),     );
         //
         //     let backup_stream_endpoint = backup_stream::Endpoint::new::<String>(
         //         node.id(),
@@ -1350,15 +1356,15 @@ impl<ER: RaftEngine> TiKvServer<ER> {
             self.config
                 .storage
                 .io_rate_limit
-                .build(!stats_collector_enabled /*enable_statistics*/),
+                .build(!stats_collector_enabled /* enable_statistics */),
         );
         let fetcher = if stats_collector_enabled {
             BytesFetcher::FromIOStatsCollector()
         } else {
             BytesFetcher::FromRateLimiter(limiter.statistics().unwrap())
         };
-        // Set up IO limiter even when rate limit is disabled, so that rate limits can be
-        // dynamically applied later on.
+        // Set up IO limiter even when rate limit is disabled, so that rate limits can
+        // be dynamically applied later on.
         set_io_rate_limiter(Some(limiter));
         fetcher
     }
@@ -1594,7 +1600,7 @@ impl ConfiguredRaftEngine for engine_rocks::RocksEngine {
             let raft_engine =
                 RaftLogEngine::new(config.raft_engine.config(), key_manager.clone(), None)
                     .expect("failed to open raft engine for migration");
-            dump_raft_engine_to_raftdb(&raft_engine, &raftdb, 8 /*threads*/);
+            dump_raft_engine_to_raftdb(&raft_engine, &raftdb, 8 /* threads */);
             raft_data_state_machine.after_dump_data();
         }
         raftdb
@@ -1643,7 +1649,7 @@ impl ConfiguredRaftEngine for RaftLogEngine {
             )
             .expect("failed to open raftdb for migration");
             let raftdb = RocksEngine::from_db(Arc::new(raftdb));
-            dump_raftdb_to_raft_engine(&raftdb, &raft_engine, 8 /*threads*/);
+            dump_raftdb_to_raft_engine(&raftdb, &raft_engine, 8 /* threads */);
             raft_data_state_machine.after_dump_data();
         }
         raft_engine

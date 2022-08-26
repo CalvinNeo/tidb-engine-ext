@@ -84,8 +84,9 @@ impl ExternalStorage for LocalStorage {
             ));
         }
         // create the parent dir if there isn't one.
-        // note: we may write to arbitrary directory here if the path contains things like '../'
-        // but internally the file name should be fully controlled by TiKV, so maybe it is OK?
+        // note: we may write to arbitrary directory here if the path contains things
+        // like '../' but internally the file name should be fully controlled by
+        // TiKV, so maybe it is OK?
         if let Some(parent) = Path::new(name).parent() {
             fs::create_dir_all(self.base.join(parent))
                 .await
@@ -121,8 +122,9 @@ impl ExternalStorage for LocalStorage {
     fn read(&self, name: &str) -> Box<dyn AsyncRead + Unpin> {
         debug!("read file from local storage";
             "name" => %name, "base" => %self.base.display());
-        // We used std i/o here for removing the requirement of tokio reactor when restoring.
-        // FIXME: when restore side get ready, use tokio::fs::File for returning.
+        // We used std i/o here for removing the requirement of tokio reactor when
+        // restoring. FIXME: when restore side get ready, use tokio::fs::File
+        // for returning.
         match StdFile::open(self.base.join(name)) {
             Ok(file) => Box::new(AllowStdIo::new(file)) as _,
             Err(e) => Box::new(error_stream(e).into_async_read()) as _,

@@ -339,7 +339,8 @@ impl Duration {
     }
 
     /// Returns the number of seconds contained by this Duration as f64.
-    /// The returned value does include the fractional (nanosecond) part of the duration.
+    /// The returned value does include the fractional (nanosecond) part of the
+    /// duration.
     #[inline]
     pub fn to_secs_f64(self) -> f64 {
         self.nanos as f64 / NANOS_PER_SEC as f64
@@ -483,7 +484,8 @@ impl Duration {
         Ok(Duration { nanos, fsp })
     }
 
-    /// Checked duration addition. Computes self + rhs, returning None if overflow occurred.
+    /// Checked duration addition. Computes self + rhs, returning None if
+    /// overflow occurred.
     pub fn checked_add(self, rhs: Duration) -> Option<Duration> {
         let nanos = self.nanos.checked_add(rhs.nanos)?;
         check_nanos(nanos).ok()?;
@@ -493,7 +495,8 @@ impl Duration {
         })
     }
 
-    /// Checked duration subtraction. Computes self - rhs, returning None if overflow occurred.
+    /// Checked duration subtraction. Computes self - rhs, returning None if
+    /// overflow occurred.
     pub fn checked_sub(self, rhs: Duration) -> Option<Duration> {
         let nanos = self.nanos.checked_sub(rhs.nanos)?;
         check_nanos(nanos).ok()?;

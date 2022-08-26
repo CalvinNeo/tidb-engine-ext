@@ -296,7 +296,8 @@ pub unsafe fn run_proxy(
     overwrite_config_with_cmd_args(&mut config, &mut proxy_config, &matches);
     config.logger_compatible_adjust();
 
-    // TODO(tiflash) We should later use ProxyConfig for proxy's own settings like `snap_handle_pool_size`
+    // TODO(tiflash) We should later use ProxyConfig for proxy's own settings like
+    // `snap_handle_pool_size`
     if is_config_check {
         validate_and_persist_config(&mut config, false);
         match crate::config::ensure_no_common_unrecognized_keys(

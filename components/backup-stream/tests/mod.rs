@@ -171,8 +171,9 @@ impl Suite {
             suite.start_endpoint(id);
         }
         // TODO: The current mock metastore (slash_etc) doesn't supports multi-version.
-        //       We must wait until the endpoints get ready to watching the metastore, or some modifies may be lost.
-        //       Either make Endpoint::with_client wait until watch did start or make slash_etc support multi-version,
+        //       We must wait until the endpoints get ready to watching the metastore,
+        // or some modifies may be lost.       Either make Endpoint::with_client
+        // wait until watch did start or make slash_etc support multi-version,
         //       then we can get rid of this sleep.
         std::thread::sleep(Duration::from_secs(1));
         suite
@@ -566,8 +567,8 @@ mod test {
     }
 
     #[test]
-    /// This case tests whehter the checkpoint ts (next backup ts) can be advanced correctly
-    /// when async commit is enabled.
+    /// This case tests whehter the checkpoint ts (next backup ts) can be
+    /// advanced correctly when async commit is enabled.
     fn async_commit() {
         // test_util::init_log_for_test();
         let mut suite = super::Suite::new("async_commit", 3);
@@ -670,8 +671,9 @@ mod test {
         suite.force_flush_files("inflight_message");
         fail::cfg("delay_on_start_observe", "pause").unwrap();
         suite.must_shuffle_leader(1);
-        // Handling the `StartObserve` message and doing flush are executed asynchronously.
-        // Make a delay of unblocking flush thread for make sure we have handled the `StartObserve`.
+        // Handling the `StartObserve` message and doing flush are executed
+        // asynchronously. Make a delay of unblocking flush thread for make sure
+        // we have handled the `StartObserve`.
         std::thread::sleep(Duration::from_secs(1));
         fail::cfg("delay_on_flush", "off").unwrap();
         suite.wait_for_flush();
@@ -692,7 +694,8 @@ mod test {
                 .global_progress_of_task("inflight_message"),
         )
         .unwrap();
-        // The checkpoint should be advanced as expection when the inflight message has been consumed.
+        // The checkpoint should be advanced as expection when the inflight message has
+        // been consumed.
         assert!(checkpoint > 512, "checkpoint = {}", checkpoint);
     }
 }

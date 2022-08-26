@@ -15,7 +15,8 @@ enum TrackerState {
     /// The tracker is initialized.
     Initialized,
 
-    /// The tracker is notified that the task is scheduled on a thread pool and start running.
+    /// The tracker is notified that the task is scheduled on a thread pool and
+    /// start running.
     Scheduled(Instant),
 
     /// The tracker is notified that the snapshot needed by the task is ready.
@@ -33,7 +34,8 @@ enum TrackerState {
     /// The tracker is notified that all items just finished.
     AllItemFinished,
 
-    /// The tracker has finished all tracking and there will be no future operations.
+    /// The tracker has finished all tracking and there will be no future
+    /// operations.
     Tracked,
 }
 
@@ -47,7 +49,8 @@ pub struct Tracker {
     wait_time: Duration,          // Total wait time
     schedule_wait_time: Duration, // Wait time spent on waiting for scheduling
     snapshot_wait_time: Duration, // Wait time spent on waiting for a snapshot
-    handler_build_time: Duration, // Time spent on building the handler (not included in total wait time)
+    handler_build_time: Duration, /* Time spent on building the handler (not included in total
+                                   * wait time) */
     req_lifetime: Duration,
 
     // Suspend time between processing two items
@@ -74,9 +77,9 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    /// Initialize the tracker. Normally it is called outside future pool's factory context,
-    /// because the future pool might be full and we need to wait it. This kind of wait time
-    /// has to be recorded.
+    /// Initialize the tracker. Normally it is called outside future pool's
+    /// factory context, because the future pool might be full and we need
+    /// to wait it. This kind of wait time has to be recorded.
     pub fn new(req_ctx: ReqContext, slow_log_threshold: Duration) -> Tracker {
         let now = Instant::now_coarse();
         Tracker {
@@ -356,8 +359,9 @@ impl Tracker {
 }
 
 impl Drop for Tracker {
-    /// `Tracker` may be dropped without even calling `on_begin_all_items`. For example, if
-    /// get snapshot failed. So we fast-forward if some steps are missing.
+    /// `Tracker` may be dropped without even calling `on_begin_all_items`. For
+    /// example, if get snapshot failed. So we fast-forward if some steps
+    /// are missing.
     fn drop(&mut self) {
         if self.current_stage == TrackerState::Initialized {
             self.on_scheduled();

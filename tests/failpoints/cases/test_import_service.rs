@@ -154,12 +154,13 @@ fn test_ingest_key_manager_delete_file_failed() {
 
     let deregister_fp = "key_manager_fails_before_delete_file";
     // the first delete is in check before ingest, the second is in ingest cleanup
-    // set the ingest clean up failed to trigger remove file but not remove key condition
+    // set the ingest clean up failed to trigger remove file but not remove key
+    // condition
     fail::cfg(deregister_fp, "1*off->1*return->off").unwrap();
 
-    // Do an ingest and verify the result is correct. Though the ingest succeeded, the clone file is
-    // still in the key manager
-    //TODO: how to check the key manager contains the clone key
+    // Do an ingest and verify the result is correct. Though the ingest succeeded,
+    // the clone file is still in the key manager
+    // TODO: how to check the key manager contains the clone key
     let mut ingest = IngestRequest::default();
     ingest.set_context(ctx.clone());
     ingest.set_sst(meta.clone());
@@ -177,7 +178,8 @@ fn test_ingest_key_manager_delete_file_failed() {
         .get(&node_id)
         .unwrap()
         .get_path(&meta);
-    // wait up to 5 seconds to make sure raw uploaded file is deleted by the async clean up task.
+    // wait up to 5 seconds to make sure raw uploaded file is deleted by the async
+    // clean up task.
     for _ in 0..50 {
         if !save_path.as_path().exists() {
             break;
@@ -186,7 +188,8 @@ fn test_ingest_key_manager_delete_file_failed() {
     }
     assert!(!save_path.as_path().exists());
 
-    // Do upload and ingest again, though key manager contains this file, the ingest action should success.
+    // Do upload and ingest again, though key manager contains this file, the ingest
+    // action should success.
     upload_sst(&import, &meta, &data).unwrap();
     let mut ingest = IngestRequest::default();
     ingest.set_context(ctx);

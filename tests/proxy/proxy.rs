@@ -346,8 +346,8 @@ fn test_kv_write() {
         cluster.must_put(k.as_bytes(), v.as_bytes());
     }
 
-    // We can read from mock-store's memory, we are not sure if we can read from disk,
-    // since there may be or may not be a CompactLog.
+    // We can read from mock-store's memory, we are not sure if we can read from
+    // disk, since there may be or may not be a CompactLog.
     for i in 20..30 {
         let k = format!("k{}", i);
         let v = format!("v{}", i);
