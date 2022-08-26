@@ -1,25 +1,3 @@
-# New TiFlash Proxy
-
-Author(s): [CalvinNeo](github.com/CalvinNeo)
-
-## Motivation
-TiFlash proxy is used to be a fork of TiKV which can replicate data from TiKV to TiFlash. However, since TiKV is upgrading rapidly, it brings lots of troubles for the old version:
-1. Proxy can't cherry pick TiKV 's bugfix in time.
-2. It is hard to take proxy into account when developing TiKV.
-
-## Design
-The whole work can be divided into two parts:
-1. TiKV side
-    TiKV provides new engine traits interfaces and observers.
-1. TiFlash side
-    By implementing these new interfaces and observers, TiFlash can receive data from TiKV,  
-
-### TiKV side
-    As described in [tikv#12849](https://github.com/tikv/tikv/issues/12849).
-
-### TiFlash side
-    
-
 # TiDB Engine Extensions Library
 
 ## Abstract
@@ -60,24 +38,13 @@ Until a safe point is reached, related modifications are not visible to others.
 - `engine-store` should screen out raft commands with outdated apply-state during apply process
 - `engine-store` should recover from the middle step by overwriting and must NOT provide services until caught up with the latest state
 
-Such architecture can inherit several important features from TiKV, such as distributed fault tolerance/recovery, automatic re-balancing, etc.
-It's also convenient for PD to maintain this kind of storage system by the existing way as long as it works as `raft store`.
+Such architecture can inherit several important features from TiKV, such as distributed fault tolerance/recovery, automatic re-balancing, etc.  It's also convenient for PD to maintain this kind of storage system by the existing way as long as it works as `raft store`.
+
+Since it brings lots of trouble in maintaining a fork of TiKV, so we've managed to refactor TiKV source code and extract parts of the necessary process into interfaces. The whole design is in [New TiFlash Proxy](doc/new_proxy.md).
 
 ### Interfaces
 
-Generally speaking, there are two storage components in TiKV for maintaining multi-raft RSM: `RaftEngine` and `KvEngine`：
-1. KvEngine is mainly used for applying raft command and providing key-value services.
-    Multiple modifications about region data/meta/apply-state will be encapsulated into one `Write Batch` and written into KvEngine atomically.
-1. RaftEngine will parse its own committed raft log into corresponding normal/admin raft commands, which will be handled by the apply process.
-
-It is an option to wrap a self-defined KvEngine by TiKV's `Engine Traits`. But it may cost a lot to achieve such a replacement:
-1. It's not easy to guarantee atomicity while writing/reading dynamic key-value pair(such as meta/apply-state) and patterned data(strong schema) together for other storage systems.
-1. A few modules and components(like importer or lighting) reply on the SST format of KvEngine in TiKV. Foe example, thoses SST files shall be transformed to adapt a column storage engine.
-1. A flush to storage layer may be more expensive in other storage engine than TiKV. 
-
-Apart from engine traits, we also need `coprocessor`s to observe and control TiKV's applying precedures.
-
-We've managed to refactor TiKV source code and extract parts of the necessary process into interfaces. The main categories are like:
+Interfaces between Proxy and TiFlash are:
 
 - applying commands
     - applying normal-write raft command
@@ -94,8 +61,8 @@ We've managed to refactor TiKV source code and extract parts of the necessary pr
     - SST file reader
     - tools/utils
 
-
 #### Handling Commands
+
 TiKV can split or merge regions to make the partitions more flexible:
 1. When the size of a region exceeds the limit, it will split into two or more regions, and its range would change from `[a, c)` to `[a, b)` and `[b, c)`.
 1. When the sizes of two consecutive regions are small enough, TiKV will merge them into one, and their range would change from `[a, b)` and `[b, c)` to `[a, c)`.
@@ -106,18 +73,20 @@ Ignorable admin command `CompactLog` may trigger raft log GC in `RaftEngine`. Th
 
 `ComputeHash`/`VerifyHash` are used to check consistency. However, they rely on a Rocksdb-based implementatiob storage layer. Those commands can also be filtered by `pre_exec` observer.
 
-However executing normal-write or some other admin commands won't change region meta, the decision of persisting can be pushed down to `engine-store`. We introduce a `post_exec` observer in TiKV, which tells TiKV to do a `commit` right after we finished executing these commands.
+However, executing normal-write or some other admin commands won't change region meta, the decision of persisting can be pushed down to `engine-store`. We introduce a `post_exec` observer in TiKV, which tells TiKV to do a `commit` right after we finished executing these commands.
 
 When the region in the current store is illegal or pending removal, TiKV will execute a `destroy-peer` task to clean useless data, which will also be observed by proxy and reported to engine-store.
 
 When maintaining DWAL, it's practical to batch raft msg before fsync as long as latency is tolerable to reduce IOPS(mainly in RaftEngine) and make it system-friendly with poor performance.
 
 #### ReadIndex
+
 According to the basic transaction log replication, a leader peer must commit or apply each writing action before returning success ACK to the client.
 When any peer tries to respond to queries, it should get the latest committed index from the leader and wait until the apply-state caught up to ensure it has enough context.
 For learners/followers or even leaders, the `Read Index` is a practical choice to check the latest `Lease` because it's easy to make any peer of region group provide read service under the same logic as the overhead of read-index itself is insignificant.
 
 #### Apply Snapshot
+
 When the leader peer has reclaimed related raft log or other peers can not proceed with RSM in the current context, other peers can request a region snapshot from the leader.
 However, the region snapshot data, whose format is TiKV's `SST` file, is not usually used by other storage systems directly.
 The standard process has been divided into several parts to accelerate the speed of applying region snapshot data:
@@ -128,26 +97,29 @@ The standard process has been divided into several parts to accelerate the speed
 - Apply self-defined structure by original sequence
 
 #### IngestSst
+
 Interfaces about `IngestSst` are the core to be compatible with `TiDB Lighting` and `BR` for the `HTAP` scenario.
 It can substantially speed up data loading/restoring.
 `SST File Reader` is also useful when applying the `IngestSst` raft command.
 
 #### Encryption
+
 Encryption is essential for `DBaaS`(database as a service).
 To be compatible with TiKV, a data key manager with the same logic is indispensable, especially for rotating data encryption keys or using the KMS service.
 
 #### Encryption
+
 Status services like metrics, CPU/Memory profile(flame graph), or other self-defined stats can effectively support the diagnosis.
 It's suggested to encapsulate those into one status server and let other external components visit through the status address.
 We could also reuse most of the original metrics of TiKV, and an optional way is to add a specific prefix for each name.
 
-#### FFI
+### FFI
 
 Since the program language `Rust`, which TiKV uses, has zero-cost abstractions, it's straightforward to let different threads interact with each other by `FFI`(Foreign Function Interface). Such mode brings almost no overhead. However, any caller must be pretty clear about the exact safe/unsafe operations boundary. The structure used by different runtimes through interfaces **must have the same memory layout**.
 
 ## Usage
 
-There are two exposed extern "C" functions in [raftstore-proxy](TODO):
+There are two exposed extern "C" functions in [raftstore-proxy](raftstore-proxy):
 
 - `print_raftstore_proxy_version`: print necessary version information(just like TiKV does) into standard output.
 - `run_raftstore_proxy_ffi`:
@@ -157,7 +129,7 @@ There are two exposed extern "C" functions in [raftstore-proxy](TODO):
 To use this library, please follow the steps below: 
 - Install `grpc`, `protobuf`, `c++`, `rust`.
 - Include this project as submodule.
-- Modify [FFI Source Code](TODO) under namspace `DB` if necessary and run `make gen_proxy_ffi`.
+- Modify [FFI Source Code](raftstore-proxy/ffi/src/RaftStoreProxyFFI) under namspace `DB` if necessary and run `make gen_proxy_ffi`.
 - Run `ENGINE_LABEL_VALUE=xxx make release`
   - label `engine:${ENGINE_LABEL_VALUE}` will be added to store info automatically
   - prefix `${ENGINE_LABEL_VALUE}_proxy_` will be added to each metrics name;
@@ -165,7 +137,6 @@ To use this library, please follow the steps below:
 - Compile and link target library `target/release/lib${ENGINE_LABEL_VALUE}_proxy.dylib|so`.
 
 ## Interfaces Description
-
 
 ## TODO
 
