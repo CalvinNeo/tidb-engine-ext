@@ -75,7 +75,7 @@ fn test_sst_recovery_basic() {
 #[test]
 fn test_sst_recovery_overlap_range_sst_exist() {
     let (mut cluster, pd_client, engine1) = create_tikv_cluster_with_one_node_damaged();
-
+    panic!("1");
     // create a new sst [1,7] flushed to L0.
     cluster.must_put_cf(CF_DEFAULT, b"1", b"val_1");
     cluster.must_put_cf(CF_DEFAULT, b"3", b"val_1");

@@ -716,6 +716,7 @@ where
         router: R,
         pd_client: Option<Arc<T>>,
     ) -> Runner<EK, R, T> {
+        println!("!!!! Runner raft {:?} {:?}", PENDING_APPLY_CHECK_INTERVAL, STALE_PEER_CHECK_TICK);
         Runner {
             pool: Builder::new(thd_name!("snap-generator"))
                 .max_thread_count(snap_generator_pool_size)
