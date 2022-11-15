@@ -547,7 +547,7 @@ mod restart {
 
         // check_key(&cluster, b"k2", b"v2", Some(true), None, None);
 
-        fail::cfg("region_apply_snap", "pause").unwrap();
+        fail::cfg("apply_pending_snapshot", "return").unwrap();
         debug!("!!!! HAHAHA begin apply snap data");
         tikv_util::info!("engine_3 is {}", eng_ids[2]);
         let engine_3 = cluster.get_engine(eng_ids[2]);
@@ -556,20 +556,7 @@ mod restart {
 
         // check_key(&cluster, first_key, &first_value, Some(false), None, Some(vec![eng_ids[2]]));
 
-        info!("stop node {}", eng_ids[2]);
-        {
-            cluster.stop_node(eng_ids[2]);
-        }
-        {
-            let lock = cluster.ffi_helper_set.lock();
-            lock.unwrap()
-                .deref_mut()
-                .get_mut(&eng_ids[2])
-                .unwrap()
-                .engine_store_server
-                .stop();
-        }
-
+        std::thread::sleep(std::time::Duration::from_millis(1000));
         {
             let engine_3 = cluster.get_engine(eng_ids[2]);
             let region_key = keys::region_state_key(r1);
@@ -582,6 +569,19 @@ mod restart {
                     panic!("!!!! E");
                 }
             };
+        }
+        info!("stop node {}", eng_ids[2]);
+        {
+            cluster.stop_node(eng_ids[2]);
+        }
+        {
+            let lock = cluster.ffi_helper_set.lock();
+            lock.unwrap()
+                .deref_mut()
+                .get_mut(&eng_ids[2])
+                .unwrap()
+                .engine_store_server
+                .stop();
         }
 
         info!("resume node {}", eng_ids[2]);
@@ -598,7 +598,7 @@ mod restart {
         cluster.run_node(eng_ids[2]).unwrap();
 
 
-        fail::remove("region_apply_snap");
+        fail::remove("apply_pending_snapshot");
 
         check_key(&cluster, first_key, &first_value, Some(true), None, Some(vec![eng_ids[2]]));
 
