@@ -514,6 +514,97 @@ mod ingest {
 mod restart {
     use super::*;
 
+    #[test]
+    fn test_snap_append_restart() {
+        let (mut cluster, pd_client) = new_mock_cluster(0, 3);
+
+        disable_auto_gen_compact_log(&mut cluster);
+        cluster.cfg.raft_store.max_snapshot_file_raw_size = ReadableSize(u64::MAX);
+
+        // Disable default max peer count check.
+        pd_client.disable_default_operator();
+        let r1 = cluster.run_conf_change();
+
+        let first_value = vec![0; 10240];
+        for i in 0..10 {
+            let key = format!("{:03}", i);
+            cluster.must_put(key.as_bytes(), &first_value);
+        }
+        let first_key: &[u8] = b"000";
+
+        let eng_ids = cluster
+            .engines
+            .iter()
+            .map(|e| e.0.to_owned())
+            .collect::<Vec<_>>();
+
+        // let (key, value) = (b"k2", b"v2");
+        // cluster.must_put(key, value);
+
+        let engine_2 = cluster.get_engine(eng_ids[1]);
+        pd_client.must_add_peer(r1, new_peer(eng_ids[1], eng_ids[1]));
+        must_get_equal(&engine_2, first_key, first_value.as_slice());
+
+        // check_key(&cluster, b"k2", b"v2", Some(true), None, None);
+
+        fail::cfg("region_apply_snap", "pause").unwrap();
+        debug!("!!!! HAHAHA begin apply snap data");
+        tikv_util::info!("engine_3 is {}", eng_ids[2]);
+        let engine_3 = cluster.get_engine(eng_ids[2]);
+        must_get_none(&engine_3, first_key);
+        pd_client.must_add_peer(r1, new_peer(eng_ids[2], eng_ids[2]));
+
+        // check_key(&cluster, first_key, &first_value, Some(false), None, Some(vec![eng_ids[2]]));
+
+        info!("stop node {}", eng_ids[2]);
+        {
+            cluster.stop_node(eng_ids[2]);
+        }
+        {
+            let lock = cluster.ffi_helper_set.lock();
+            lock.unwrap()
+                .deref_mut()
+                .get_mut(&eng_ids[2])
+                .unwrap()
+                .engine_store_server
+                .stop();
+        }
+
+        {
+            let engine_3 = cluster.get_engine(eng_ids[2]);
+            let region_key = keys::region_state_key(r1);
+            match engine_3.get_msg_cf::<RegionLocalState>(engine_traits::CF_RAFT, &region_key).unwrap() {
+                Some(state) => {
+                    info!("!!!!! state"; "state" => ?state);
+                    1
+                },
+                None => {
+                    panic!("!!!! E");
+                }
+            };
+        }
+
+        info!("resume node {}", eng_ids[2]);
+        {
+            let lock = cluster.ffi_helper_set.lock();
+            lock.unwrap()
+                .deref_mut()
+                .get_mut(&eng_ids[2])
+                .unwrap()
+                .engine_store_server
+                .restore();
+        }
+        info!("restored node {}", eng_ids[2]);
+        cluster.run_node(eng_ids[2]).unwrap();
+
+
+        fail::remove("region_apply_snap");
+
+        check_key(&cluster, first_key, &first_value, Some(true), None, Some(vec![eng_ids[2]]));
+
+        cluster.shutdown();
+    }
+
     /// This test is currently not valid, since we can't abort in apply_snap by
     /// failpoint now.
     // #[test]

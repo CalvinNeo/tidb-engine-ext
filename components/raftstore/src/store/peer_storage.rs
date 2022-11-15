@@ -594,6 +594,8 @@ where
         for r in destroy_regions {
             write_peer_state(kv_wb, r, PeerState::Tombstone, None)?;
         }
+
+        info!("!!!!! Applying"; "peer_id" => self.peer_id, "region_id" => region_id);
         write_peer_state(kv_wb, &region, PeerState::Applying, None)?;
 
         let last_index = snap.get_metadata().get_index();

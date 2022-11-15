@@ -1120,8 +1120,11 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
         let mut merging_count = 0;
         let mut meta = self.store_meta.lock().unwrap();
         let mut replication_state = self.global_replication_state.lock().unwrap();
+        info!("!!!!! ZZZZ"; "store_id" => store_id);
         kv_engine.scan(CF_RAFT, start_key, end_key, false, |key, value| {
+
             let (region_id, suffix) = box_try!(keys::decode_region_meta_key(key));
+            info!("!!!!! Region"; "r" => ?region_id);
             if suffix != keys::REGION_STATE_SUFFIX {
                 return Ok(true);
             }
@@ -1141,6 +1144,7 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
             if local_state.get_state() == PeerState::Applying {
                 // in case of restart happen when we just write region state to Applying,
                 // but not write raft_local_state to raft rocksdb in time.
+                info!("!!!!! Applying Recover"; "r" => ?region);
                 box_try!(peer_storage::recover_from_applying_state(
                     &self.engines,
                     &mut raft_wb,
