@@ -662,7 +662,7 @@ impl PdTaskObserver for TiFlashObserver {
     }
 }
 
-fn retrieve_sst_files(snap: &store::Snapshot) -> Vec<(PathBuf, ColumnFamilyType)> {
+pub fn retrieve_sst_files(snap: &store::Snapshot) -> Vec<(PathBuf, ColumnFamilyType)> {
     let mut sst_views: Vec<(PathBuf, ColumnFamilyType)> = vec![];
     let mut ssts = vec![];
     for cf_file in snap.cf_files() {
@@ -743,6 +743,15 @@ impl ApplySnapshotObserver for TiFlashObserver {
             None => return,
             Some(s) => s,
         };
+
+        fail::fail_point!("on_ob_pre_handle_snapshot_delete", |_| {
+            let ssts = retrieve_sst_files(snap);
+            for (pathbuf, _) in ssts.iter() {
+                debug!("delete snapshot file"; "path" => ?pathbuf);
+                std::fs::remove_file(pathbuf.as_path()).unwrap();
+            }
+            return;
+        });
 
         let (sender, receiver) = mpsc::channel();
         let task = Arc::new(PrehandleTask::new(receiver, peer_id));

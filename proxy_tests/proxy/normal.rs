@@ -515,6 +515,68 @@ mod restart {
     use super::*;
 
     #[test]
+    fn test_delete_snapshot_after_apply() {
+        let (mut cluster, pd_client) = new_mock_cluster_snap(0, 3);
+        assert_eq!(cluster.cfg.proxy_cfg.raft_store.snap_handle_pool_size, 2);
+
+        fail::cfg("apply_pending_snapshot", "return").unwrap();
+        disable_auto_gen_compact_log(&mut cluster);
+
+        // Disable default max peer count check.
+        pd_client.disable_default_operator();
+        let r1 = cluster.run_conf_change();
+
+        let first_value = vec![0; 10240];
+        // at least 4m data
+        for i in 0..400 {
+            let key = format!("{:03}", i);
+            cluster.must_put(key.as_bytes(), &first_value);
+        }
+        let first_key: &[u8] = b"000";
+
+        let eng_ids = cluster
+            .engines
+            .iter()
+            .map(|e| e.0.to_owned())
+            .collect::<Vec<_>>();
+        tikv_util::info!("engine_2 is {}", eng_ids[1]);
+        let engine_2 = cluster.get_engine(eng_ids[1]);
+        must_get_none(&engine_2, first_key);
+        // add peer (engine_2,engine_2) to region 1.
+        
+        fail::cfg("on_ob_pre_handle_snapshot_delete", "return").unwrap();
+        pd_client.must_add_peer(r1, new_peer(eng_ids[1], eng_ids[1]));
+        
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        // Note there is no region 1 on engine_2.
+        let new_states = maybe_collect_states(&cluster, r1, None);
+        assert!(new_states.get(&eng_ids[1]).is_none());
+
+        // assert_eq!(new_states.get(&eng_ids[1]).unwrap().in_disk_region_state.get_state(), kvproto::raft_serverpb::PeerState::Applying);
+
+        fail::remove("apply_pending_snapshot");
+        {
+            let (key, value) = (b"k2", b"v2");
+            cluster.must_put(key, value);
+            check_key(
+                &cluster,
+                key,
+                value,
+                Some(true),
+                None,
+                Some(vec![eng_ids[1]]),
+            );
+            let engine_2 = cluster.get_engine(eng_ids[1]);
+            // now snapshot must be applied on peer engine_2
+            must_get_equal(&engine_2, first_key, first_value.as_slice());
+        }
+
+        fail::remove("apply_pending_snapshot");
+        fail::remove("on_ob_pre_handle_snapshot_delete");
+        cluster.shutdown();
+    }
+
+    #[test]
     fn test_snap_append_restart() {
         let (mut cluster, pd_client) = new_mock_cluster(0, 3);
 
@@ -538,14 +600,11 @@ mod restart {
             .map(|e| e.0.to_owned())
             .collect::<Vec<_>>();
 
-        // let (key, value) = (b"k2", b"v2");
-        // cluster.must_put(key, value);
 
         let engine_2 = cluster.get_engine(eng_ids[1]);
         pd_client.must_add_peer(r1, new_peer(eng_ids[1], eng_ids[1]));
         must_get_equal(&engine_2, first_key, first_value.as_slice());
 
-        // check_key(&cluster, b"k2", b"v2", Some(true), None, None);
 
         fail::cfg("apply_pending_snapshot", "return").unwrap();
         debug!("!!!! HAHAHA begin apply snap data");
@@ -557,6 +616,102 @@ mod restart {
         // check_key(&cluster, first_key, &first_value, Some(false), None, Some(vec![eng_ids[2]]));
 
         std::thread::sleep(std::time::Duration::from_millis(1000));
+        let (key, value) = (b"k2", b"v2");
+        cluster.must_put(key, value);
+        check_key(&cluster, key, value, Some(true), None, Some(vec![eng_ids[0],eng_ids[1]]));
+
+        {
+            let engine_3 = cluster.get_engine(eng_ids[2]);
+            let region_key = keys::region_state_key(r1);
+            match engine_3.get_msg_cf::<RegionLocalState>(engine_traits::CF_RAFT, &region_key).unwrap() {
+                Some(state) => {
+                    info!("!!!!! state"; "state" => ?state);
+                    1
+                },
+                None => {
+                    panic!("!!!! E");
+                }
+            };
+        }
+        info!("stop node {}", eng_ids[2]);
+        {
+            cluster.stop_node(eng_ids[2]);
+        }
+        {
+            let lock = cluster.ffi_helper_set.lock();
+            lock.unwrap()
+                .deref_mut()
+                .get_mut(&eng_ids[2])
+                .unwrap()
+                .engine_store_server
+                .stop();
+        }
+
+        info!("resume node {}", eng_ids[2]);
+        {
+            let lock = cluster.ffi_helper_set.lock();
+            lock.unwrap()
+                .deref_mut()
+                .get_mut(&eng_ids[2])
+                .unwrap()
+                .engine_store_server
+                .restore();
+        }
+        info!("restored node {}", eng_ids[2]);
+        cluster.run_node(eng_ids[2]).unwrap();
+
+
+        fail::remove("apply_pending_snapshot");
+
+        check_key(&cluster, first_key, &first_value, Some(true), None, Some(vec![eng_ids[2]]));
+
+        cluster.shutdown();
+    }
+
+    #[test]
+    fn test_snap_before_apply_snap_restart() {
+        let (mut cluster, pd_client) = new_mock_cluster(0, 3);
+
+        disable_auto_gen_compact_log(&mut cluster);
+        cluster.cfg.raft_store.max_snapshot_file_raw_size = ReadableSize(u64::MAX);
+
+        // Disable default max peer count check.
+        pd_client.disable_default_operator();
+        let r1 = cluster.run_conf_change();
+
+        let first_value = vec![0; 10240];
+        for i in 0..10 {
+            let key = format!("{:03}", i);
+            cluster.must_put(key.as_bytes(), &first_value);
+        }
+        let first_key: &[u8] = b"000";
+
+        let eng_ids = cluster
+            .engines
+            .iter()
+            .map(|e| e.0.to_owned())
+            .collect::<Vec<_>>();
+
+
+        let engine_2 = cluster.get_engine(eng_ids[1]);
+        pd_client.must_add_peer(r1, new_peer(eng_ids[1], eng_ids[1]));
+        must_get_equal(&engine_2, first_key, first_value.as_slice());
+
+
+        fail::cfg("apply_pending_snapshot", "return").unwrap();
+        debug!("!!!! HAHAHA begin apply snap data");
+        tikv_util::info!("engine_3 is {}", eng_ids[2]);
+        let engine_3 = cluster.get_engine(eng_ids[2]);
+        must_get_none(&engine_3, first_key);
+        pd_client.must_add_peer(r1, new_peer(eng_ids[2], eng_ids[2]));
+
+        // check_key(&cluster, first_key, &first_value, Some(false), None, Some(vec![eng_ids[2]]));
+
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let (key, value) = (b"k2", b"v2");
+        cluster.must_put(key, value);
+        check_key(&cluster, key, value, Some(true), None, Some(vec![eng_ids[0],eng_ids[1]]));
+
         {
             let engine_3 = cluster.get_engine(eng_ids[2]);
             let region_key = keys::region_state_key(r1);
