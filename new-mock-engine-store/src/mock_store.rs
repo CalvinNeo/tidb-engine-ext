@@ -951,11 +951,13 @@ impl ProxyNotifier {
 extern "C" fn ffi_gc_special_raw_cpp_ptr(
     ptr: ffi_interfaces::RawVoidPtr,
     hint_len: u64,
+    hint_inner_type: u64,
     tp: ffi_interfaces::SpecialCppPtrType,
 ) {
     match tp {
         ffi_interfaces::SpecialCppPtrType::None => (),
         ffi_interfaces::SpecialCppPtrType::TupleOfRawCppPtr => unsafe {
+            // Tuple with layout of `void **`
             let p = Box::from_raw(std::slice::from_raw_parts_mut(
                 ptr as *mut RawCppPtr,
                 hint_len as usize,
@@ -963,11 +965,20 @@ extern "C" fn ffi_gc_special_raw_cpp_ptr(
             drop(p);
         },
         ffi_interfaces::SpecialCppPtrType::ArrayOfRawCppPtr => unsafe {
+            // Array with layout of `T **`
             let p = Box::from_raw(std::slice::from_raw_parts_mut(
                 ptr as *mut RawVoidPtr,
                 hint_len as usize,
             ));
             drop(p);
+        },
+        ffi_interfaces::SpecialCppPtrType::CArrayOfRawCppPtr => unsafe {
+            // Array with layout of `T *`
+            match hint_inner_type.into() {
+                RawCppPtrTypeImpl::String => {
+                },
+                _ => (),
+            }
         },
     }
 }

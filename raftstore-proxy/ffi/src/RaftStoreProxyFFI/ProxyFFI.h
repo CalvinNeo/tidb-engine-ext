@@ -10,6 +10,7 @@ enum class SpecialCppPtrType : uint32_t {
   None = 0,
   TupleOfRawCppPtr = 1,
   ArrayOfRawCppPtr = 2,
+  CArrayOfRawCppPtr = 3,
 };
 
 enum class EngineStoreApplyRes : uint32_t {
@@ -104,6 +105,7 @@ struct PageAndCppStrWithView {
   BaseBuffView key_view;
 };
 
+// TODO change this into RawCppPtrArr.
 struct PageAndCppStrWithViewVec {
   PageAndCppStrWithView *inner;
   const uint64_t len;
@@ -120,6 +122,14 @@ struct RawCppPtrTuple {
 // Can be used to represent arrays.
 struct RawCppPtrArr {
   RawVoidPtr *inner;
+  const uint64_t len;
+  RawCppPtrType type;
+};
+
+// An array of pointers(same type), like `T *`,
+// Can be used to represent arrays.
+struct RawCppPtrCArr {
+  RawVoidPtr inner;
   const uint64_t len;
   RawCppPtrType type;
 };
@@ -279,7 +289,8 @@ struct EngineStoreServerHelper {
                                            BaseBuffView body);
   uint8_t (*fn_check_http_uri_available)(BaseBuffView);
   void (*fn_gc_raw_cpp_ptr)(RawVoidPtr, RawCppPtrType);
-  void (*fn_gc_special_raw_cpp_ptr)(RawVoidPtr, uint64_t, SpecialCppPtrType);
+  void (*fn_gc_special_raw_cpp_ptr)(RawVoidPtr, uint64_t, uint64_t,
+                                    SpecialCppPtrType);
   CppStrWithView (*fn_get_config)(EngineStoreServerWrap *, uint8_t full);
   void (*fn_set_store)(EngineStoreServerWrap *, BaseBuffView);
   void (*fn_set_pb_msg_by_bytes)(MsgPBType type, RawVoidPtr ptr,

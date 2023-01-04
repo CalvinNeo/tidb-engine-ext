@@ -39,7 +39,7 @@ pub use self::interfaces::root::DB::{
     EngineStoreServerHelper, EngineStoreServerStatus, FastAddPeerRes, FastAddPeerStatus,
     FileEncryptionRes, FsStats, HttpRequestRes, HttpRequestStatus, KVGetStatus,
     PageAndCppStrWithView, PageAndCppStrWithViewVec, PageWithView, RaftCmdHeader, RaftProxyStatus,
-    RaftStoreProxyFFIHelper, RawCppPtr, RawCppPtrArr, RawCppPtrTuple, RawCppStringPtr, RawVoidPtr,
+    RaftStoreProxyFFIHelper, RawCppPtr, RawCppPtrArr, RawCppPtrCArr, RawCppPtrTuple, RawCppStringPtr, RawVoidPtr,
     SSTReaderPtr, SpecialCppPtrType, StoreStats, WriteCmdType, WriteCmdsView,
 };
 use self::interfaces::root::DB::{
@@ -408,6 +408,7 @@ impl Drop for RawCppPtrTuple {
                 helper.gc_special_raw_cpp_ptr(
                     self.inner as RawVoidPtr,
                     self.len,
+                    0,
                     SpecialCppPtrType::TupleOfRawCppPtr,
                 );
                 self.inner = std::ptr::null_mut();
@@ -446,7 +447,36 @@ impl Drop for RawCppPtrArr {
                 helper.gc_special_raw_cpp_ptr(
                     self.inner as RawVoidPtr,
                     self.len,
+                    0,
                     SpecialCppPtrType::ArrayOfRawCppPtr,
+                );
+                self.inner = std::ptr::null_mut();
+                self.len = 0;
+            }
+        }
+    }
+}
+
+
+impl RawCppPtrCArr {
+    pub fn is_null(&self) -> bool {
+        self.inner.is_null()
+    }
+}
+
+unsafe impl Send for RawCppPtrCArr {}
+
+impl Drop for RawCppPtrCArr {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.is_null() {
+                let helper = get_engine_store_server_helper();
+                // Delete `T *`
+                helper.gc_special_raw_cpp_ptr(
+                    self.inner as RawVoidPtr,
+                    self.len,
+                    self.type_,
+                    SpecialCppPtrType::CArrayOfRawCppPtr,
                 );
                 self.inner = std::ptr::null_mut();
                 self.len = 0;
@@ -509,11 +539,12 @@ impl EngineStoreServerHelper {
         &self,
         ptr: *mut ::std::os::raw::c_void,
         hint_len: u64,
+        hint_inner_type: u64,
         tp: SpecialCppPtrType,
     ) {
         debug_assert!(self.fn_gc_special_raw_cpp_ptr.is_some());
         unsafe {
-            (self.fn_gc_special_raw_cpp_ptr.into_inner())(ptr, hint_len, tp);
+            (self.fn_gc_special_raw_cpp_ptr.into_inner())(ptr, hint_len, hint_inner_type, tp);
         }
     }
 
