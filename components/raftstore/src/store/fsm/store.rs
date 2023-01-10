@@ -714,6 +714,9 @@ impl<'a, EK: KvEngine + 'static, ER: RaftEngine + 'static, T: Transport>
             match m {
                 StoreMsg::Tick(tick) => self.on_tick(tick),
                 StoreMsg::RaftMessage(msg) => {
+                    if msg.msg.get_msg_type() == MessageType::MsgAppend {
+                        debug!("!!!!! fast path: store");
+                    }
                     if self.ctx.coprocessor_host.should_skip_raft_message(&msg.msg) {
                         continue;
                     }
