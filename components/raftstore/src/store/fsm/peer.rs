@@ -618,7 +618,7 @@ where
         for m in msgs.drain(..) {
             match m {
                 PeerMsg::RaftMessage(msg) => {
-                    if msg.msg.get_msg_type() == MessageType::MsgAppend {
+                    if msg.msg.get_message().get_msg_type() == raft::eraftpb::MessageType::MsgAppend {
                         debug!("!!!!! fast path: peer");
                     }
                     if self.ctx.coprocessor_host.should_skip_raft_message(&msg.msg) {
