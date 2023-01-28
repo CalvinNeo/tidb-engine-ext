@@ -500,6 +500,14 @@ fn test_add_delayed_started_learner_no_snapshot() {
         None,
         Some(vec![1, 2, 3, 5]),
     );
+    check_key(
+        &cluster,
+        b"m1",
+        b"v1",
+        Some(true),
+        None,
+        Some(vec![1, 2, 3, 5]),
+    );
 
     // Check if every node has the correct configuation.
     let new_states = maybe_collect_states(&cluster, 1, Some(vec![1, 2, 3, 5]));
@@ -576,6 +584,7 @@ fn test_add_delayed_started_learner_snapshot() {
     later_bootstrap_learner_peer(&mut cluster, vec![5], 1);
     // After that, we manually compose data, to avoid snapshot sending.
     recover_from_peer(&cluster, 4, 5, 1);
+    cluster.must_put(b"m1", b"v1");
     // Add node 5 to cluster.
     pd_client.must_add_peer(1, new_learner_peer(5, 5));
 
@@ -590,6 +599,14 @@ fn test_add_delayed_started_learner_snapshot() {
     check_key(
         &cluster,
         b"z1",
+        b"v1",
+        Some(true),
+        None,
+        Some(vec![1, 2, 3, 5]),
+    );
+    check_key(
+        &cluster,
+        b"m1",
         b"v1",
         Some(true),
         None,

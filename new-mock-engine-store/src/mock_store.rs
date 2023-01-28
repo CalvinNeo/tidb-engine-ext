@@ -1408,6 +1408,13 @@ unsafe extern "C" fn ffi_fast_add_peer(
         });
         0
     })() != 0;
+    let allow_no_conf_change: bool = (|| {
+        fail::fail_point!("ffi_fast_add_peer_allow_no_conf_change", |t| {
+            let t = t.unwrap().parse::<u64>().unwrap();
+            t
+        });
+        0
+    })() != 0;
     debug!("recover from remote peer: enter from {} to {}", from_store, store_id; "region_id" => region_id);
 
     for retry in 0..300 {
@@ -1467,14 +1474,16 @@ unsafe extern "C" fn ffi_fast_add_peer(
                     info!("recover from remote peer: preparing from {} to {}:{}, ok peer state {:?}", from_store, store_id, new_peer_id, peer_state; "region_id" => region_id);
                 }
             };
-            if !engine_store_ffi::observer::validate_remote_peer_region(
-                new_region_meta,
-                store_id,
-                new_peer_id,
-            ) {
-                debug!("recover from remote peer: preparing from {} to {}, not applied conf change {}", from_store, store_id, new_peer_id; "region_id" => region_id);
-                ret = Some(failed_add_peer_res(ffi_interfaces::FastAddPeerStatus::WaitForData));
-                return;
+            if !allow_no_conf_change {
+                if !engine_store_ffi::observer::validate_remote_peer_region(
+                    new_region_meta,
+                    store_id,
+                    new_peer_id,
+                ) {
+                    debug!("recover from remote peer: preparing from {} to {}, not applied conf change {}", from_store, store_id, new_peer_id; "region_id" => region_id);
+                    ret = Some(failed_add_peer_res(ffi_interfaces::FastAddPeerStatus::WaitForData));
+                    return;
+                }
             }
             // TODO check commit_index and applied_index here
             debug!("recover from remote peer: preparing from {} to {}, check target", from_store, store_id; "region_id" => region_id);
