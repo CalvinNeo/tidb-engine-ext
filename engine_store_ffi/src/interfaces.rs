@@ -281,6 +281,7 @@ pub mod root {
             pub status: root::DB::FastAddPeerStatus,
             pub apply_state: root::DB::CppStrWithView,
             pub region: root::DB::CppStrWithView,
+            pub should_catchup: u8,
         }
         #[repr(C)]
         #[derive(Debug)]
@@ -580,7 +581,7 @@ pub mod root {
                 ) -> root::DB::FastAddPeerRes,
             >,
         }
-        pub const RAFT_STORE_PROXY_VERSION: u64 = 17394545035928865111;
+        pub const RAFT_STORE_PROXY_VERSION: u64 = 3663531995285437561;
         pub const RAFT_STORE_PROXY_MAGIC_NUMBER: u32 = 324508639;
     }
 }

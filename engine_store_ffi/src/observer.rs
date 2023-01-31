@@ -399,6 +399,7 @@ impl<T: Transport + 'static, ER: RaftEngine> TiFlashObserver<T, ER> {
             );
             cached_manager.fallback_to_slow_path(region_id);
         }
+        let should_do_catchup = res.should_catchup != 0;
 
         // Validate
         // check if the source already knows the know peer
@@ -413,53 +414,76 @@ impl<T: Transport + 'static, ER: RaftEngine> TiFlashObserver<T, ER> {
             return false;
         }
 
-        info!("fast path: ongoing {}:{} {}, start build and send", self.store_id, region_id, new_peer_id;
+        if should_do_catchup {
+            // There are no perfect match, but we have a old version of ourselves.
+            // We can transform the old version to a suitable match by catching up logs.
+            // And then we can reuse the old peer.
+            // This may happen when recovery from local data lost.
+            info!("fast path: ongoing {}:{} {}, start catchup logs", self.store_id, region_id, new_peer_id;
+                "to_peer_id" => msg.get_to_peer().get_id(),
+                "from_peer_id" => msg.get_from_peer().get_id(),
+                "region_id" => region_id,
+                "new_region" => ?new_region,
+                "apply_state" => ?apply_state,
+            );
+
+            // TODO async
+
+            // TODO fetch logs from TiKV leader.
+
+            // send fake MsgAppend
+            self.build_and_send_msgappend(region_id, new_peer_id, msg);
+        } else {
+            info!("fast path: ongoing {}:{} {}, start build and send", self.store_id, region_id, new_peer_id;
+                "to_peer_id" => msg.get_to_peer().get_id(),
+                "from_peer_id" => msg.get_from_peer().get_id(),
+                "region_id" => region_id,
+                "new_region" => ?new_region,
+                "apply_state" => ?apply_state,
+            );
+            match self.build_and_send_snapshot(region_id, new_peer_id, msg, apply_state, new_region)
+            {
+                Ok(s) => {
+                    match s {
+                        crate::FastAddPeerStatus::Ok => {
+                            // No return.
+                        }
+                        crate::FastAddPeerStatus::WaitForData => {
+                            info!(
+                                "fast path: ongoing {}:{} {}. remote peer preparing data, wait",
+                                new_peer_id, self.store_id, region_id;
+                                "region_id" => region_id,
+                            );
+                            return true;
+                        }
+                        _ => {
+                            error!(
+                                "fast path: ongoing {}:{} {} failed. build and sent snapshot code {:?}",
+                                self.store_id, region_id, new_peer_id, s;
+                                "region_id" => region_id,
+                            );
+                            cached_manager.fallback_to_slow_path(region_id);
+                            return false;
+                        }
+                    };
+                }
+                Err(e) => {
+                    error!(
+                        "fast path: ongoing {}:{} {} failed. build and sent snapshot error {:?}",
+                        self.store_id, region_id, new_peer_id, e;
+                        "region_id" => region_id,
+                    );
+                    cached_manager.fallback_to_slow_path(region_id);
+                    return false;
+                }
+            };
+        }
+        fail::fail_point!("go_fast_path_not_allow", |_| { return false });
+        info!("fast path: ongoing {}:{} {}, finish build and send", self.store_id, region_id, new_peer_id;
             "to_peer_id" => msg.get_to_peer().get_id(),
             "from_peer_id" => msg.get_from_peer().get_id(),
             "region_id" => region_id,
-            "new_region" => ?new_region,
-            "apply_state" => ?apply_state,
         );
-        match self.build_and_send_snapshot(region_id, new_peer_id, msg, apply_state, new_region) {
-            Ok(s) => {
-                match s {
-                    crate::FastAddPeerStatus::Ok => {
-                        fail::fail_point!("go_fast_path_not_allow", |_| { return false });
-                        info!("fast path: ongoing {}:{} {}, finish build and send", self.store_id, region_id, new_peer_id;
-                            "to_peer_id" => msg.get_to_peer().get_id(),
-                            "from_peer_id" => msg.get_from_peer().get_id(),
-                            "region_id" => region_id,
-                        );
-                    }
-                    crate::FastAddPeerStatus::WaitForData => {
-                        info!(
-                            "fast path: ongoing {}:{} {}. remote peer preparing data, wait",
-                            new_peer_id, self.store_id, region_id;
-                            "region_id" => region_id,
-                        );
-                        return true;
-                    }
-                    _ => {
-                        error!(
-                            "fast path: ongoing {}:{} {} failed. build and sent snapshot code {:?}",
-                            self.store_id, region_id, new_peer_id, s;
-                            "region_id" => region_id,
-                        );
-                        cached_manager.fallback_to_slow_path(region_id);
-                        return false;
-                    }
-                };
-            }
-            Err(e) => {
-                error!(
-                    "fast path: ongoing {}:{} {} failed. build and sent snapshot error {:?}",
-                    self.store_id, region_id, new_peer_id, e;
-                    "region_id" => region_id,
-                );
-                cached_manager.fallback_to_slow_path(region_id);
-                return false;
-            }
-        };
         is_first
     }
 
@@ -482,6 +506,12 @@ impl<T: Transport + 'static, ER: RaftEngine> TiFlashObserver<T, ER> {
                 ));
             }
         }
+    }
+
+    fn build_and_send_msgappend(&self, region_id: u64, new_peer_id: u64, msg: &RaftMessage) {
+        let cached_manager = self.get_cached_manager();
+
+        let new_message = msg.clone();
     }
 
     fn build_and_send_snapshot(

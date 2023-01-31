@@ -190,6 +190,7 @@ struct FastAddPeerRes {
   FastAddPeerStatus status;
   CppStrWithView apply_state;
   CppStrWithView region;
+  uint8_t should_catchup;
 };
 
 struct RaftStoreProxyFFIHelper {
