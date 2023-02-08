@@ -7,6 +7,7 @@ pub mod engine;
 pub mod ffi;
 pub mod observer;
 pub mod read_index_helper;
+pub mod engine_tiflash;
 mod utils;
 
 // Be discreet when expose inner mods by pub use.

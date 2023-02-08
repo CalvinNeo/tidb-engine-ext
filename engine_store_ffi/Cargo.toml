@@ -28,6 +28,12 @@ cloud-aws = ["sst_importer/cloud-aws"]
 cloud-gcp = ["sst_importer/cloud-gcp"]
 cloud-azure = ["sst_importer/cloud-azure"]
 
+# Inherited from original engine_tiflash crate
+jemalloc = ["rocksdb/jemalloc"]
+portable = ["rocksdb/portable"]
+sse = ["rocksdb/sse"]
+nortcheck = []
+
 [dependencies]
 batch-system = { workspace = true, default-features = false }
 bitflags = "1.0.1"
@@ -42,7 +48,6 @@ engine_rocks = { workspace = true, default-features = false }
 # Should be [dev-dependencies] but we need to control the features
 # https://github.com/rust-lang/cargo/issues/6915
 engine_test = { workspace = true, default-features = false }
-engine_tiflash = { workspace = true, default-features = false }
 engine_traits = { workspace = true, default-features = false }
 error_code = { workspace = true, default-features = false }
 fail = "0.5"
@@ -88,6 +93,11 @@ tokio-timer = { git = "https://github.com/tikv/tokio", branch = "tokio-timer-hot
 tracker = { workspace = true, default-features = false }
 uuid = { version = "0.8.1", features = ["serde", "v4"] }
 yatp = { git = "https://github.com/tikv/yatp.git", branch = "master" }
+
+[dependencies.rocksdb]
+git = "https://github.com/tikv/rust-rocksdb.git"
+package = "rocksdb"
+features = ["encryption"]
 
 [dev-dependencies]
 encryption_export = { workspace = true, default-features = false }

@@ -10,6 +10,7 @@ pub use std::{
     time::SystemTime,
 };
 
+pub use crate::engine_tiflash as engine_tiflash;
 pub use collections::HashMap;
 pub use engine_tiflash::{CachedRegionInfo, CachedRegionInfoManager};
 pub use engine_traits::{RaftEngine, SstMetaInfo, CF_LOCK, CF_RAFT};
