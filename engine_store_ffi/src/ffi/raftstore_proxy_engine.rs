@@ -22,7 +22,7 @@ impl RaftStoreProxyEngineTrait for RaftStoreProxyEngine {
         &self,
         cf: &str,
         key: &[u8],
-        cb: &mut dyn FnMut(Result<Option<&[u8]>, String>),
+        mut cb: Box<dyn FnMut(Result<Option<&[u8]>, String>) + '_>,
     ) {
         let value = self.kv_engine.get_value_cf(cf, key);
         match value {

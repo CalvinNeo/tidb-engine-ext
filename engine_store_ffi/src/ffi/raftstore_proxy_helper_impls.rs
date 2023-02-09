@@ -96,29 +96,32 @@ unsafe extern "C" fn ffi_get_region_local_state(
 
     let region_state_key = keys::region_state_key(region_id);
     let mut res = KVGetStatus::NotFound;
-    proxy_ptr
-        .as_ref()
-        .get_value_cf(engine_traits::CF_RAFT, &region_state_key, &mut |value| {
-            match value {
-                Ok(v) => {
-                    if let Some(buff) = v {
-                        get_engine_store_server_helper().set_pb_msg_by_bytes(
-                            interfaces_ffi::MsgPBType::RegionLocalState,
-                            data,
-                            buff.into(),
-                        );
-                        res = KVGetStatus::Ok;
-                    } else {
-                        res = KVGetStatus::NotFound;
-                    }
+    let cb = Box::new(|value: Result<Option<&[u8]>, String>| {
+        match value {
+            Ok(v) => {
+                if let Some(buff) = v {
+                    get_engine_store_server_helper().set_pb_msg_by_bytes(
+                        interfaces_ffi::MsgPBType::RegionLocalState,
+                        data,
+                        buff.into(),
+                    );
+                    res = KVGetStatus::Ok;
+                } else {
+                    res = KVGetStatus::NotFound;
                 }
-                Err(e) => {
-                    let msg = get_engine_store_server_helper().gen_cpp_string(e.as_ref());
-                    *error_msg = msg;
-                    res = KVGetStatus::Error;
-                }
-            };
-        });
+            }
+            Err(e) => {
+                let msg = get_engine_store_server_helper().gen_cpp_string(e.as_ref());
+                *error_msg = msg;
+                res = KVGetStatus::Error;
+            }
+        };
+    });
+    {
+        proxy_ptr
+            .as_ref()
+            .get_value_cf(engine_traits::CF_RAFT, &region_state_key, cb);
+    }
 
     res
 }

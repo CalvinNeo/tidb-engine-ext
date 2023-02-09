@@ -53,7 +53,7 @@ impl RaftStoreProxy {
         &self,
         cf: &str,
         key: &[u8],
-        cb: &mut dyn FnMut(Result<Option<&[u8]>, String>),
+        mut cb: Box<dyn FnMut(Result<Option<&[u8]>, String>) + '_>,
     ) {
         let kv_engine_lock = self.raftstore_proxy_engine.read().unwrap();
         let kv_engine = kv_engine_lock.as_ref();
@@ -66,7 +66,12 @@ impl RaftStoreProxy {
 }
 
 pub trait RaftStoreProxyEngineTrait {
-    fn get_value_cf(&self, cf: &str, key: &[u8], cb: &mut dyn FnMut(Result<Option<&[u8]>, String>));
+    fn get_value_cf(
+        &self,
+        cf: &str,
+        key: &[u8],
+        cb: Box<dyn FnMut(Result<Option<&[u8]>, String>) + '_>,
+    );
     // Only for tests
     fn engine_store_server_helper(&self) -> isize;
     // Only for tests
