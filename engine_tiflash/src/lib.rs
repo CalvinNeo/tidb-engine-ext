@@ -60,11 +60,6 @@ mod write_batch;
 #[cfg(not(feature = "enable-pagestorage"))]
 pub use crate::write_batch::*;
 
-#[cfg(feature = "enable-pagestorage")]
-mod ps_write_batch;
-#[cfg(feature = "enable-pagestorage")]
-pub use crate::ps_write_batch::*;
-
 pub mod mvcc_properties;
 pub use crate::mvcc_properties::*;
 pub mod perf_context;
@@ -123,11 +118,10 @@ pub use flow_control_factors::*;
 
 pub mod raw;
 
-mod proxy_utils;
-pub use proxy_utils::*;
-mod cached_region_info_manager;
-pub use cached_region_info_manager::*;
 pub use rocksdb::DB;
+
+mod proxy;
+pub use proxy::*;
 
 pub fn get_env(
     key_manager: Option<std::sync::Arc<::encryption::DataKeyManager>>,
