@@ -2492,6 +2492,10 @@ where
                 });
                 ctx.notifier
                     .notify_one(source_region_id, PeerMsg::SignificantMsg(msg));
+                return Ok((
+                    AdminResponse::default(),
+                    ApplyResult::WaitMergeSource(logs_up_to_date),
+                ));
             }
         }
 
