@@ -2476,11 +2476,22 @@ where
                 "peer_id" => self.id(),
             );
             if self.id == 4 {
+                info!(
+                    "asking delegate to stop";
+                    "region_id" => self.region_id(),
+                    "peer_id" => self.id(),
+                    "source_region_id" => source_region_id
+                );
+                fail_point!("before_handle_catch_up_logs_for_merge");
+                // Sends message to the source peer fsm and pause `exec_commit_merge` process
                 let logs_up_to_date = Arc::new(AtomicU64::new(0));
-                return Ok((
-                    AdminResponse::default(),
-                    ApplyResult::WaitMergeSource(logs_up_to_date),
-                ));
+                let msg = SignificantMsg::CatchUpLogs(CatchUpLogs {
+                    target_region_id: self.region_id(),
+                    merge: merge.to_owned(),
+                    logs_up_to_date: logs_up_to_date.clone(),
+                });
+                ctx.notifier
+                    .notify_one(source_region_id, PeerMsg::SignificantMsg(msg));
             }
         }
 
