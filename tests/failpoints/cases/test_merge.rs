@@ -52,19 +52,20 @@ fn test_merge_and_tombstone() {
     debug!("try remove ---");
     pd_client.must_remove_peer(target_region.get_id(), new_learner_peer(2, 4));
 
+    std::thread::sleep(std::time::Duration::from_millis(2000));
     {
         let engine = cluster.get_engine(2);
         let state_t: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(target_region.get_id())).unwrap().unwrap();
-        debug!("ZZZZZZ2 t {:?}", state_t);
+        debug!("--- store 2 target {:?}", state_t);
         let state_s: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(region.get_id())).unwrap().unwrap();
-        debug!("ZZZZZZ2 s {:?}", state_s);
+        debug!("--- store 2 source {:?}", state_s);
     }
     {
         let engine = cluster.get_engine(1);
         let state_t: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(target_region.get_id())).unwrap().unwrap();
-        debug!("ZZZZZZ1 t {:?}", state_t);
+        debug!("--- store 1 target {:?}", state_t);
         let state_s: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(region.get_id())).unwrap().unwrap();
-        debug!("ZZZZZZ1 s {:?}", state_s);
+        debug!("--- store 1 source {:?}", state_s);
     }
 
     cluster.shutdown();
