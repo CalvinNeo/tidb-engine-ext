@@ -45,18 +45,27 @@ fn test_merge_and_tombstone() {
 
     let region = pd_client.get_region(b"k1").unwrap();
     let target_region = pd_client.get_region(b"k3").unwrap();
+    debug!("--- source id {}", region.get_id());
 
     fail::cfg("must_yield_before_exec_commit_merge", "return(1)");
+    // cluster.add_send_filter(CloneFilterFactory(
+    //     RegionPacketFilter::new(1000, 2)
+    //         .msg_type(MessageType::MsgAppend)
+    //         .msg_type(MessageType::MsgSnapshot)
+    //         .msg_type(MessageType::MsgHeartbeat)
+    //         .direction(Direction::Both),
+    // ));
+    std::thread::sleep(std::time::Duration::from_millis(200));
     cluster.try_merge(region.get_id(), target_region.get_id());
     std::thread::sleep(std::time::Duration::from_millis(2000));
     debug!("--- try remove");
-    cluster.add_send_filter(CloneFilterFactory(
-        RegionPacketFilter::new(1, 2)
-            .msg_type(MessageType::MsgAppend)
-            .msg_type(MessageType::MsgSnapshot)
-            .msg_type(MessageType::MsgHeartbeat)
-            .direction(Direction::Recv),
-    ));
+    // cluster.add_send_filter(CloneFilterFactory(
+    //     RegionPacketFilter::new(1, 2)
+    //         .msg_type(MessageType::MsgAppend)
+    //         .msg_type(MessageType::MsgSnapshot)
+    //         .msg_type(MessageType::MsgHeartbeat)
+    //         .direction(Direction::Recv),
+    // ));
     pd_client.must_remove_peer(target_region.get_id(), new_learner_peer(2, 4));
 
     std::thread::sleep(std::time::Duration::from_millis(2000));
