@@ -21,6 +21,55 @@ use tikv_util::config::*;
 use tikv_util::time::Instant;
 use tikv_util::HandyRwLock;
 
+#[test]
+fn test_merge_and_tombstone() {
+    test_util::init_log_for_test();
+    let mut cluster = new_node_cluster(0, 3);
+    configure_for_merge(&mut cluster);
+    let pd_client = Arc::clone(&cluster.pd_client);
+    pd_client.disable_default_operator();
+
+    cluster.run_conf_change();
+
+    let region = pd_client.get_region(b"k1").unwrap();
+    cluster.must_split(&region, b"k2");
+    let left = pd_client.get_region(b"k1").unwrap();
+    let right = pd_client.get_region(b"k2").unwrap();
+
+    pd_client.must_add_peer(left.get_id(), new_learner_peer(2, 2));
+    pd_client.must_add_peer(right.get_id(), new_learner_peer(2, 4));
+
+    cluster.must_put(b"k1", b"v1");
+    cluster.must_put(b"k3", b"v3");
+
+
+    let region = pd_client.get_region(b"k1").unwrap();
+    let target_region = pd_client.get_region(b"k3").unwrap();
+
+    fail::cfg("must_yield_before_exec_commit_merge", "return(1)");
+    cluster.try_merge(region.get_id(), target_region.get_id());
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    debug!("try remove ---");
+    pd_client.must_remove_peer(target_region.get_id(), new_learner_peer(2, 4));
+
+    {
+        let engine = cluster.get_engine(2);
+        let state_t: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(target_region.get_id())).unwrap().unwrap();
+        debug!("ZZZZZZ2 t {:?}", state_t);
+        let state_s: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(region.get_id())).unwrap().unwrap();
+        debug!("ZZZZZZ2 s {:?}", state_s);
+    }
+    {
+        let engine = cluster.get_engine(1);
+        let state_t: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(target_region.get_id())).unwrap().unwrap();
+        debug!("ZZZZZZ1 t {:?}", state_t);
+        let state_s: RegionLocalState = engine.c().get_msg_cf(CF_RAFT, &keys::region_state_key(region.get_id())).unwrap().unwrap();
+        debug!("ZZZZZZ1 s {:?}", state_s);
+    }
+
+    cluster.shutdown();
+}
+
 /// Test if merge is rollback as expected.
 #[test]
 fn test_node_merge_rollback() {

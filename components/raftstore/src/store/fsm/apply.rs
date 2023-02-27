@@ -2461,6 +2461,29 @@ where
         let source_region = merge.get_source();
         let source_region_id = source_region.get_id();
 
+        let must_yield_before_exec_commit_merge = (|| {
+            fail::fail_point!("must_yield_before_exec_commit_merge", |t| {
+                let t = t.unwrap().parse::<u64>().unwrap();
+                t
+            });
+            0
+        })();
+
+        if must_yield_before_exec_commit_merge == 1 {
+            info!(
+                "YYYYYYYYY";
+                "region_id" => self.region_id(),
+                "peer_id" => self.id(),
+            );
+            if self.id == 4 {
+                let logs_up_to_date = Arc::new(AtomicU64::new(0));
+                return Ok((
+                    AdminResponse::default(),
+                    ApplyResult::WaitMergeSource(logs_up_to_date),
+                ));
+            }
+        }
+
         // No matter whether the source peer has applied to the required index,
         // it's a race to write apply state in both source delegate and target
         // delegate. So asking the source delegate to stop first.
