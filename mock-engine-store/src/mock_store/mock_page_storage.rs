@@ -38,7 +38,7 @@ impl MockPSWriteBatch {
 }
 
 pub struct MockPSUniversalPage {
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 impl From<BaseBuffView> for MockPSUniversalPage {
