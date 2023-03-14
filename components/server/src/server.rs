@@ -17,6 +17,7 @@ use std::{
     convert::TryFrom,
     env, fmt,
     net::SocketAddr,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -135,7 +136,7 @@ use tikv_util::{
 use tokio::runtime::Builder;
 
 use crate::{
-    memory::*, raft_engine_switch::*, setup::*, signal_handler,
+    core::TikvServerCore, memory::*, raft_engine_switch::*, setup::*, signal_handler,
     tikv_util::sys::thread::ThreadBuildWrapper,
 };
 
@@ -223,9 +224,22 @@ const DEFAULT_ENGINE_METRICS_RESET_INTERVAL: Duration = Duration::from_millis(60
 const DEFAULT_STORAGE_STATS_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_QUOTA_LIMITER_TUNE_INTERVAL: Duration = Duration::from_secs(5);
 
+impl<ER: RaftEngine> Deref for TikvServer<ER> {
+    type Target = crate::core::TikvServerCore;
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl<ER: RaftEngine> DerefMut for TikvServer<ER> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
+}
+
 /// A complete TiKV server.
 struct TikvServer<ER: RaftEngine> {
-    config: TikvConfig,
+    core: TikvServerCore,
     cfg_controller: Option<ConfigController>,
     security_mgr: Arc<SecurityManager>,
     pd_client: Arc<RpcClient>,
@@ -234,7 +248,6 @@ struct TikvServer<ER: RaftEngine> {
     flow_info_receiver: Option<mpsc::Receiver<FlowInfo>>,
     system: Option<RaftBatchSystem<RocksEngine, ER>>,
     resolver: Option<resolve::PdStoreAddrResolver>,
-    store_path: PathBuf,
     snap_mgr: Option<SnapManager>, // Will be filled in `init_servers`.
     encryption_key_manager: Option<Arc<DataKeyManager>>,
     engines: Option<TikvEngines<RocksEngine, ER>>,
@@ -244,7 +257,6 @@ struct TikvServer<ER: RaftEngine> {
     region_info_accessor: RegionInfoAccessor,
     coprocessor_host: Option<CoprocessorHost<RocksEngine>>,
     to_stop: Vec<Box<dyn Stop>>,
-    lock_files: Vec<File>,
     concurrency_manager: ConcurrencyManager,
     env: Arc<Environment>,
     background_worker: Worker,
@@ -399,14 +411,17 @@ where
         let check_leader_worker = WorkerBuilder::new("check_leader").thread_count(1).create();
 
         TikvServer {
-            config,
+            core: TikvServerCore {
+                config,
+                store_path,
+                lock_files: vec![],
+            },
             cfg_controller: Some(cfg_controller),
             security_mgr,
             pd_client,
             router,
             system: Some(system),
             resolver: None,
-            store_path,
             snap_mgr: None,
             encryption_key_manager: None,
             engines: None,
@@ -416,7 +431,6 @@ where
             region_info_accessor,
             coprocessor_host,
             to_stop: vec![],
-            lock_files: vec![],
             concurrency_manager,
             env,
             background_worker,
