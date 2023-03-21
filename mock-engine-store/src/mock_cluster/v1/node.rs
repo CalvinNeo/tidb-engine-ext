@@ -262,6 +262,7 @@ impl Simulator<TiFlashEngine> for NodeCluster {
         &mut self,
         node_id: u64,
         cfg: Config,
+        proxy_cfg: &ProxyConfig,
         engines: Engines<TiFlashEngine, engine_rocks::RocksEngine>,
         store_meta: Arc<Mutex<StoreMeta>>,
         key_manager: Option<Arc<DataKeyManager>>,
@@ -336,9 +337,9 @@ impl Simulator<TiFlashEngine> for NodeCluster {
         }
 
         let packed_envs = engine_store_ffi::core::PackedEnvs {
-            engine_store_cfg: cfg.proxy_cfg.engine_store.clone(),
+            engine_store_cfg: proxy_cfg.engine_store.clone(),
             pd_endpoints: cfg.pd.endpoints.clone(),
-            snap_handle_pool_size: cfg.proxy_cfg.raft_store.snap_handle_pool_size,
+            snap_handle_pool_size: proxy_cfg.raft_store.snap_handle_pool_size,
         };
         let tiflash_ob = engine_store_ffi::observer::TiFlashObserver::new(
             node_id,

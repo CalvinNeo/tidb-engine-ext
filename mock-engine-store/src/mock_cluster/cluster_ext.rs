@@ -1,6 +1,9 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::sync::{atomic::AtomicU8, Arc, Mutex};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::{atomic::AtomicU8, Arc, Mutex},
+};
 
 use collections::HashMap;
 use encryption::DataKeyManager;
@@ -13,6 +16,7 @@ use raftstore::store::RaftRouter;
 use tikv::config::TikvConfig;
 use tikv_util::{debug, sys::SysQuota};
 
+use super::common::*;
 use crate::{
     mock_cluster::config::{Config, MockConfig},
     mock_store::gen_engine_store_server_helper,
@@ -41,16 +45,59 @@ pub struct TestData {
     pub expected_self_safe_ts: u64,
 }
 
+// Very hack, but handy in Node(Server)Cluster
 #[derive(Default)]
+pub struct ClusterExtPtr {
+    inner: isize,
+}
+
+impl ClusterExtPtr {
+    fn new(ext: &ClusterExt) -> Self {
+        Self {
+            inner: ext as *const _ as isize,
+        }
+    }
+}
+
+impl Deref for ClusterExtPtr {
+    type Target = ClusterExt;
+    fn deref(&self) -> &Self::Target {
+        unsafe {
+            &*(self.inner as *const ClusterExt)
+        }
+    }
+}
+
+impl DerefMut for ClusterExtPtr {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe {
+            &mut *(self.inner as *mut ClusterExt)
+        }
+    }
+}
+
 pub struct ClusterExt {
     // Helper to set ffi_helper_set.
     pub ffi_helper_lst: Vec<FFIHelperSet>,
     pub(crate) ffi_helper_set: Arc<Mutex<HashMap<u64, FFIHelperSet>>>,
     pub test_data: TestData,
     pub cluster_ptr: isize,
+    pub proxy_cfg: ProxyConfig,
+    pub mock_cfg: MockConfig,
 }
 
 impl ClusterExt {
+    pub fn new(proxy_cfg: ProxyConfig) -> Self {
+        Self {
+            ffi_helper_lst: Default::default(),
+            ffi_helper_set: Default::default(),
+            test_data: Default::default(),
+            cluster_ptr: 0,
+            proxy_cfg,
+            mock_cfg: Default::default(),
+        }
+    }
+
     pub fn make_ffi_helper_set_no_bind(
         id: u64,
         engines: Engines<TiFlashEngine, engine_rocks::RocksEngine>,
@@ -137,7 +184,7 @@ impl ClusterExt {
             cfg.tikv.clone(),
             cluster_ptr,
             cluster_ext_ptr,
-            cfg.mock_cfg.clone(),
+            cluster_ext.mock_cfg.clone(),
         );
 
         // We can not use moved or cloned engines any more.
@@ -151,11 +198,11 @@ impl ClusterExt {
         };
         let engines = ffi_helper_set.engine_store_server.engines.as_mut().unwrap();
         let proxy_config_set = Arc::new(engine_tiflash::ProxyEngineConfigSet {
-            engine_store: cfg.proxy_cfg.engine_store.clone(),
+            engine_store: cluster_ext.proxy_cfg.engine_store.clone(),
         });
         engines.kv.init(
             helper_ptr,
-            cfg.proxy_cfg.raft_store.snap_handle_pool_size,
+            cluster_ext.proxy_cfg.raft_store.snap_handle_pool_size,
             Some(engine_store_hub),
             Some(proxy_config_set),
         );

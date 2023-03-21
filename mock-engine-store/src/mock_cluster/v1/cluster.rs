@@ -74,6 +74,7 @@ pub trait Simulator<EK: KvEngine> {
         &mut self,
         node_id: u64,
         cfg: Config,
+        proxy_cfg: &ProxyConfig,
         engines: Engines<EK, engine_rocks::RocksEngine>,
         store_meta: Arc<Mutex<StoreMeta>>,
         key_manager: Option<Arc<DataKeyManager>>,
@@ -188,12 +189,10 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
         fail::cfg("apply_on_handle_snapshot_sync", "return").unwrap();
 
         let mut c = Cluster {
-            cluster_ext: ClusterExt::default(),
+            cluster_ext: ClusterExt::new(proxy_cfg),
             cfg: Config {
                 tikv: new_tikv_config(id),
                 prefer_mem: true,
-                proxy_cfg,
-                mock_cfg: Default::default(),
             },
             leaders: HashMap::default(),
             count,
@@ -289,6 +288,7 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
                 sim.run_node(
                     0,
                     cfg,
+                    &self.cluster_ext.proxy_cfg,
                     engines.clone(),
                     store_meta.clone(),
                     key_manager.clone(),
@@ -358,7 +358,7 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
         // FIXME: rocksdb event listeners may not work, because we change the router.
         self.sim
             .wl()
-            .run_node(node_id, cfg, engines, store_meta, key_mgr, router, system)?;
+            .run_node(node_id, cfg, &self.cluster_ext.proxy_cfg, engines, store_meta, key_mgr, router, system)?;
         debug!("node {} started", node_id);
         Ok(())
     }

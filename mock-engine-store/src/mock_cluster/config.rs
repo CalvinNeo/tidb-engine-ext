@@ -7,8 +7,6 @@ use std::{
 
 use tikv::config::TikvConfig;
 
-use super::common::*;
-
 #[derive(Clone, Default)]
 pub struct MockConfig {
     pub panic_when_flush_no_found: Arc<AtomicBool>,
@@ -20,8 +18,6 @@ pub struct MockConfig {
 pub struct Config {
     pub tikv: TikvConfig,
     pub prefer_mem: bool,
-    pub proxy_cfg: ProxyConfig,
-    pub mock_cfg: MockConfig,
 }
 
 impl Deref for Config {

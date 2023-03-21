@@ -110,7 +110,7 @@ impl RaftStoreProxy {
         res
     }
 
-    pub fn get_raft_apply_state(&self, region_id: u64) -> interfaces_ffi::KVGetStatus {
+    pub fn get_raft_apply_state(&self, _region_id: u64) -> interfaces_ffi::KVGetStatus {
         if self.raftstore_version() == 1 {
             panic!("wrong raftstore version");
         } else {
