@@ -259,7 +259,7 @@ impl ServerCluster {
     fn run_node_impl<F: KvFormat>(
         &mut self,
         node_id: u64,
-        mut cfg: Config,
+        mut cfg: MixeClusterConfig,
         engines: Engines<TiFlashEngine, engine_rocks::RocksEngine>,
         store_meta: Arc<Mutex<StoreMeta>>,
         key_manager: Option<Arc<DataKeyManager>>,
@@ -558,13 +558,14 @@ impl ServerCluster {
         lock_mgr.register_detector_role_change_observer(&mut coprocessor_host);
 
         let max_unified_read_pool_thread_count = cfg.readpool.unified.max_thread_count;
-        let pessimistic_txn_cfg = cfg.tikv.pessimistic_txn;
+
+        let pessimistic_txn_cfg = cfg.tikv.pessimistic_txn.clone();
 
         let split_check_runner =
             SplitCheckRunner::new(engines.kv.clone(), router.clone(), coprocessor_host.clone());
         let split_check_scheduler = bg_worker.start("split-check", split_check_runner);
         let split_config_manager =
-            SplitConfigManager::new(Arc::new(VersionTrack::new(cfg.tikv.split)));
+            SplitConfigManager::new(Arc::new(VersionTrack::new(cfg.tikv.split.clone())));
         let auto_split_controller = AutoSplitController::new(
             split_config_manager,
             max_grpc_thread_count,
@@ -633,7 +634,7 @@ impl Simulator<TiFlashEngine> for ServerCluster {
     fn run_node(
         &mut self,
         node_id: u64,
-        cfg: Config,
+        cfg: MixeClusterConfig,
         engines: Engines<TiFlashEngine, engine_rocks::RocksEngine>,
         store_meta: Arc<Mutex<StoreMeta>>,
         key_manager: Option<Arc<DataKeyManager>>,

@@ -17,24 +17,23 @@ pub struct MockConfig {
 }
 
 #[derive(Clone)]
-pub struct Config {
-    pub tikv: TikvConfig,
-    pub prefer_mem: bool,
+pub struct MixeClusterConfig {
+    pub test_raftstore_cfg: test_raftstore::Config,
     pub proxy_cfg: ProxyConfig,
     pub mock_cfg: MockConfig,
 }
 
-impl Deref for Config {
-    type Target = TikvConfig;
+impl Deref for MixeClusterConfig {
+    type Target = test_raftstore::Config;
     #[inline]
-    fn deref(&self) -> &TikvConfig {
-        &self.tikv
+    fn deref(&self) -> &test_raftstore::Config {
+        &self.test_raftstore_cfg
     }
 }
 
-impl DerefMut for Config {
+impl DerefMut for MixeClusterConfig {
     #[inline]
-    fn deref_mut(&mut self) -> &mut TikvConfig {
-        &mut self.tikv
+    fn deref_mut(&mut self) -> &mut test_raftstore::Config {
+        &mut self.test_raftstore_cfg
     }
 }

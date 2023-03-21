@@ -9,4 +9,4 @@ pub mod v1;
 
 pub use cluster_ext::*;
 pub use common::*;
-pub use config::{Config, MockConfig};
+pub use config::{MixeClusterConfig, MockConfig};

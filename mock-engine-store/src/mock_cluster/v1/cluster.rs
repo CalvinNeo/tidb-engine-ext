@@ -73,7 +73,7 @@ pub trait Simulator<EK: KvEngine> {
     fn run_node(
         &mut self,
         node_id: u64,
-        cfg: Config,
+        cfg: MixeClusterConfig,
         engines: Engines<EK, engine_rocks::RocksEngine>,
         store_meta: Arc<Mutex<StoreMeta>>,
         key_manager: Option<Arc<DataKeyManager>>,
@@ -155,7 +155,7 @@ pub trait Simulator<EK: KvEngine> {
 
 pub struct Cluster<T: Simulator<TiFlashEngine>> {
     pub cluster_ext: ClusterExt,
-    pub cfg: Config,
+    pub cfg: MixeClusterConfig,
     leaders: HashMap<u64, metapb::Peer>,
     pub count: usize,
     pub paths: Vec<TempDir>,
@@ -189,9 +189,11 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
 
         let mut c = Cluster {
             cluster_ext: ClusterExt::default(),
-            cfg: Config {
-                tikv: new_tikv_config(id),
-                prefer_mem: true,
+            cfg: MixeClusterConfig {
+                test_raftstore_cfg: test_raftstore::Config {
+                    tikv: new_tikv_config(id),
+                    prefer_mem: true,
+                },
                 proxy_cfg,
                 mock_cfg: Default::default(),
             },

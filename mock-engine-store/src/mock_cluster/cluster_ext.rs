@@ -14,7 +14,7 @@ use tikv::config::TikvConfig;
 use tikv_util::{debug, sys::SysQuota};
 
 use crate::{
-    mock_cluster::config::{Config, MockConfig},
+    mock_cluster::config::{MixeClusterConfig, MockConfig},
     mock_store::gen_engine_store_server_helper,
     EngineStoreServer, EngineStoreServerWrap,
 };
@@ -121,7 +121,7 @@ impl ClusterExt {
         cluster_ext: &mut ClusterExt,
         cluster_ptr: isize,
         cluster_ext_ptr: isize,
-        cfg: &Config,
+        cfg: &MixeClusterConfig,
         engines: Engines<TiFlashEngine, engine_rocks::RocksEngine>,
         key_manager: &Option<Arc<DataKeyManager>>,
         router: &Option<RaftRouter<TiFlashEngine, engine_rocks::RocksEngine>>,

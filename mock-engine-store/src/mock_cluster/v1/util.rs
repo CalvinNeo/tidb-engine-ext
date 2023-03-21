@@ -52,7 +52,7 @@ pub fn create_tiflash_test_engine(
     // TODO: pass it in for all cases.
     _router: Option<RaftRouter<TiFlashEngine, engine_rocks::RocksEngine>>,
     limiter: Option<Arc<IoRateLimiter>>,
-    cfg: &Config,
+    cfg: &MixeClusterConfig,
 ) -> (
     Engines<TiFlashEngine, engine_rocks::RocksEngine>,
     Option<Arc<DataKeyManager>>,
