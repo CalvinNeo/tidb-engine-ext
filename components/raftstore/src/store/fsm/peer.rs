@@ -377,8 +377,8 @@ where
         self.peer.pending_merge_state = Some(state);
     }
 
-    pub fn schedule_applying_snapshot(&mut self) {
-        self.peer.mut_store().schedule_applying_snapshot();
+    pub fn schedule_applying_snapshot(&mut self, change_set: kvenginepb::ChangeSet) {
+        self.peer.mut_store().schedule_applying_snapshot(change_set);
     }
 
     pub fn reset_hibernate_state(&mut self, state: GroupState) {
@@ -1094,11 +1094,7 @@ where
                 self.register_raft_base_tick();
 
                 if is_learner(&self.fsm.peer.peer) {
-                    // FIXME: should use `bcast_check_stale_peer_message` instead.
-                    // Sending a new enum type msg to a old tikv may cause panic during rolling
-                    // update we should change the protobuf behavior and check if properly handled
-                    // in all place
-                    self.fsm.peer.bcast_wake_up_message(self.ctx);
+                    self.fsm.peer.bcast_check_stale_peer_message(self.ctx);
                 }
             }
             CasualMessage::SnapshotGenerated => {
@@ -2511,20 +2507,7 @@ where
         let is_snapshot = msg.get_message().has_snapshot();
 
         // TODO: spin off the I/O code (delete_snapshot)
-        let regions_to_destroy = match self.check_snapshot(&msg)? {
-            Either::Left(key) => {
-                if let Some(key) = key {
-                    // If the snapshot file is not used again, then it's OK to
-                    // delete them here. If the snapshot file will be reused when
-                    // receiving, then it will fail to pass the check again, so
-                    // missing snapshot files should not be noticed.
-                    let s = self.ctx.snap_mgr.get_snapshot_for_applying(&key)?;
-                    self.ctx.snap_mgr.delete_snapshot(&key, s.as_ref(), false);
-                }
-                return Ok(());
-            }
-            Either::Right(v) => v,
-        };
+        let regions_to_destroy = self.check_snapshot(&msg)?;
 
         if util::is_vote_msg(msg.get_message()) || msg_type == MessageType::MsgTimeoutNow {
             if self.fsm.hibernate_state.group_state() != GroupState::Chaos {
@@ -3038,229 +3021,8 @@ where
     // Returns `Vec<(u64, bool)>` indicated (source_region_id, merge_to_this_peer)
     // if the `msg` doesn't contain a snapshot or this snapshot doesn't conflict
     // with any other snapshots or regions. Otherwise a `SnapKey` is returned.
-    fn check_snapshot(
-        &mut self,
-        msg: &RaftMessage,
-    ) -> Result<Either<Option<SnapKey>, Vec<(u64, bool)>>> {
-        if !msg.get_message().has_snapshot() {
-            return Ok(Either::Right(vec![]));
-        }
-
-        let region_id = msg.get_region_id();
-        let snap = msg.get_message().get_snapshot();
-        let mut snap_data = RaftSnapshotData::default();
-        snap_data.merge_from_bytes(snap.get_data())?;
-
-        let key = if !snap_data.get_meta().get_for_witness() {
-            // Check if snapshot file exists.
-            // No need to get snapshot for witness, as witness's empty snapshot bypass
-            // snapshot manager.
-            let key = SnapKey::from_region_snap(region_id, snap);
-            self.ctx.snap_mgr.get_snapshot_for_applying(&key)?;
-            Some(key)
-        } else {
-            None
-        };
-
-        // If the index of snapshot is not newer than peer's apply index, it
-        // is possibly because there is witness -> non-witness switch, and the peer
-        // requests snapshot from leader but leader doesn't applies the switch yet.
-        // In that case, the snapshot is a witness snapshot whereas non-witness snapshot
-        // is expected.
-        if snap.get_metadata().get_index() < self.fsm.peer.get_store().applied_index()
-            && snap_data.get_meta().get_for_witness() != self.fsm.peer.is_witness()
-        {
-            error!(
-                "mismatch witness snapshot";
-                "region_id" => region_id,
-                "peer_id" => self.fsm.peer_id(),
-                "for_witness" => snap_data.get_meta().get_for_witness(),
-                "is_witness" => self.fsm.peer.is_witness(),
-                "index" => snap.get_metadata().get_index(),
-                "applied_index" => self.fsm.peer.get_store().applied_index(),
-            );
-            self.ctx
-                .raft_metrics
-                .message_dropped
-                .mismatch_witness_snapshot
-                .inc();
-            return Ok(Either::Left(key));
-        }
-
-        let snap_region = snap_data.take_region();
-        let peer_id = msg.get_to_peer().get_id();
-        let snap_enc_start_key = enc_start_key(&snap_region);
-        let snap_enc_end_key = enc_end_key(&snap_region);
-
-        let before_check_snapshot_1_2_fp = || -> bool {
-            fail_point!(
-                "before_check_snapshot_1_2",
-                self.fsm.region_id() == 1 && self.store_id() == 2,
-                |_| true
-            );
-            false
-        };
-        let before_check_snapshot_1000_2_fp = || -> bool {
-            fail_point!(
-                "before_check_snapshot_1000_2",
-                self.fsm.region_id() == 1000 && self.store_id() == 2,
-                |_| true
-            );
-            false
-        };
-        if before_check_snapshot_1_2_fp() || before_check_snapshot_1000_2_fp() {
-            return Ok(Either::Left(key));
-        }
-
-        if snap_region
-            .get_peers()
-            .iter()
-            .all(|p| p.get_id() != peer_id)
-        {
-            info!(
-                "snapshot doesn't contain to peer, skip";
-                "region_id" => self.fsm.region_id(),
-                "peer_id" => self.fsm.peer_id(),
-                "snap" => ?snap_region,
-                "to_peer" => ?msg.get_to_peer(),
-            );
-            self.ctx.raft_metrics.message_dropped.region_no_peer.inc();
-            return Ok(Either::Left(key));
-        }
-
-        let mut meta = self.ctx.store_meta.lock().unwrap();
-        if meta.regions[&self.region_id()] != *self.region() {
-            if !self.fsm.peer.is_initialized() {
-                info!(
-                    "stale delegate detected, skip";
-                    "region_id" => self.fsm.region_id(),
-                    "peer_id" => self.fsm.peer_id(),
-                );
-                self.ctx.raft_metrics.message_dropped.stale_msg.inc();
-                return Ok(Either::Left(key));
-            } else {
-                panic!(
-                    "{} meta corrupted: {:?} != {:?}",
-                    self.fsm.peer.tag,
-                    meta.regions[&self.region_id()],
-                    self.region()
-                );
-            }
-        }
-
-        if meta.atomic_snap_regions.contains_key(&region_id) {
-            info!(
-                "atomic snapshot is applying, skip";
-                "region_id" => self.fsm.region_id(),
-                "peer_id" => self.fsm.peer_id(),
-            );
-            return Ok(Either::Left(key));
-        }
-
-        for region in &meta.pending_snapshot_regions {
-            if enc_start_key(region) < snap_enc_end_key &&
-               enc_end_key(region) > snap_enc_start_key &&
-               // Same region can overlap, we will apply the latest version of snapshot.
-               region.get_id() != snap_region.get_id()
-            {
-                info!(
-                    "pending region overlapped";
-                    "region_id" => self.fsm.region_id(),
-                    "peer_id" => self.fsm.peer_id(),
-                    "region" => ?region,
-                    "snap" => ?snap_region,
-                );
-                self.ctx.raft_metrics.message_dropped.region_overlap.inc();
-                return Ok(Either::Left(key));
-            }
-        }
-
-        let mut is_overlapped = false;
-        let mut regions_to_destroy = vec![];
-        // In some extreme cases, it may cause source peer destroyed improperly so that
-        // a later CommitMerge may panic because source is already destroyed, so just
-        // drop the message:
-        // - A new snapshot is received whereas a snapshot is still in applying, and the
-        //   snapshot under applying is generated before merge and the new snapshot is
-        //   generated after merge. After the applying snapshot is finished, the log may
-        //   able to catch up and so a CommitMerge will be applied.
-        // - There is a CommitMerge pending in apply thread.
-        let ready = !self.fsm.peer.is_handling_snapshot()
-            && !self.fsm.peer.has_pending_snapshot()
-            // It must be ensured that all logs have been applied.
-            // Suppose apply fsm is applying a `CommitMerge` log and this snapshot is generated after
-            // merge, its corresponding source peer can not be destroy by this snapshot.
-            && self.fsm.peer.ready_to_handle_pending_snap();
-        for exist_region in meta
-            .region_ranges
-            .range((Excluded(snap_enc_start_key), Unbounded::<Vec<u8>>))
-            .map(|(_, &region_id)| &meta.regions[&region_id])
-            .take_while(|r| enc_start_key(r) < snap_enc_end_key)
-            .filter(|r| r.get_id() != region_id)
-        {
-            info!(
-                "region overlapped";
-                "region_id" => self.fsm.region_id(),
-                "peer_id" => self.fsm.peer_id(),
-                "exist" => ?exist_region,
-                "snap" => ?snap_region,
-            );
-            let (can_destroy, merge_to_this_peer) = maybe_destroy_source(
-                &meta,
-                self.fsm.region_id(),
-                self.fsm.peer_id(),
-                exist_region.get_id(),
-                snap_region.get_region_epoch().to_owned(),
-            );
-            if ready && can_destroy {
-                // The snapshot that we decide to whether destroy peer based on must can be
-                // applied. So here not to destroy peer immediately, or the snapshot maybe
-                // dropped in later check but the peer is already destroyed.
-                regions_to_destroy.push((exist_region.get_id(), merge_to_this_peer));
-                continue;
-            }
-            is_overlapped = true;
-            if !can_destroy
-                && snap_region.get_region_epoch().get_version()
-                    > exist_region.get_region_epoch().get_version()
-            {
-                // If snapshot's epoch version is greater than exist region's, the exist region
-                // may has been merged/splitted already.
-                let _ = self.ctx.router.force_send(
-                    exist_region.get_id(),
-                    PeerMsg::CasualMessage(CasualMessage::RegionOverlapped),
-                );
-            }
-        }
-        if is_overlapped {
-            self.ctx.raft_metrics.message_dropped.region_overlap.inc();
-            return Ok(Either::Left(key));
-        }
-
-        // WARNING: The checking code must be above this line.
-        // Now all checking passed.
-
-        if self.fsm.peer.local_first_replicate && !self.fsm.peer.is_initialized() {
-            // If the peer is not initialized and passes the snapshot range check,
-            // `is_splitting` flag must be false.
-            // - If `is_splitting` is set to true, then the uninitialized peer is created
-            //   before split is applied and the peer id is the same as split one. So there
-            //   should be no initialized peer before.
-            // - If the peer is also created by splitting, then the snapshot range is not
-            //   overlapped with parent peer. It means leader has applied merge and split at
-            //   least one time. However, the prerequisite of merge includes the
-            //   initialization of all target peers and source peers, which is conflict with
-            //   1.
-            let pending_create_peers = self.ctx.pending_create_peers.lock().unwrap();
-            let status = pending_create_peers.get(&region_id).cloned();
-            if status != Some((self.fsm.peer_id(), false)) {
-                drop(pending_create_peers);
-                panic!("{} status {:?} is not expected", self.fsm.peer.tag, status);
-            }
-        }
-        meta.pending_snapshot_regions.push(snap_region);
-
-        Ok(Either::Right(regions_to_destroy))
+    fn check_snapshot(&mut self, msg: &RaftMessage) -> Result<Vec<(u64, bool)>> {
+        return Ok(vec![]);
     }
 
     fn destroy_regions_for_snapshot(&mut self, regions_to_destroy: Vec<(u64, bool)>) {
@@ -3932,12 +3694,8 @@ where
             }
         }
 
-        let total_cnt = self.fsm.peer.last_applying_idx - first_index;
-        // the size of current CompactLog command can be ignored.
-        let remain_cnt = self.fsm.peer.last_applying_idx - state.get_index() - 1;
-        self.fsm.peer.raft_log_size_hint =
-            self.fsm.peer.raft_log_size_hint * remain_cnt / total_cnt;
-        let compact_to = state.get_index() + 1;
+        let compact_to = state.get_index();
+
         self.fsm.peer.schedule_raftlog_gc(self.ctx, compact_to);
         self.fsm.peer.last_compacted_idx = compact_to;
         self.fsm.peer.mut_store().on_compact_raftlog(compact_to);
@@ -4410,7 +4168,11 @@ where
         self.propose_raft_command(req, Callback::None, DiskFullOpt::AllowedOnAlmostFull);
     }
 
+    #[allow(unreachable_code)]
     fn on_check_merge(&mut self) {
+        // Return ASAP for tiflash learner
+        return;
+        
         if self.fsm.stopped
             || self.fsm.peer.pending_remove
             || self.fsm.peer.pending_merge_state.is_none()

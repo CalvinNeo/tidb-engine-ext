@@ -4,13 +4,14 @@ use std::{cell::RefCell, sync::Arc};
 use encryption::DataKeyManager;
 use engine_rocks::{get_env, RocksSstIterator, RocksSstReader};
 use engine_traits::{IterOptions, Iterator, RefIterable, SstReader};
+use protobuf::Message;
 
 use super::{
     interfaces_ffi::{
         BaseBuffView, ColumnFamilyType, RaftStoreProxyPtr, RawVoidPtr, SSTReaderInterfaces,
         SSTReaderPtr, SSTView,
     },
-    LockCFFileReader, RaftStoreProxyFFI,
+    CloudLockSstReader, CloudSstReader,
 };
 
 #[allow(clippy::clone_on_copy)]
@@ -28,12 +29,12 @@ impl Clone for SSTReaderInterfaces {
 }
 
 impl SSTReaderPtr {
-    unsafe fn as_mut_lock(&mut self) -> &mut LockCFFileReader {
-        &mut *(self.inner as *mut LockCFFileReader)
+    unsafe fn as_mut_lock(&mut self) -> &mut CloudLockSstReader {
+        &mut *(self.inner as *mut CloudLockSstReader)
     }
 
-    unsafe fn as_mut(&mut self) -> &mut SSTFileReader {
-        &mut *(self.inner as *mut SSTFileReader)
+    unsafe fn as_mut(&mut self) -> &mut CloudSstReader {
+        &mut *(self.inner as *mut CloudSstReader)
     }
 }
 
@@ -66,14 +67,18 @@ pub unsafe extern "C" fn ffi_make_sst_reader(
     view: SSTView,
     proxy_ptr: RaftStoreProxyPtr,
 ) -> SSTReaderPtr {
-    let path = std::str::from_utf8_unchecked(view.path.to_slice());
-    let key_manager = proxy_ptr.as_ref().maybe_key_manager();
-    match view.type_ {
-        ColumnFamilyType::Lock => {
-            LockCFFileReader::ffi_get_cf_file_reader(path, key_manager.as_ref()).into()
-        }
-        _ => SSTFileReader::ffi_get_cf_file_reader(path, key_manager.clone()).into(),
-    }
+    let cs_bin = view.path.to_slice();
+    let mut cs_pb = kvenginepb::ChangeSet::default();
+    cs_pb.merge_from_bytes(cs_bin).unwrap();
+    let cloud_helper = &proxy_ptr.as_ref().cloud_helper;
+    let ptr = if view.type_ == ColumnFamilyType::Lock {
+        let lock_sst_reader = cloud_helper.make_lock_sst_reader(cs_pb);
+        Box::into_raw(Box::new(lock_sst_reader)) as RawVoidPtr
+    } else {
+        let sst_reader = cloud_helper.make_sst_reader(cs_pb);
+        Box::into_raw(Box::new(sst_reader)) as RawVoidPtr
+    };
+    ptr.into()
 }
 
 pub unsafe extern "C" fn ffi_sst_reader_remained(
@@ -116,10 +121,10 @@ pub unsafe extern "C" fn ffi_sst_reader_next(mut reader: SSTReaderPtr, type_: Co
 pub unsafe extern "C" fn ffi_gc_sst_reader(reader: SSTReaderPtr, type_: ColumnFamilyType) {
     match type_ {
         ColumnFamilyType::Lock => {
-            drop(Box::from_raw(reader.inner as *mut LockCFFileReader));
+            drop(Box::from_raw(reader.inner as *mut CloudLockSstReader));
         }
         _ => {
-            drop(Box::from_raw(reader.inner as *mut SSTFileReader));
+            drop(Box::from_raw(reader.inner as *mut CloudSstReader));
         }
     }
 }

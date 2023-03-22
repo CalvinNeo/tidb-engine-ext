@@ -13,6 +13,8 @@ use std::{
     u64,
 };
 
+use byteorder::{ByteOrder, LittleEndian};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use engine_traits::{Engines, KvEngine, Mutable, Peekable, RaftEngine, RaftLogBatch, CF_RAFT};
 use fail::fail_point;
 use into_other::into_other;
@@ -118,11 +120,11 @@ impl From<Error> for RaftError {
 pub struct HandleSnapshotResult {
     pub msgs: Vec<eraftpb::Message>,
     pub snap_region: metapb::Region,
+    pub change_set: kvenginepb::ChangeSet,
     /// The regions whose range are overlapped with this region
     pub destroy_regions: Vec<Region>,
     /// The first index before applying the snapshot.
     pub last_first_index: u64,
-    pub for_witness: bool,
 }
 
 #[derive(PartialEq, Debug)]
@@ -136,7 +138,26 @@ pub fn recover_from_applying_state<EK: KvEngine, ER: RaftEngine>(
     engines: &Engines<EK, ER>,
     raft_wb: &mut ER::LogBatch,
     region_id: u64,
-) -> Result<()> {
+) -> Result<kvenginepb::ChangeSet> {
+    let change_set = match box_try!(
+        engines
+            .kv
+            .get_value_cf(CF_RAFT, &keys::snapshot_change_set_key(region_id))
+    ) {
+        Some(cs_bin) => {
+            let mut cs = kvenginepb::ChangeSet::default();
+            cs.merge_from_bytes(&cs_bin).unwrap();
+            cs
+        }
+        None => {
+            return Err(box_err!(
+                "[region {}] failed to get snapshto change set from kv engine, \
+                     when recover from applying state",
+                region_id
+            ));
+        }
+    };
+
     let snapshot_raft_state_key = keys::snapshot_raft_state_key(region_id);
     let snapshot_raft_state: RaftLocalState =
         match box_try!(engines.kv.get_msg_cf(CF_RAFT, &snapshot_raft_state_key)) {
@@ -166,7 +187,7 @@ pub fn recover_from_applying_state<EK: KvEngine, ER: RaftEngine>(
             .clean(region_id, 0 /* first_index */, &raft_state, raft_wb)?;
         raft_wb.put_raft_state(region_id, &snapshot_raft_state)?;
     }
-    Ok(())
+    Ok(change_set)
 }
 
 fn init_raft_state<EK: KvEngine, ER: RaftEngine>(
@@ -286,6 +307,31 @@ where
     fn snapshot(&self, request_index: u64, to: u64) -> raft::Result<Snapshot> {
         self.snapshot(request_index, to)
     }
+}
+
+pub fn encode_snap_data(region: &metapb::Region, change_set: &kvenginepb::ChangeSet) -> Bytes {
+    let size1 = region.compute_size() as usize;
+    let size2 = change_set.compute_size() as usize;
+    let mut buf = BytesMut::with_capacity(4 + size1 + 4 + size2);
+    buf.put_u32_le(size1 as u32);
+    buf.extend_from_slice(&region.write_to_bytes().unwrap());
+    buf.put_u32_le(size2 as u32);
+    buf.extend_from_slice(&change_set.write_to_bytes().unwrap());
+    buf.freeze()
+}
+
+pub fn decode_snap_data(data: &[u8]) -> crate::Result<(metapb::Region, kvenginepb::ChangeSet)> {
+    let mut offset = 0;
+    let size1 = LittleEndian::read_u32(data) as usize;
+    offset += 4;
+    let mut region = metapb::Region::default();
+    region.merge_from_bytes(&data[offset..(offset + size1)])?;
+    offset += size1;
+    let size2 = LittleEndian::read_u32(&data[offset..]) as usize;
+    offset += 4;
+    let mut change_set = kvenginepb::ChangeSet::default();
+    change_set.merge_from_bytes(&data[offset..(offset + size2)])?;
+    Ok((region, change_set))
 }
 
 impl<EK, ER> PeerStorage<EK, ER>
@@ -593,20 +639,16 @@ where
         snap: &Snapshot,
         task: &mut WriteTask<EK, ER>,
         destroy_regions: &[metapb::Region],
-    ) -> Result<(metapb::Region, bool)> {
+    ) -> Result<(metapb::Region, kvenginepb::ChangeSet)> {
         info!(
             "begin to apply snapshot";
             "region_id" => self.region.get_id(),
             "peer_id" => self.peer_id,
         );
 
-        let mut snap_data = RaftSnapshotData::default();
-        snap_data.merge_from_bytes(snap.get_data())?;
-
-        let for_witness = snap_data.get_meta().get_for_witness();
+        let (region, change_set) = decode_snap_data(snap.get_data())?;
 
         let region_id = self.get_region_id();
-        let region = snap_data.take_region();
         if region.get_id() != region_id {
             return Err(box_err!(
                 "mismatch region id {} != {}",
@@ -641,14 +683,10 @@ where
             write_peer_state(kv_wb, r, PeerState::Tombstone, None)?;
         }
 
-        // Witness snapshot is applied atomically as no async applying operation to
-        // region worker, so no need to set the peer state to `Applying`
-        let state = if for_witness {
-            PeerState::Normal
-        } else {
-            PeerState::Applying
-        };
-        write_peer_state(kv_wb, &region, state, None)?;
+        write_peer_state(kv_wb, &region, PeerState::Applying, None)?;
+
+        let cs_bin = change_set.write_to_bytes().unwrap();
+        kv_wb.put_cf(CF_RAFT, &keys::snapshot_change_set_key(region_id), &cs_bin)?;
 
         let snap_index = snap.get_metadata().get_index();
         let snap_term = snap.get_metadata().get_term();
@@ -683,10 +721,9 @@ where
             "peer_id" => self.peer_id,
             "region" => ?region,
             "state" => ?self.apply_state(),
-            "for_witness" => for_witness,
         );
 
-        Ok((region, for_witness))
+        Ok((region, change_set))
     }
 
     /// Delete all meta belong to the region. Results are stored in `wb`.
@@ -872,13 +909,14 @@ where
         self.region().get_id()
     }
 
-    pub fn schedule_applying_snapshot(&mut self) {
+    pub fn schedule_applying_snapshot(&mut self, change_set: kvenginepb::ChangeSet) {
         let status = Arc::new(AtomicUsize::new(JOB_STATUS_PENDING));
         self.set_snap_state(SnapState::Applying(Arc::clone(&status)));
         let task = RegionTask::Apply {
             region_id: self.get_region_id(),
             status,
             peer_id: self.peer_id,
+            change_set,
         };
 
         // Don't schedule the snapshot to region worker.
@@ -913,15 +951,15 @@ where
         } else {
             fail_point!("raft_before_apply_snap");
             let last_first_index = self.first_index().unwrap();
-            let (snap_region, for_witness) =
+            let (snap_region, change_set) =
                 self.apply_snapshot(ready.snapshot(), &mut write_task, &destroy_regions)?;
 
             let res = HandleReadyResult::Snapshot(Box::new(HandleSnapshotResult {
                 msgs: ready.take_persisted_messages(),
                 snap_region,
+                change_set,
                 destroy_regions,
                 last_first_index,
-                for_witness,
             }));
             fail_point!("raft_after_apply_snap");
             res
@@ -997,14 +1035,7 @@ where
             }
         }
 
-        if !res.for_witness {
-            self.schedule_applying_snapshot();
-        } else {
-            // Bypass apply snapshot process for witness as the snapshot is empty, so mark
-            // status as finished directly here
-            let status = Arc::new(AtomicUsize::new(JOB_STATUS_FINISHED));
-            self.set_snap_state(SnapState::Applying(Arc::clone(&status)));
-        }
+        self.schedule_applying_snapshot(res.change_set.clone());
 
         // The `region` is updated after persisting in order to stay consistent with the
         // one in `StoreMeta::regions` (will be updated soon).

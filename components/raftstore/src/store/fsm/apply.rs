@@ -11,7 +11,7 @@ use std::{
     fmt::{self, Debug, Formatter},
     io::BufRead,
     mem,
-    ops::{Deref, DerefMut, Range as StdRange},
+    ops::{Deref, DerefMut, Range as StdRange, Sub},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::SyncSender,
@@ -70,6 +70,7 @@ use tikv_util::{
 };
 use time::Timespec;
 use tracker::GLOBAL_TRACKERS;
+use txn_types::Key;
 use uuid::Builder as UuidBuilder;
 
 use self::memtrace::*;
@@ -90,6 +91,7 @@ use crate::{
         msg::{Callback, ErrorCallback, PeerMsg, ReadResponse, SignificantMsg},
         peer::Peer,
         peer_storage::{write_initial_apply_state, write_peer_state},
+        rlog,
         util::{
             self, admin_cmd_epoch_lookup, check_flashback_state, check_req_region_epoch,
             compare_region_epoch, ChangePeerI, ConfChangeKind, KeysInfoFormatter, LatencyInspector,
@@ -1413,14 +1415,48 @@ where
         // E.g. `RaftApplyState` must not be changed.
 
         let mut origin_epoch = None;
-        let (resp, exec_result) = if ctx.host.pre_exec(&self.region, &req, index, term) {
+        let mut truncated_state = RaftTruncatedState::default();
+        let mut first_index = 0;
+
+        let (resp, exec_result) = if ctx.host.pre_exec(
+            &self.region,
+            &req,
+            &mut self.apply_state,
+            index,
+            term,
+            self.applied_term,
+            &mut truncated_state,
+            &mut first_index,
+        ) {
             // One of the observers want to filter execution of the command.
             let mut resp = RaftCmdResponse::default();
             if !req.get_header().get_uuid().is_empty() {
                 let uuid = req.get_header().get_uuid().to_vec();
                 resp.mut_header().set_uuid(uuid);
             }
-            (resp, ApplyResult::None)
+
+            // TYPE_ENGINE_META command executed, return the result.
+            if truncated_state.get_term() > 0 && first_index > 0 {
+                let pre_apply_res = ApplyResult::Res(ExecResult::CompactLog {
+                    state: truncated_state.clone(),
+                    first_index,
+                    has_pending: false,
+                });
+                debug!(
+                    "compact log";
+                    "region_id" => self.region_id(),
+                    "peer_id" => self.id(),
+                    "index" => index,
+                    "term" => term,
+                    "compact_index" => truncated_state.get_index(),
+                    "compact_term" => truncated_state.get_term(),
+                    "first_index" => first_index,
+                );
+
+                (resp, pre_apply_res)
+            } else {
+                (resp, ApplyResult::None)
+            }
         } else {
             ctx.exec_log_index = index;
             ctx.exec_log_term = term;
@@ -1492,17 +1528,24 @@ where
             delete_ssts: &mut ctx.delete_ssts,
             pending_delete_ssts: &mut ctx.pending_delete_ssts,
         };
-        let should_write = ctx.host.post_exec(
+        let peer_id = self.id();
+        let mut should_write = ctx.host.post_exec(
             &self.region,
             &cmd,
-            &self.apply_state,
+            &mut self.apply_state,
             &RegionState {
-                peer_id: self.id(),
+                peer_id,
                 pending_remove: self.pending_remove,
                 modified_region,
             },
             &mut apply_ctx_info,
         );
+
+        // If the command is a `CompactLog` command, apply_state should be saved.
+        if truncated_state.get_term() > 0 && first_index > 0 {
+            should_write = true;
+        }
+
         match pending_handle_ssts {
             None => (),
             Some(mut v) => {
@@ -1715,71 +1758,24 @@ where
         ctx: &mut ApplyContext<EK>,
         req: &RaftCmdRequest,
     ) -> Result<(RaftCmdResponse, ApplyResult<EK::Snapshot>)> {
-        fail_point!(
-            "on_apply_write_cmd",
-            cfg!(release) || self.id() == 3,
-            |_| {
-                unimplemented!();
-            }
-        );
-
-        let requests = req.get_requests();
-
-        let mut ranges = vec![];
-        let mut ssts = vec![];
-        for req in requests {
-            let cmd_type = req.get_cmd_type();
-            match cmd_type {
-                CmdType::Put => self.handle_put(ctx, req),
-                CmdType::Delete => self.handle_delete(ctx, req),
-                CmdType::DeleteRange => {
-                    self.handle_delete_range(&ctx.engine, req, &mut ranges, ctx.use_delete_range)
+        let cl = rlog::get_custom_log(req).unwrap();
+        let tp = cl.get_type();
+        match tp {
+            rlog::TYPE_PREWRITE => cl.iterate_lock(|k, v| {
+                self.metrics.written_keys += 1;
+                self.metrics.written_bytes += (k.len() + v.len()) as u64;
+            }),
+            rlog::TYPE_ONE_PC => cl.iterate_one_pc(|k, v, is_extra, _, _, _| {
+                if is_extra {
+                    return;
                 }
-                CmdType::IngestSst => self.handle_ingest_sst(ctx, req, &mut ssts),
-                // Readonly commands are handled in raftstore directly.
-                // Don't panic here in case there are old entries need to be applied.
-                // It's also safe to skip them here, because a restart must have happened,
-                // hence there is no callback to be called.
-                CmdType::Snap | CmdType::Get => {
-                    warn!(
-                        "skip readonly command";
-                        "region_id" => self.region_id(),
-                        "peer_id" => self.id(),
-                        "command" => ?req,
-                    );
-                    continue;
-                }
-                CmdType::Prewrite | CmdType::Invalid | CmdType::ReadIndex => {
-                    Err(box_err!("invalid cmd type, message maybe corrupted"))
-                }
-            }?;
+                self.metrics.written_keys += 1;
+                self.metrics.written_bytes += (k.len() + v.len()) as u64;
+            }),
+            _ => {}
         }
 
-        let mut resp = RaftCmdResponse::default();
-        if !req.get_header().get_uuid().is_empty() {
-            let uuid = req.get_header().get_uuid().to_vec();
-            resp.mut_header().set_uuid(uuid);
-        }
-
-        assert!(ranges.is_empty() || ssts.is_empty());
-        let exec_res = if !ranges.is_empty() {
-            ApplyResult::Res(ExecResult::DeleteRange { ranges })
-        } else if !ssts.is_empty() {
-            #[cfg(feature = "failpoints")]
-            {
-                let mut dont_delete_ingested_sst_fp = || {
-                    fail_point!("dont_delete_ingested_sst", |_| {
-                        ssts.clear();
-                    });
-                };
-                dont_delete_ingested_sst_fp();
-            }
-            ApplyResult::Res(ExecResult::IngestSst { ssts })
-        } else {
-            ApplyResult::None
-        };
-
-        Ok((resp, exec_res))
+        Ok((RaftCmdResponse::new(), ApplyResult::None))
     }
 }
 
@@ -5627,7 +5623,7 @@ mod tests {
             &self,
             _: &mut ObserverContext<'_>,
             _: &Cmd,
-            _: &RaftApplyState,
+            _: &mut RaftApplyState,
             _: &RegionState,
             apply_info: &mut ApplyCtxInfo<'_>,
         ) -> bool {

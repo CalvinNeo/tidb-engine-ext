@@ -1,5 +1,6 @@
 // Copyright 2020 TiKV Project Authors. Licensed under Apache-2.0.
 
+use bytes::Bytes;
 use std::sync::Arc;
 
 use file_system::{get_io_rate_limiter, get_io_type, IoOp, IoRateLimiter};
@@ -52,4 +53,9 @@ impl FileSystemInspector for EngineFileSystemInspector {
             Ok(len)
         }
     }
+}
+
+pub trait ObjectStorage: Sync + Send {
+    fn put_objects(&self, objects: Vec<(String, Bytes)>) -> Result<()>;
+    fn get_objects(&self, keys: Vec<String>) -> Result<Vec<(String, Bytes)>>;
 }

@@ -56,6 +56,8 @@ grpcio-health = { version = "0.10", default-features = false, features = ["proto
 into_other = { workspace = true }
 itertools = "0.10"
 keys = { workspace = true }
+kvengine = { path = "../kvengine" }
+kvenginepb = { path = "../kvenginepb" }
 kvproto = { workspace = true }
 lazy_static = "1.3"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_debug"] }

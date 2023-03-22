@@ -288,5 +288,7 @@ struct EngineStoreServerHelper {
                                    uint64_t leader_safe_ts);
   FastAddPeerRes (*fn_fast_add_peer)(EngineStoreServerWrap *,
                                      uint64_t region_id, uint64_t new_peer_id);
+  BaseBuffView (*fn_get_lock_by_key)(const EngineStoreServerWrap *, uint64_t,
+                                     BaseBuffView);
 };
 }  // namespace DB

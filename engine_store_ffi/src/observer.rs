@@ -11,10 +11,10 @@ use raftstore::{
     coprocessor::{
         AdminObserver, ApplyCtxInfo, ApplySnapshotObserver, BoxAdminObserver,
         BoxApplySnapshotObserver, BoxMessageObserver, BoxPdTaskObserver, BoxQueryObserver,
-        BoxRegionChangeObserver, BoxRoleObserver, BoxUpdateSafeTsObserver, Cmd, Coprocessor,
-        CoprocessorHost, MessageObserver, ObserverContext, PdTaskObserver, QueryObserver,
-        RegionChangeEvent, RegionChangeObserver, RegionState, RoleChange, RoleObserver,
-        StoreSizeInfo, UpdateSafeTsObserver,
+        BoxRegionChangeObserver, BoxRoleObserver, BoxUpdateSafeTsObserver, Cmd, ColumnFamilyType,
+        Coprocessor, CoprocessorHost, MessageObserver, ObserverContext, PdTaskObserver,
+        QueryObserver, RegionChangeEvent, RegionChangeObserver, RegionState, RoleChange,
+        RoleObserver, StoreSizeInfo, UpdateSafeTsObserver,
     },
     store::{self, SnapManager, Transport},
 };
@@ -142,7 +142,7 @@ impl<T: Transport + 'static, ER: RaftEngine> QueryObserver for TiFlashObserver<T
         &self,
         ob_ctx: &mut ObserverContext<'_>,
         cmd: &Cmd,
-        apply_state: &RaftApplyState,
+        apply_state: &mut RaftApplyState,
         region_state: &RegionState,
         apply_ctx_info: &mut ApplyCtxInfo<'_>,
     ) -> bool {
@@ -208,7 +208,7 @@ impl<T: Transport + 'static, ER: RaftEngine> ApplySnapshotObserver for TiFlashOb
         ob_ctx: &mut ObserverContext<'_>,
         peer_id: u64,
         snap_key: &store::SnapKey,
-        snap: Option<&store::Snapshot>,
+        snap: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
         self.forwarder
             .pre_apply_snapshot(ob_ctx.region(), peer_id, snap_key, snap)
@@ -219,7 +219,7 @@ impl<T: Transport + 'static, ER: RaftEngine> ApplySnapshotObserver for TiFlashOb
         ob_ctx: &mut ObserverContext<'_>,
         peer_id: u64,
         snap_key: &store::SnapKey,
-        snap: Option<&store::Snapshot>,
+        snap: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
         self.forwarder
             .post_apply_snapshot(ob_ctx.region(), peer_id, snap_key, snap)

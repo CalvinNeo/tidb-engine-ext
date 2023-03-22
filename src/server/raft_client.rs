@@ -457,15 +457,17 @@ where
                 None => return,
             };
             if msg.get_message().has_snapshot() {
-                let mut snapshot = RaftSnapshotData::default();
-                snapshot
-                    .merge_from_bytes(msg.get_message().get_snapshot().get_data())
-                    .unwrap();
-                // Witness's snapshot must be empty, no need to send snapshot files
-                if !snapshot.get_meta().get_for_witness() {
-                    self.send_snapshot_sock(msg);
-                    continue;
-                }
+                // let mut snapshot = RaftSnapshotData::default();
+                // snapshot
+                //     .merge_from_bytes(msg.get_message().get_snapshot().get_data())
+                //     .unwrap();
+                // // Witness's snapshot must be empty, no need to send snapshot files
+                // if !snapshot.get_meta().get_for_witness() {
+                //     self.send_snapshot_sock(msg);
+                //     continue;
+                // }
+                self.send_snapshot_sock(msg);
+                continue;
             }
             self.buffer.push(msg);
         }

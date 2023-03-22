@@ -11,13 +11,8 @@ pub mod root {
             _unused: [u8; 0],
         }
         pub type RawCppStringPtr = *mut root::DB::RawCppString;
-        #[repr(u8)]
-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-        pub enum ColumnFamilyType {
-            Lock = 0,
-            Write = 1,
-            Default = 2,
-        }
+        pub use raftstore::coprocessor::ColumnFamilyType;
+
         #[repr(u8)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub enum FileEncryptionRes {
@@ -583,6 +578,13 @@ pub mod root {
                     region_id: u64,
                     new_peer_id: u64,
                 ) -> root::DB::FastAddPeerRes,
+            >,
+            pub fn_get_lock_by_key: ::std::option::Option<
+            unsafe extern "C" fn(
+                arg1: *const root::DB::EngineStoreServerWrap,
+                arg2: u64,
+                arg3: root::DB::BaseBuffView,
+            ) -> root::DB::BaseBuffView,
             >,
         }
         pub const RAFT_STORE_PROXY_VERSION: u64 = 4990756589462826693;

@@ -201,7 +201,7 @@ impl Lock {
         b.encode_var_u64(self.ttl).unwrap();
         if let Some(ref v) = self.short_value {
             b.push(SHORT_VALUE_PREFIX);
-            b.push(v.len() as u8);
+            b.encode_var_u64(v.len() as u64).unwrap();
             b.extend_from_slice(v);
         }
         if !self.for_update_ts.is_zero() {
@@ -245,7 +245,7 @@ impl Lock {
     fn pre_allocate_size(&self) -> usize {
         let mut size = 1 + MAX_VAR_I64_LEN + self.primary.len() + MAX_VAR_U64_LEN * 2;
         if let Some(v) = &self.short_value {
-            size += 2 + v.len();
+            size += 1 + MAX_VAR_U64_LEN + v.len();
         }
         if !self.for_update_ts.is_zero() {
             size += 1 + size_of::<u64>();
@@ -316,7 +316,7 @@ impl Lock {
         while !b.is_empty() {
             match b.read_u8()? {
                 SHORT_VALUE_PREFIX => {
-                    let len = b.read_u8()?;
+                    let len = number::decode_var_u64(&mut b)?;
                     if b.len() < len as usize {
                         panic!(
                             "content len [{}] shorter than short value len [{}]",

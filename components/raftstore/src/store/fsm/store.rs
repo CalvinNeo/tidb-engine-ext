@@ -1204,13 +1204,13 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
             if local_state.get_state() == PeerState::Applying {
                 // in case of restart happen when we just write region state to Applying,
                 // but not write raft_local_state to raft rocksdb in time.
-                box_try!(peer_storage::recover_from_applying_state(
+                let change_set =  box_try!(peer_storage::recover_from_applying_state(
                     &self.engines,
                     &mut raft_wb,
                     region_id
                 ));
                 applying_count += 1;
-                applying_regions.push(region.clone());
+                applying_regions.push((region.clone(), change_set));
                 return Ok(true);
             }
 
@@ -1253,7 +1253,7 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
         }
 
         // schedule applying snapshot after raft writebatch were written.
-        for region in applying_regions {
+        for (region, change_set) in applying_regions {
             info!("region is applying snapshot"; "region" => ?region, "store_id" => store_id);
             let (tx, mut peer) = PeerFsm::create(
                 store_id,
@@ -1265,7 +1265,7 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
                 false,
             )?;
             peer.peer.init_replication_mode(&mut replication_state);
-            peer.schedule_applying_snapshot();
+            peer.schedule_applying_snapshot(change_set);
             meta.region_ranges
                 .insert(enc_end_key(&region), region.get_id());
             meta.region_read_progress

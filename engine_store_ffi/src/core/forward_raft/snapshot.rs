@@ -47,7 +47,7 @@ fn retrieve_sst_files(snap: &store::Snapshot) -> Vec<(PathBuf, ColumnFamilyType)
 fn pre_handle_snapshot_impl(
     engine_store_server_helper: &'static EngineStoreServerHelper,
     peer_id: u64,
-    ssts: Vec<(PathBuf, ColumnFamilyType)>,
+    ssts: Vec<(Vec<u8>, ColumnFamilyType)>,
     region: &Region,
     snap_key: &SnapKey,
 ) -> PtrWrapper {
@@ -56,7 +56,7 @@ fn pre_handle_snapshot_impl(
     let ptr = {
         let sst_views = ssts
             .iter()
-            .map(|(b, c)| (b.to_str().unwrap().as_bytes(), c.clone()))
+            .map(|(b, c)| (b.as_slice(), c.clone()))
             .collect();
         engine_store_server_helper.pre_handle_snapshot(region, peer_id, sst_views, idx, term)
     };
@@ -70,31 +70,16 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
         ob_region: &Region,
         peer_id: u64,
         snap_key: &store::SnapKey,
-        snap: Option<&store::Snapshot>,
+        snap: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
         let region_id = ob_region.get_id();
         info!("pre apply snapshot";
             "peer_id" => peer_id,
             "region_id" => region_id,
             "snap_key" => ?snap_key,
-            "has_snap" => snap.is_some(),
             "pending" => self.engine.proxy_ext.pending_applies_count.load(Ordering::SeqCst),
         );
         fail::fail_point!("on_ob_pre_handle_snapshot", |_| {});
-
-        let snap = match snap {
-            None => return,
-            Some(s) => s,
-        };
-
-        fail::fail_point!("on_ob_pre_handle_snapshot_delete", |_| {
-            let ssts = retrieve_sst_files(snap);
-            for (pathbuf, _) in ssts.iter() {
-                debug!("delete snapshot file"; "path" => ?pathbuf);
-                std::fs::remove_file(pathbuf.as_path()).unwrap();
-            }
-            return;
-        });
 
         let mut should_skip = false;
         #[allow(clippy::collapsible_if)]
@@ -142,13 +127,13 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                 let engine_store_server_helper = self.engine_store_server_helper;
                 let region = ob_region.clone();
                 let snap_key = snap_key.clone();
-                let ssts = retrieve_sst_files(snap);
 
                 // We use thread pool to do pre handling.
                 self.engine
                     .proxy_ext
                     .pending_applies_count
                     .fetch_add(1, Ordering::SeqCst);
+                let snap = snap.clone();
                 p.spawn(async move {
                     // The original implementation is in `Snapshot`, so we don't need to care abort
                     // lifetime.
@@ -156,7 +141,7 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                     let res = pre_handle_snapshot_impl(
                         engine_store_server_helper,
                         task.peer_id,
-                        ssts,
+                        snap,
                         &region,
                         &snap_key,
                     );
@@ -187,7 +172,7 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
         ob_region: &Region,
         peer_id: u64,
         snap_key: &store::SnapKey,
-        snap: Option<&store::Snapshot>,
+        snap: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
         fail::fail_point!("on_ob_post_apply_snapshot", |_| {
             return;
@@ -240,10 +225,6 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
             return;
         }
 
-        let snap = match snap {
-            None => return,
-            Some(s) => s,
-        };
         let maybe_prehandle_task = {
             let mut lock = match self.pre_handle_snapshot_ctx.lock() {
                 Ok(l) => l,
@@ -314,11 +295,10 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
 
         if need_retry && !should_skip {
             // Blocking pre handle.
-            let ssts = retrieve_sst_files(snap);
             let ptr = pre_handle_snapshot_impl(
                 self.engine_store_server_helper,
                 peer_id,
-                ssts,
+                snap.clone(),
                 ob_region,
                 snap_key,
             );

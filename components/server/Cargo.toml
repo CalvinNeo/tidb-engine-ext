@@ -56,6 +56,7 @@ grpcio = { workspace = true }
 grpcio-health = { version = "0.10", default-features = false, features = ["protobuf-codec"] }
 hex = "0.4"
 keys = { workspace = true }
+kvengine = { path = "../kvengine" }
 kvproto = { workspace = true }
 libc = "0.2"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_debug"] }

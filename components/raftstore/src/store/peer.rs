@@ -467,6 +467,7 @@ pub struct PersistSnapshotResult {
     /// prev_region is the region before snapshot applied.
     pub prev_region: metapb::Region,
     pub region: metapb::Region,
+    pub change_set: kvenginepb::ChangeSet,
     pub destroy_regions: Vec<metapb::Region>,
     pub for_witness: bool,
 }
@@ -663,6 +664,7 @@ impl UnsafeRecoveryForceLeaderSyncer {
 pub struct UnsafeRecoveryExecutePlanSyncer {
     _closure: Arc<InvokeClosureOnDrop>,
     abort: Arc<Mutex<bool>>,
+    pub force: bool,
 }
 
 impl UnsafeRecoveryExecutePlanSyncer {
@@ -682,6 +684,24 @@ impl UnsafeRecoveryExecutePlanSyncer {
         UnsafeRecoveryExecutePlanSyncer {
             _closure: Arc::new(closure),
             abort,
+            force: false,
+        }
+    }
+
+    pub fn new_no_report(report_id: u64, force: bool) -> Self {
+        let abort = Arc::new(Mutex::new(false));
+        let abort_clone = abort.clone();
+        let closure = InvokeClosureOnDrop(Box::new(move || {
+            info!("Unsafe recovery, plan execution finished");
+            if *abort_clone.lock().unwrap() {
+                warn!("Unsafe recovery, plan execution aborted");
+                return;
+            }
+        }));
+        UnsafeRecoveryExecutePlanSyncer {
+            _closure: Arc::new(closure),
+            abort,
+            force,
         }
     }
 
@@ -1298,9 +1318,12 @@ where
             // already destroyed, so the raft group will not make any progress, namely the
             // source peer can not get the latest commit index anymore.
             // Here update the commit index to let source apply rest uncommitted entries.
-            return if merge.get_commit() > self.raft_group.raft.raft_log.committed {
-                self.raft_group.raft.raft_log.commit_to(merge.get_commit());
-                Some(merge.get_commit())
+            //
+            // CSE ensures that the last index is matched, we only need to commit to the last index.
+            let last_index = self.get_store().last_index();
+            return if last_index > self.raft_group.raft.raft_log.committed {
+                self.raft_group.raft.raft_log.commit_to(last_index);
+                Some(last_index)
             } else {
                 None
             };
@@ -2926,17 +2949,11 @@ where
         if let HandleReadyResult::Snapshot(box HandleSnapshotResult {
             msgs,
             snap_region,
+            change_set,
             destroy_regions,
             last_first_index,
-            for_witness,
         }) = res
         {
-            if for_witness {
-                // inform next round to check apply status
-                ctx.router
-                    .send_casual_msg(snap_region.get_id(), CasualMessage::SnapshotApplied)
-                    .unwrap();
-            }
             // When applying snapshot, there is no log applied and not compacted yet.
             self.raft_log_size_hint = 0;
 
@@ -2947,8 +2964,9 @@ where
                 persist_res: Some(PersistSnapshotResult {
                     prev_region: self.region().clone(),
                     region: snap_region,
+                    change_set,
                     destroy_regions,
-                    for_witness,
+                    for_witness: false,
                 }),
             });
             if self.last_compacted_idx == 0 && last_first_index >= RAFT_INIT_LOG_INDEX {

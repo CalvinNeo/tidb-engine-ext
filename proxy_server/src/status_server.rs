@@ -37,7 +37,7 @@ use openssl::{
     x509::X509,
 };
 use pin_project::pin_project;
-use raftstore::store::{transport::CasualRouter, CasualMessage};
+use raftstore::store::{transport::CasualRouter, CasualMessage, SignificantRouter};
 use regex::Regex;
 use security::{self, SecurityConfig};
 use serde_json::Value;
@@ -504,7 +504,7 @@ where
 impl<E, R> StatusServer<E, R>
 where
     E: KvEngine,
-    R: 'static + Send + CasualRouter<E> + Clone,
+    R: 'static + Send + CasualRouter<E> + SignificantRouter<E> + Clone,
 {
     pub async fn dump_region_meta(req: Request<Body>, router: R) -> hyper::Result<Response<Body>> {
         lazy_static! {
@@ -579,6 +579,32 @@ where
                 format!("fails to build response: {}", err),
             )),
         }
+    }
+
+    pub async fn unsafe_destroy_region(req: Request<Body>, router: R) -> hyper::Result<Response<Body>> {
+        let query = req.uri().query().unwrap_or("");
+        let query_pairs: HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes()).collect();
+        let region_id = query_pairs
+            .get("region_id")
+            .map(|str| u64::from_str(str).unwrap_or_default())
+            .unwrap_or_default();
+        if region_id == 0 {
+            return Ok(make_response(
+                StatusCode::BAD_REQUEST,
+                "region is is missing",
+            ));
+        }
+        let force = query_pairs.get("force").map(|x| x.as_ref()) == Some("true");
+        let syncer =
+            raftstore::store::UnsafeRecoveryExecutePlanSyncer::new_no_report(region_id, force);
+        let msg = raftstore::store::msg::SignificantMsg::UnsafeRecoveryDestroy(syncer.clone());
+        if let Err(err) = router.significant_send(region_id, msg) {
+            return Ok(make_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("error {:?}", err),
+            ));
+        }
+        return Ok(make_response(StatusCode::OK, ""));
     }
 
     pub async fn handle_http_request(
@@ -728,6 +754,9 @@ where
                                 Self::handle_http_request(req, engine_store_server_helper).await
                             }
 
+                            (Method::PUT, path) if path.starts_with("/unsafe_destroy_region") => {
+                                Self::unsafe_destroy_region(req, router).await
+                            }
                             _ => Ok(make_response(StatusCode::NOT_FOUND, "path not found")),
                         }
                     }

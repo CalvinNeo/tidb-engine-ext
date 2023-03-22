@@ -102,7 +102,8 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                                     "inner_msg" => ?inner_msg,
                                     "is_replicated" => is_replicated,
                                     "has_already_inited" => has_already_inited,
-                                    "is_first" => is_first,
+                                    "inited_or_fallback" => o.get().inited_or_fallback.load(Ordering::SeqCst),
+                                    "snapshot_inflight" => o.get().snapshot_inflight.load(Ordering::SeqCst),
                                     "elapsed" => elapsed,
                                     "do_fallback" => do_fallback,
                             );
@@ -401,75 +402,34 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
             }
         }
 
-        // Get a snapshot object.
-        let (mut snapshot, key) = {
-            // Find term of entry at applied_index.
-            let applied_index = apply_state.get_applied_index();
-            let applied_term =
-                self.check_entry_at_index(region_id, applied_index, new_peer_id, "applied_index")?;
-            // Will otherwise cause "got message with lower index than committed" loop.
-            // Maybe this can be removed, since fb0917bfa44ec1fc55967 can pass if we remove
-            // this constraint.
-            self.check_entry_at_index(
-                region_id,
-                apply_state.get_commit_index(),
-                new_peer_id,
-                "commit_index",
-            )?;
-
-            let key = SnapKey::new(region_id, applied_term, applied_index);
-            self.snap_mgr.register(key.clone(), SnapEntry::Generating);
-            defer!(self.snap_mgr.deregister(&key, &SnapEntry::Generating));
-            let snapshot = self.snap_mgr.get_snapshot_for_building(&key)?;
-            (snapshot, key.clone())
-        };
-
-        // Build snapshot by do_snapshot
+        // Build fake snapshot protobuf message response
         let mut pb_snapshot: eraftpb::Snapshot = Default::default();
+
+        // Set empty changeset
+        let change_set: kvenginepb::ChangeSet = Default::default();
+        let snap_data = encode_snap_data(&new_region, &change_set);
+        pb_snapshot.set_data(snap_data);
         let pb_snapshot_metadata: &mut eraftpb::SnapshotMetadata = pb_snapshot.mut_metadata();
-        let mut pb_snapshot_data = kvproto::raft_serverpb::RaftSnapshotData::default();
-        {
-            // eraftpb::SnapshotMetadata
-            for (_, cf) in raftstore::store::snap::SNAPSHOT_CFS_ENUM_PAIR {
-                let cf_index: RaftStoreResult<usize> = snapshot
-                    .cf_files()
-                    .iter()
-                    .position(|x| &x.cf == cf)
-                    .ok_or(box_err!("can't find index for cf {}", cf));
-                let cf_index = cf_index?;
-                let cf_file = &snapshot.cf_files()[cf_index];
-                // Create fake cf file.
-                let mut path = cf_file.path.clone();
-                path.push(cf_file.file_prefix.clone());
-                path.set_extension("sst");
-                let mut f = std::fs::File::create(path.as_path())?;
-                f.flush()?;
-                f.sync_all()?;
-            }
-            pb_snapshot_data.set_region(new_region.clone());
-            pb_snapshot_data.set_file_size(0);
-            const SNAPSHOT_VERSION: u64 = 2;
-            pb_snapshot_data.set_version(SNAPSHOT_VERSION);
-
-            // SnapshotMeta
-            // Which is snap.meta_file.meta
-            let snapshot_meta =
-                raftstore::store::snap::gen_snapshot_meta(snapshot.cf_files(), true)?;
-
-            // Write MetaFile
-            {
-                snapshot.set_snapshot_meta(snapshot_meta.clone())?;
-                snapshot.save_meta_file()?;
-            }
-            pb_snapshot_data.set_meta(snapshot_meta);
-        }
 
         pb_snapshot_metadata
             .set_conf_state(raftstore::store::util::conf_state_from_region(&new_region));
-        pb_snapshot_metadata.set_index(key.idx);
-        pb_snapshot_metadata.set_term(key.term);
 
-        pb_snapshot.set_data(pb_snapshot_data.write_to_bytes().unwrap().into());
+        let applied_index = apply_state.get_applied_index();
+        let applied_term =
+            self.check_entry_at_index(region_id, applied_index, new_peer_id, "applied_index")?;
+
+        // Will otherwise cause "got message with lower index than committed" loop.
+        // Maybe this can be removed, since fb0917bfa44ec1fc55967 can pass if we remove
+        // this constraint.
+        self.check_entry_at_index(
+            region_id,
+            apply_state.get_commit_index(),
+            new_peer_id,
+            "commit_index",
+        )?;
+
+        pb_snapshot_metadata.set_index(applied_index);
+        pb_snapshot_metadata.set_term(applied_term);
 
         // Send reponse
         let mut response = RaftMessage::default();

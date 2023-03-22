@@ -54,7 +54,9 @@ grpcio-health = { version = "0.10", default-features = false, features = ["proto
 into_other = { workspace = true, default-features = false }
 itertools = "0.10"
 keys = { workspace = true, default-features = false }
-kvproto = { git = "https://github.com/pingcap/kvproto.git" }
+kvengine = { path = "../components/kvengine" }
+kvenginepb = { path = "../components/kvenginepb" }
+kvproto = { workspace = true }
 lazy_static = "1.3"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_debug"] }
 log_wrappers = { workspace = true }
@@ -85,6 +87,7 @@ tikv_util = { workspace = true, default-features = false }
 time = "0.1"
 tokio = { version = "1.5", features = ["sync", "rt-multi-thread"] }
 tokio-timer = { git = "https://github.com/tikv/tokio", branch = "tokio-timer-hotfix" }
+txn_types = { workspace = true }
 tracker = { workspace = true, default-features = false }
 uuid = { version = "0.8.1", features = ["serde", "v4"] }
 yatp = { git = "https://github.com/tikv/yatp.git", branch = "master" }

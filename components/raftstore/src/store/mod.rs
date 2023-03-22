@@ -11,6 +11,7 @@ pub mod msg;
 mod peer;
 mod read_queue;
 pub mod region_meta;
+pub mod rlog;
 pub mod transport;
 #[macro_use]
 pub mod util;
@@ -19,7 +20,7 @@ mod async_io;
 mod bootstrap;
 mod compaction_guard;
 mod hibernate_state;
-mod peer_storage;
+pub mod peer_storage;
 mod region_snapshot;
 mod replication_mode;
 pub mod snap;
@@ -57,7 +58,7 @@ pub use self::{
         can_amend_read, get_sync_log_from_request, make_transfer_leader_response,
         propose_read_index, should_renew_lease, Peer, PeerStat, ProposalContext, ProposalQueue,
         RequestInspector, RequestPolicy, SnapshotRecoveryWaitApplySyncer,
-        TRANSFER_LEADER_COMMAND_REPLY_CTX,
+        UnsafeRecoveryExecutePlanSyncer, TRANSFER_LEADER_COMMAND_REPLY_CTX,
     },
     peer_storage::{
         clear_meta, do_snapshot, write_initial_apply_state, write_initial_raft_state,

@@ -148,6 +148,7 @@ pub fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
             SysQuota::cpu_cores_quota() as usize * 2,
         ))),
         None,
+        tikv.dfs.clone(),
     );
 
     let proxy_ref = &proxy;
@@ -240,7 +241,7 @@ pub fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
 #[inline]
 fn run_impl_only_for_decryption<CER: ConfiguredRaftEngine, F: KvFormat>(
     config: TikvConfig,
-    _proxy_config: ProxyConfig,
+    proxy_config: ProxyConfig,
     engine_store_server_helper: &EngineStoreServerHelper,
 ) {
     let encryption_key_manager =
@@ -255,11 +256,15 @@ fn run_impl_only_for_decryption<CER: ConfiguredRaftEngine, F: KvFormat>(
             .unwrap()
             .map(Arc::new);
 
+    let engine_store_server_helper_ptr = engine_store_server_helper as *const _ as isize;
+    let tikv = TiKvServer::<CER>::init(config, proxy_config, engine_store_server_helper_ptr);
+
     let mut proxy = RaftStoreProxy::new(
         AtomicU8::new(RaftProxyStatus::Idle as u8),
         encryption_key_manager.clone(),
         Option::None,
         None,
+        tikv.dfs.clone(),
     );
 
     let proxy_ref = &proxy;
@@ -538,6 +543,7 @@ struct TiKvServer<ER: RaftEngine> {
     quota_limiter: Arc<QuotaLimiter>,
     resource_manager: Option<Arc<ResourceGroupManager>>,
     tablet_registry: Option<TabletRegistry<RocksEngine>>,
+    dfs: Arc<dyn kvengine::dfs::DFS>,
 }
 
 struct TiKvEngines<EK: KvEngine, ER: RaftEngine> {
@@ -635,6 +641,36 @@ impl<ER: RaftEngine> TiKvServer<ER> {
             config.quota.enable_auto_tune,
         ));
 
+        let dfs_conf = &config.dfs;
+        let dfs_s3_bucket = env::var("DFS_S3_BUCKET").unwrap_or_default();
+        let dfs = if config.dfs.s3_bucket.is_empty()
+            && config.dfs.s3_endpoint.is_empty()
+            && !dfs_s3_bucket.is_empty()
+        {
+            let dfs_prefix = env::var("DFS_PREFIX").unwrap_or_default();
+            let dfs_s3_endpoint = env::var("DFS_S3_ENDPOINT").unwrap_or_default();
+            let dfs_s3_key_id = env::var("DFS_S3_KEY_ID").unwrap_or_default();
+            let dfs_s3_secret_key = env::var("DFS_S3_SECRET_KEY").unwrap_or_default();
+            let dfs_s3_region = env::var("DFS_S3_REGION").unwrap_or_default();
+            Arc::new(kvengine::dfs::S3FS::new(
+                dfs_prefix,
+                dfs_s3_endpoint,
+                dfs_s3_key_id,
+                dfs_s3_secret_key,
+                dfs_s3_region,
+                dfs_s3_bucket,
+            ))
+        } else {
+            Arc::new(kvengine::dfs::S3FS::new(
+                dfs_conf.prefix.clone(),
+                dfs_conf.s3_endpoint.clone(),
+                dfs_conf.s3_key_id.clone(),
+                dfs_conf.s3_secret_key.clone(),
+                dfs_conf.s3_region.clone(),
+                dfs_conf.s3_bucket.clone(),
+            ))
+        };
+
         TiKvServer {
             config,
             proxy_config,
@@ -665,6 +701,7 @@ impl<ER: RaftEngine> TiKvServer<ER> {
             quota_limiter,
             resource_manager,
             tablet_registry: None,
+            dfs,
         }
     }
 

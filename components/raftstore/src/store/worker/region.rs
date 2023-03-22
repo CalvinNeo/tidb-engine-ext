@@ -7,6 +7,7 @@ use std::{
         HashMap, VecDeque,
     },
     fmt::{self, Display, Formatter},
+    str,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::SyncSender,
@@ -21,6 +22,7 @@ use fail::fail_point;
 use file_system::{IoType, WithIoType};
 use kvproto::raft_serverpb::{PeerState, RaftApplyState, RegionLocalState};
 use pd_client::PdClient;
+use protobuf::Message;
 use raft::eraftpb::Snapshot as RaftSnapshot;
 use tikv_util::{
     box_err, box_try,
@@ -37,7 +39,7 @@ use yatp::{
 
 use super::metrics::*;
 use crate::{
-    coprocessor::CoprocessorHost,
+    coprocessor::{ColumnFamilyType, CoprocessorHost},
     store::{
         self, check_abort,
         peer_storage::{
@@ -72,6 +74,7 @@ pub enum Task<S> {
         region_id: u64,
         status: Arc<AtomicUsize>,
         peer_id: u64,
+        change_set: kvenginepb::ChangeSet,
     },
     /// Destroy data between [start_key, end_key).
     ///
@@ -437,7 +440,13 @@ where
     }
 
     /// Applies snapshot data of the Region.
-    fn apply_snap(&mut self, region_id: u64, peer_id: u64, abort: Arc<AtomicUsize>) -> Result<()> {
+    fn apply_snap(
+        &mut self,
+        region_id: u64,
+        peer_id: u64,
+        abort: Arc<AtomicUsize>,
+        change_set: &kvenginepb::ChangeSet,
+    ) -> Result<()> {
         info!("begin apply snap data"; "region_id" => region_id, "peer_id" => peer_id);
         fail_point!("region_apply_snap", |_| { Ok(()) });
         check_abort(&abort)?;
@@ -456,32 +465,24 @@ where
         let term = apply_state.get_truncated_state().get_term();
         let idx = apply_state.get_truncated_state().get_index();
         let snap_key = SnapKey::new(region_id, term, idx);
-        self.mgr.register(snap_key.clone(), SnapEntry::Applying);
-        defer!({
-            self.mgr.deregister(&snap_key, &SnapEntry::Applying);
-        });
-        let mut s = box_try!(self.mgr.get_snapshot_for_applying(&snap_key));
-        if !s.exists() {
-            return Err(box_err!("missing snapshot file {}", s.path()));
-        }
+        let cs_bin = change_set.write_to_bytes().unwrap();
+        let sst_views = vec![
+            (cs_bin.clone(), ColumnFamilyType::Write),
+            (cs_bin, ColumnFamilyType::Lock),
+        ];
+
         check_abort(&abort)?;
         let timer = Instant::now();
-        let options = ApplyOptions {
-            db: self.engine.clone(),
-            region: region.clone(),
-            abort: Arc::clone(&abort),
-            write_batch_size: self.batch_size,
-            coprocessor_host: self.coprocessor_host.clone(),
-        };
-        s.apply(options)?;
+
         self.coprocessor_host
-            .post_apply_snapshot(&region, peer_id, &snap_key, Some(&s));
+            .post_apply_snapshot(&region, peer_id, &snap_key, &sst_views);
 
         // delete snapshot state.
         let mut wb = self.engine.write_batch();
         region_state.set_state(PeerState::Normal);
         box_try!(wb.put_msg_cf(CF_RAFT, &keys::region_state_key(region_id), &region_state));
         box_try!(wb.delete_cf(CF_RAFT, &keys::snapshot_raft_state_key(region_id)));
+        box_try!(wb.delete_cf(CF_RAFT, &keys::snapshot_change_set_key(region_id)));
         wb.write().unwrap_or_else(|e| {
             panic!("{} failed to save apply_snap result: {:?}", region_id, e);
         });
@@ -495,7 +496,13 @@ where
 
     /// Tries to apply the snapshot of the specified Region. It calls
     /// `apply_snap` to do the actual work.
-    fn handle_apply(&mut self, region_id: u64, peer_id: u64, status: Arc<AtomicUsize>) {
+    fn handle_apply(
+        &mut self,
+        region_id: u64,
+        peer_id: u64,
+        status: Arc<AtomicUsize>,
+        change_set: &kvenginepb::ChangeSet,
+    ) {
         let _ = status.compare_exchange(
             JOB_STATUS_PENDING,
             JOB_STATUS_RUNNING,
@@ -506,7 +513,7 @@ where
 
         let start = Instant::now();
 
-        match self.apply_snap(region_id, peer_id, Arc::clone(&status)) {
+        match self.apply_snap(region_id, peer_id, Arc::clone(&status), change_set) {
             Ok(()) => {
                 status.swap(JOB_STATUS_FINISHED, Ordering::SeqCst);
                 SNAP_COUNTER.apply.success.inc();
@@ -700,12 +707,13 @@ where
     /// Calls observer `pre_apply_snapshot` for every task.
     /// Multiple task can be `pre_apply_snapshot` at the same time.
     fn pre_apply_snapshot(&self, task: &Task<EK::Snapshot>) -> Result<()> {
-        let (region_id, abort, peer_id) = match task {
+        let (region_id, abort, peer_id, change_set) = match task {
             Task::Apply {
                 region_id,
                 status,
                 peer_id,
-            } => (region_id, status.clone(), peer_id),
+                change_set,
+            } => (region_id, status.clone(), peer_id, change_set),
             _ => panic!("invalid apply snapshot task"),
         };
 
@@ -717,22 +725,18 @@ where
         let term = apply_state.get_truncated_state().get_term();
         let idx = apply_state.get_truncated_state().get_index();
         let snap_key = SnapKey::new(*region_id, term, idx);
-        let s = box_try!(self.mgr.get_snapshot_for_applying(&snap_key));
-        if !s.exists() {
-            self.coprocessor_host.pre_apply_snapshot(
-                region_state.get_region(),
-                *peer_id,
-                &snap_key,
-                None,
-            );
-            return Err(box_err!("missing snapshot file {}", s.path()));
-        }
+        let cs_bin = change_set.write_to_bytes().unwrap();
+        let sst_views = vec![
+            (cs_bin.clone(), ColumnFamilyType::Write),
+            (cs_bin, ColumnFamilyType::Lock),
+        ];
+
         check_abort(&abort)?;
         self.coprocessor_host.pre_apply_snapshot(
             region_state.get_region(),
             *peer_id,
             &snap_key,
-            Some(&s),
+            &sst_views,
         );
         Ok(())
     }
@@ -761,10 +765,11 @@ where
                     region_id,
                     status,
                     peer_id,
+                    change_set,
                 }) = self.pending_applies.pop_front()
                 {
                     new_batch = false;
-                    self.handle_apply(region_id, peer_id, status);
+                    self.handle_apply(region_id, peer_id, status, &change_set);
                 }
             }
         }
@@ -1214,6 +1219,7 @@ pub(crate) mod tests {
                     region_id: id,
                     status,
                     peer_id: 1,
+                    change_set: kvenginepb::ChangeSet::default(),
                 })
                 .unwrap();
         };
@@ -1441,10 +1447,9 @@ pub(crate) mod tests {
             _: &mut ObserverContext<'_>,
             peer_id: u64,
             key: &crate::store::SnapKey,
-            snapshot: Option<&crate::store::Snapshot>,
+            _snapshot: &Vec<(Vec<u8>, ColumnFamilyType)>,
         ) {
-            let code =
-                snapshot.unwrap().total_size() + key.term + key.region_id + key.idx + peer_id;
+            let code = key.term + key.region_id + key.idx + peer_id;
             self.pre_apply_count.fetch_add(1, Ordering::SeqCst);
             self.pre_apply_hash
                 .fetch_add(code as usize, Ordering::SeqCst);
@@ -1455,10 +1460,9 @@ pub(crate) mod tests {
             _: &mut ObserverContext<'_>,
             peer_id: u64,
             key: &crate::store::SnapKey,
-            snapshot: Option<&crate::store::Snapshot>,
+            _: &Vec<(Vec<u8>, ColumnFamilyType)>,
         ) {
-            let code =
-                snapshot.unwrap().total_size() + key.term + key.region_id + key.idx + peer_id;
+            let code = key.term + key.region_id + key.idx + peer_id;
             self.post_apply_count.fetch_add(1, Ordering::SeqCst);
             self.post_apply_hash
                 .fetch_add(code as usize, Ordering::SeqCst);

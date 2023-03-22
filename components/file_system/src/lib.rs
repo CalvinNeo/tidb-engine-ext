@@ -12,6 +12,7 @@ extern crate test;
 #[allow(unused_extern_crates)]
 extern crate tikv_alloc;
 
+mod direct;
 mod file;
 mod io_stats;
 mod metrics;
@@ -33,6 +34,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+pub use direct::{open_direct_file, DirectWriter};
 pub use file::{File, OpenOptions};
 pub use io_stats::{get_io_type, init as init_io_stats_collector, set_io_type};
 pub use metrics_manager::{BytesFetcher, MetricsManager};

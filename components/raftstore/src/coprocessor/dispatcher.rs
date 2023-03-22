@@ -554,13 +554,22 @@ impl<E: KvEngine> CoprocessorHost<E> {
     }
 
     // (index, term) is for the applying entry.
-    pub fn pre_exec(&self, region: &Region, cmd: &RaftCmdRequest, index: u64, term: u64) -> bool {
+    pub fn pre_exec(
+        &self,
+        region: &Region,
+        cmd: &RaftCmdRequest,
+        apply_state: &mut RaftApplyState,
+        index: u64,
+        term: u64,
+        applied_term: u64,
+        truncated_state: &mut RaftTruncatedState,
+        first_index: &mut u64,
+    ) -> bool {
         let mut ctx = ObserverContext::new(region);
         if !cmd.has_admin_request() {
-            let query = cmd.get_requests();
             for observer in &self.registry.query_observers {
                 let observer = observer.observer.inner();
-                if observer.pre_exec_query(&mut ctx, query, index, term) {
+                if observer.pre_exec_query(&mut ctx, cmd, apply_state, index, term, applied_term, truncated_state, first_index) {
                     return true;
                 }
             }
@@ -586,12 +595,12 @@ impl<E: KvEngine> CoprocessorHost<E> {
         &self,
         region: &Region,
         cmd: &Cmd,
-        apply_state: &RaftApplyState,
+        apply_state: &mut RaftApplyState,
         region_state: &RegionState,
         apply_ctx: &mut ApplyCtxInfo<'_>,
     ) -> bool {
         let mut ctx = ObserverContext::new(region);
-        if !cmd.response.has_admin_response() {
+        if !cmd.request.has_admin_request() {
             for observer in &self.registry.query_observers {
                 let observer = observer.observer.inner();
                 if observer.post_exec_query(&mut ctx, cmd, apply_state, region_state, apply_ctx) {
@@ -650,7 +659,7 @@ impl<E: KvEngine> CoprocessorHost<E> {
         region: &Region,
         peer_id: u64,
         snap_key: &crate::store::SnapKey,
-        snap: Option<&crate::store::Snapshot>,
+        snap: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
         loop_ob!(
             region,
@@ -667,7 +676,7 @@ impl<E: KvEngine> CoprocessorHost<E> {
         region: &Region,
         peer_id: u64,
         snap_key: &crate::store::SnapKey,
-        snap: Option<&crate::store::Snapshot>,
+        snap: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
         let mut ctx = ObserverContext::new(region);
         for observer in &self.registry.apply_snapshot_observers {
@@ -870,6 +879,7 @@ mod tests {
     use kvproto::{
         metapb::Region,
         raft_cmdpb::{AdminRequest, AdminResponse, RaftCmdRequest, RaftCmdResponse, Request},
+        raft_serverpb::RaftTruncatedState,
     };
     use tikv_util::box_err;
 
@@ -999,9 +1009,13 @@ mod tests {
         fn pre_exec_query(
             &self,
             ctx: &mut ObserverContext<'_>,
-            _: &[Request],
+            _: &RaftCmdRequest,
+            _: &mut RaftApplyState,
             _: u64,
             _: u64,
+            _: u64,
+            _: &mut RaftTruncatedState,
+            _: &mut u64,
         ) -> bool {
             self.called
                 .fetch_add(ObserverIndex::PreExecQuery as usize, Ordering::SeqCst);
@@ -1019,7 +1033,7 @@ mod tests {
             &self,
             ctx: &mut ObserverContext<'_>,
             _: &Cmd,
-            _: &RaftApplyState,
+            _: &mut RaftApplyState,
             _: &RegionState,
             _: &mut ApplyCtxInfo<'_>,
         ) -> bool {
@@ -1102,7 +1116,7 @@ mod tests {
             ctx: &mut ObserverContext<'_>,
             _: u64,
             _: &SnapKey,
-            _: Option<&Snapshot>,
+            _: &Vec<(Vec<u8>, ColumnFamilyType)>,
         ) {
             self.called
                 .fetch_add(ObserverIndex::PreApplySnapshot as usize, Ordering::SeqCst);
@@ -1114,7 +1128,7 @@ mod tests {
             ctx: &mut ObserverContext<'_>,
             _: u64,
             _: &crate::store::SnapKey,
-            _: Option<&Snapshot>,
+            _: &Vec<(Vec<u8>, ColumnFamilyType)>,
         ) {
             self.called
                 .fetch_add(ObserverIndex::PostApplySnapshot as usize, Ordering::SeqCst);
@@ -1261,15 +1275,19 @@ mod tests {
         index += ObserverIndex::OnEmptyCmd as usize;
         assert_all!([&ob.called], &[index]);
 
+        let mut truncated_state = RaftTruncatedState::default();
+        let mut first_index = 0;
+        let mut apply_state = RaftApplyState::default();
+
         let mut query_req = RaftCmdRequest::default();
         query_req.set_requests(vec![Request::default()].into());
-        host.pre_exec(&region, &query_req, 0, 0);
+        host.pre_exec(&region, &query_req, &mut apply_state, 0, 0, 0, &mut truncated_state, &mut first_index);
         index += ObserverIndex::PreExecQuery as usize;
         assert_all!([&ob.called], &[index]);
 
         let mut admin_req = RaftCmdRequest::default();
         admin_req.set_admin_request(AdminRequest::default());
-        host.pre_exec(&region, &admin_req, 0, 0);
+        host.pre_exec(&region, &admin_req, &mut apply_state, 0, 0, 0, &mut truncated_state, &mut first_index);
         index += ObserverIndex::PreExecAdmin as usize;
         assert_all!([&ob.called], &[index]);
 
@@ -1285,22 +1303,22 @@ mod tests {
             pending_delete_ssts: &mut pending_delete_ssts,
             delete_ssts: &mut delete_ssts,
         };
-        let apply_state = RaftApplyState::default();
+        let mut apply_state = RaftApplyState::default();
         let region_state = RegionState::default();
         let cmd = Cmd::default();
-        host.post_exec(&region, &cmd, &apply_state, &region_state, &mut info);
+        host.post_exec(&region, &cmd, &mut apply_state, &region_state, &mut info);
         index += ObserverIndex::PostExecQuery as usize;
         assert_all!([&ob.called], &[index]);
 
         let key = SnapKey::new(region.get_id(), 1, 1);
-        host.pre_apply_snapshot(&region, 0, &key, None);
+        host.pre_apply_snapshot(&region, 0, &key, &vec![]);
         index += ObserverIndex::PreApplySnapshot as usize;
         assert_all!([&ob.called], &[index]);
 
-        host.post_apply_snapshot(&region, 0, &key, None);
+        host.post_apply_snapshot(&region, 0, &key, &vec![]);
         index += ObserverIndex::PostApplySnapshot as usize;
         assert_all!([&ob.called], &[index]);
-
+ 
         host.should_pre_apply_snapshot();
         index += ObserverIndex::ShouldPreApplySnapshot as usize;
         assert_all!([&ob.called], &[index]);

@@ -8,6 +8,7 @@
 pub mod interfaces;
 // All ffi impls that not related to raft domain.
 pub mod basic_ffi_impls;
+pub mod cloud_helper;
 // All ffi impls that related to raft domain, but not related to proxy helper
 // context.
 pub mod domain_impls;
@@ -16,7 +17,6 @@ pub mod context_impls;
 pub mod encryption_impls;
 // FFI directly related with EngineStoreServerHelper.
 pub mod engine_store_helper_impls;
-pub mod lock_cf_reader;
 // FFI directly related with RaftStoreProxyFFIHelper.
 pub mod raftstore_proxy;
 pub mod raftstore_proxy_helper_impls;
@@ -25,8 +25,8 @@ pub mod sst_reader_impls;
 pub mod utils;
 
 pub use self::{
-    basic_ffi_impls::*, domain_impls::*, encryption_impls::*, engine_store_helper_impls::*,
-    interfaces::root::DB as interfaces_ffi, lock_cf_reader::*, raftstore_proxy::*,
+    basic_ffi_impls::*, cloud_helper::*, domain_impls::*, encryption_impls::*,
+    engine_store_helper_impls::*, interfaces::root::DB as interfaces_ffi, raftstore_proxy::*,
     raftstore_proxy_helper_impls::*, sst_reader_impls::*,
 };
 

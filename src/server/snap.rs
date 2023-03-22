@@ -200,6 +200,45 @@ pub fn send_snap(
     Ok(send_task)
 }
 
+/// Send the snapshot to specified address.
+///
+/// It will first send the normal raft snapshot message and then send the
+/// snapshot file.
+pub fn send_cse_snap(
+    env: Arc<Environment>,
+    _mgr: SnapManager,
+    security_mgr: Arc<SecurityManager>,
+    cfg: &Config,
+    addr: &str,
+    msg: RaftMessage,
+) -> Result<impl Future<Output = Result<()>>> {
+    assert!(msg.get_message().has_snapshot());
+    let cb = ChannelBuilder::new(env)
+        .stream_initial_window_size(cfg.grpc_stream_initial_window_size.0 as i32)
+        .keepalive_time(cfg.grpc_keepalive_time.0)
+        .keepalive_timeout(cfg.grpc_keepalive_timeout.0)
+        .default_compression_algorithm(cfg.grpc_compression_algorithm())
+        .default_gzip_compression_level(cfg.grpc_gzip_compression_level)
+        .default_grpc_min_message_size_to_compress(cfg.grpc_min_message_size_to_compress);
+
+    let channel = security_mgr.connect(cb, addr);
+    let client = TikvClient::new(channel);
+    let (sink, receiver) = client.raft()?;
+
+    let send_task = async move {
+        let mut sink = sink.sink_map_err(Error::from);
+        sink.send((msg, WriteFlags::default())).await?;
+        sink.close().await?;
+        let recv_result = receiver.map_err(Error::from).await;
+        drop(client);
+        match recv_result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    };
+    Ok(send_task)
+}
+
 struct RecvSnapContext {
     key: SnapKey,
     file: Option<Box<Snapshot>>,
@@ -441,20 +480,16 @@ impl<R: RaftExtension + 'static> Runnable for Runner<R> {
                 let security_mgr = Arc::clone(&self.security_mgr);
                 let sending_count = Arc::clone(&self.sending_count);
                 sending_count.fetch_add(1, Ordering::SeqCst);
-                let send_task = send_snap(env, mgr, security_mgr, &self.cfg.clone(), &addr, msg);
+                let send_task = send_cse_snap(env, mgr, security_mgr, &self.cfg.clone(), &addr, msg);
                 let task = async move {
                     let res = match send_task {
                         Err(e) => Err(e),
                         Ok(f) => f.await,
                     };
                     match res {
-                        Ok(stat) => {
+                        Ok(_) => {
                             info!(
-                                "sent snapshot";
-                                "region_id" => stat.key.region_id,
-                                "snap_key" => %stat.key,
-                                "size" => stat.total_size,
-                                "duration" => ?stat.elapsed
+                                "sent snapshot done";
                             );
                             cb(Ok(()));
                         }

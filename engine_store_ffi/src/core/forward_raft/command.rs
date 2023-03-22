@@ -1,4 +1,7 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
+use kvproto::raft_serverpb::RaftTruncatedState;
+use raftstore::coprocessor::ObserverContext;
+
 use crate::core::{common::*, ProxyForwarder};
 
 impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
@@ -133,7 +136,7 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
 
         if response.get_header().has_error() {
             info!(
-                "error occurs when apply_admin_cmd, {:?}",
+                "error occurs when post_exec_admin, {:?}",
                 response.get_header().get_error()
             );
             return self.handle_error_apply(ob_region, cmd, region_state);
@@ -245,154 +248,253 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
             .handle_write_raft_cmd(&cmd_dummy, RaftCmdHeader::new(region_id, index, term));
     }
 
+    pub fn pre_exec_query(
+        &self,
+        ob_ctx: &mut ObserverContext<'_>,
+        req: &RaftCmdRequest,
+        apply_state: &mut RaftApplyState,
+        index: u64,
+        term: u64,
+        applied_term: u64,
+        truncated_state: &mut RaftTruncatedState,
+        first_index: &mut u64,
+    ) -> bool {
+        let cl = rlog::get_custom_log(req).unwrap();
+        let tp = cl.get_type();
+        let region_id = ob_ctx.region().get_id();
+
+        debug!(
+            "pre_exec_query";
+            "region_id" => region_id,
+            "index" => index,
+            "term" => term,
+            "applied_term" => applied_term,
+            "type" => ?tp,
+        );
+
+        match tp {
+            rlog::TYPE_ENGINE_META => {
+                let cs = cl.get_change_set().unwrap();
+                // Ingest file raft log will be handled in `post_exec_query`
+                if !cs.has_ingest_files() {
+                    let empty_cmds = WriteCmds::new();
+                    self.engine_store_server_helper.handle_write_raft_cmd(
+                        &empty_cmds,
+                        RaftCmdHeader::new(region_id, index, term),
+                    );
+                    if apply_state.get_truncated_state().get_index() < apply_state.applied_index {
+                        if !self.engine_store_server_helper.try_flush_data(
+                            ob_ctx.region().get_id(),
+                            false,
+                            false,
+                            apply_state.applied_index,
+                            applied_term,
+                        ) {
+                            info!("can't flush data, filter CompactLog";
+                                "region_id" => ?region_id,
+                                "region_epoch" => ?ob_ctx.region().get_region_epoch(),
+                                "index" => apply_state.applied_index,
+                                "term" => applied_term,
+                            );
+                            return true;
+                        }
+
+                        truncated_state.set_index(apply_state.applied_index);
+                        truncated_state.set_term(applied_term);
+
+                        *first_index = entry_storage::first_index(apply_state);
+                        apply_state.set_truncated_state(truncated_state.clone());
+
+                    }
+                    // Return true to skip the normal execution.
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn commit_lock(
+        &self,
+        region_id: u64,
+        write_cmds: &mut Vec<WriteCmd>,
+        log_index: u64,
+        k: &[u8],
+        commit_ts: u64,
+    ) {
+        let lock_key = Key::from_raw(k).into_encoded();
+        let lock_bin = self
+            .engine_store_server_helper
+            .get_lock_by_key(region_id, &lock_key);
+        if lock_bin.is_empty() {
+            warn!(
+                "get empty lock, region id {} key {:?}, commit ts {}, log index {}",
+                region_id, k, commit_ts, log_index,
+            );
+            return;
+        }
+        let mut lock = txn_types::Lock::parse(&lock_bin).unwrap();
+        if lock.lock_type == LockType::Lock || lock.lock_type == LockType::Pessimistic {
+            Self::del_lock(write_cmds, lock_key);
+            return;
+        }
+        let short_value = lock.short_value.take().unwrap_or(vec![]);
+        let write_type = if short_value.is_empty() {
+            txn_types::WriteType::Delete
+        } else {
+            txn_types::WriteType::Put
+        };
+        let write_key = Key::from_raw(k).append_ts(commit_ts.into()).into_encoded();
+        let write = txn_types::Write::new(write_type, lock.ts.into(), Some(short_value));
+        let write_val = write.as_ref().to_bytes();
+        write_cmds.push(WriteCmd::new(
+            write_key,
+            write_val,
+            WriteCmdType::Put,
+            ColumnFamilyType::Write,
+        ));
+        Self::del_lock(write_cmds, lock_key);
+    }
+
+    fn put_lock(write_cmds: &mut Vec<WriteCmd>, raw_key: &[u8], v: &[u8]) {
+        write_cmds.push(WriteCmd::new(
+            Key::from_raw(raw_key).into_encoded(),
+            v.to_vec(),
+            WriteCmdType::Put,
+            ColumnFamilyType::Lock,
+        ));
+    }
+
+    fn del_lock(write_cmds: &mut Vec<WriteCmd>, encoded_lock_key: Vec<u8>) {
+        write_cmds.push(WriteCmd::new(
+            encoded_lock_key,
+            vec![],
+            WriteCmdType::Del,
+            ColumnFamilyType::Lock,
+        ));
+    }
+
     pub fn post_exec_query(
         &self,
         ob_region: &Region,
         cmd: &Cmd,
-        apply_state: &RaftApplyState,
+        apply_state: &mut RaftApplyState,
         region_state: &RegionState,
         apply_ctx_info: &mut ApplyCtxInfo<'_>,
     ) -> bool {
-        fail::fail_point!("on_post_exec_normal", |e| {
-            e.unwrap().parse::<bool>().unwrap()
-        });
+        let cl = rlog::get_custom_log(&cmd.request).unwrap();
+        let tp = cl.get_type();
+        let index = cmd.index;
+        let term = cmd.term;
+
+        debug!(
+            "post_exec_query";
+            "region_id" => ob_region.get_id(),
+            "index" => index,
+            "term" => term,
+            "type" => ?tp,
+        );
+
+        let mut write_cmds = vec![];
         let region_id = ob_region.get_id();
-        const NONE_STR: &str = "";
-        let requests = cmd.request.get_requests();
-        let response = &cmd.response;
-        if response.get_header().has_error() {
-            let proto_err = response.get_header().get_error();
-            if proto_err.has_flashback_in_progress() {
-                debug!(
-                    "error occurs when apply_write_cmd, {:?}",
-                    response.get_header().get_error()
-                );
-            } else {
-                info!(
-                    "error occurs when apply_write_cmd, {:?}",
-                    response.get_header().get_error()
-                );
-            }
-            return self.handle_error_apply(ob_region, cmd, region_state);
-        }
 
-        let mut ssts = vec![];
-        let mut cmds = WriteCmds::with_capacity(requests.len());
-        for req in requests {
-            let cmd_type = req.get_cmd_type();
-            match cmd_type {
-                CmdType::Put => {
-                    let put = req.get_put();
-                    let cf = name_to_cf(put.get_cf());
-                    let (key, value) = (put.get_key(), put.get_value());
-                    cmds.push(key, value, WriteCmdType::Put, cf);
-                }
-                CmdType::Delete => {
-                    let del = req.get_delete();
-                    let cf = name_to_cf(del.get_cf());
-                    let key = del.get_key();
-                    cmds.push(key, NONE_STR.as_ref(), WriteCmdType::Del, cf);
-                }
-                CmdType::IngestSst => {
-                    ssts.push(engine_traits::SstMetaInfo {
-                        total_bytes: 0,
-                        total_kvs: 0,
-                        meta: req.get_ingest_sst().get_sst().clone(),
-                    });
-                }
-                CmdType::Snap | CmdType::Get | CmdType::DeleteRange => {
-                    // engine-store will drop table, no need DeleteRange
-                    // We will filter delete range in engine_tiflash
-                    continue;
-                }
-                CmdType::Prewrite | CmdType::Invalid | CmdType::ReadIndex => {
-                    panic!("invalid cmd type, message maybe corrupted");
-                }
-            }
-        }
-
-        let persist = if !ssts.is_empty() {
-            assert_eq!(cmds.len(), 0);
-            match self.handle_ingest_sst_for_engine_store(ob_region, &ssts, cmd.index, cmd.term) {
-                EngineStoreApplyRes::None => {
-                    // Before, BR/Lightning may let ingest sst cmd contain only one cf,
-                    // which may cause that TiFlash can not flush all region cache into column.
-                    // so we have a optimization proxy@cee1f003.
-                    // The optimization is to introduce a `pending_delete_ssts`,
-                    // which holds ssts from being cleaned(by adding into `delete_ssts`),
-                    // when engine-store returns None.
-                    // Though this is fixed by br#1150 & tikv#10202, we still have to handle None,
-                    // since TiKV's compaction filter can also cause mismatch between default and
-                    // write. According to tiflash#1811.
-                    // Since returning None will cause no persistence of advanced apply index,
-                    // So in a recovery, we can replay ingestion in `pending_delete_ssts`,
-                    // thus leaving no un-tracked sst files.
-
-                    // We must hereby move all ssts to `pending_delete_ssts` for protection.
-                    match apply_ctx_info.pending_handle_ssts {
-                        None => (), // No ssts to handle, unlikely.
-                        Some(v) => {
-                            self.pending_delete_ssts
-                                .write()
-                                .expect("lock error")
-                                .append(v);
-                        }
-                    };
-                    info!(
-                        "skip persist for ingest sst";
-                        "region_id" => region_id,
-                        "peer_id" => region_state.peer_id,
-                        "term" => cmd.term,
-                        "index" => cmd.index,
-                        "ssts_to_clean" => ?ssts,
-                    );
-                    false
-                }
-                EngineStoreApplyRes::NotFound | EngineStoreApplyRes::Persist => {
-                    info!(
-                        "ingest sst success";
-                        "region_id" => region_id,
-                        "peer_id" => region_state.peer_id,
-                        "term" => cmd.term,
-                        "index" => cmd.index,
-                        "ssts_to_clean" => ?ssts,
-                    );
-                    match apply_ctx_info.pending_handle_ssts {
-                        None => (),
-                        Some(v) => {
-                            let mut sst_in_region: Vec<SstMetaInfo> = self
-                                .pending_delete_ssts
-                                .write()
-                                .expect("lock error")
-                                .drain_filter(|e| e.meta.get_region_id() == region_id)
-                                .collect();
-                            apply_ctx_info.delete_ssts.append(&mut sst_in_region);
-                            apply_ctx_info.delete_ssts.append(v);
-                        }
+        match tp {
+            rlog::TYPE_PREWRITE => cl.iterate_lock(|k, v| {
+                Self::put_lock(&mut write_cmds, k, v);
+            }),
+            rlog::TYPE_PESSIMISTIC_LOCK => cl.iterate_lock(|k, v| {
+                Self::put_lock(&mut write_cmds, k, v);
+            }),
+            rlog::TYPE_COMMIT => cl.iterate_commit(|k, commit_ts| {
+                self.commit_lock(region_id, &mut write_cmds, index, k, commit_ts);
+            }),
+            rlog::TYPE_ONE_PC => {
+                cl.iterate_one_pc(|k, v, is_extra, del_lock, start_ts, commit_ts| {
+                    if is_extra {
+                        return;
                     }
-                    !region_state.pending_remove
+                    let write_key = Key::from_raw(k).append_ts(commit_ts.into()).into_encoded();
+                    let write_type = if v.len() == 0 {
+                        txn_types::WriteType::Delete
+                    } else {
+                        txn_types::WriteType::Put
+                    };
+                    let write =
+                        txn_types::Write::new(write_type, start_ts.into(), Some(v.to_vec()));
+                    let write_val = write.as_ref().to_bytes();
+                    write_cmds.push(WriteCmd::new(
+                        write_key,
+                        write_val,
+                        WriteCmdType::Put,
+                        ColumnFamilyType::Write,
+                    ));
+                    if del_lock {
+                        Self::del_lock(&mut write_cmds, Key::from_raw(k).into_encoded());
+                    }
+                })
+            }
+            rlog::TYPE_ROLLBACK => cl.iterate_rollback(|k, start_ts, del_lock| {
+                if del_lock {
+                    Self::del_lock(&mut write_cmds, Key::from_raw(k).into_encoded());
+                }
+            }),
+            rlog::TYPE_PESSIMISTIC_ROLLBACK => {
+                cl.iterate_del_lock(|k| {
+                    Self::del_lock(&mut write_cmds, Key::from_raw(k).into_encoded());
+                });
+            }
+            rlog::TYPE_ENGINE_META => {
+                let cs = cl.get_change_set().unwrap();
+                if cs.has_ingest_files() {
+                    let cs_bin = cs.write_to_bytes().unwrap();
+                    let sst_views = vec![(cs_bin.as_slice(), ColumnFamilyType::Write)];
+                    let header =
+                        RaftCmdHeader::new(region_id, index, term);
+                    self
+                        .engine_store_server_helper
+                        .handle_ingest_sst(sst_views, header);
+
+                    // update apply_state
+                    apply_state.set_applied_index(index);
+                    return true;
                 }
             }
-        } else {
-            let flash_res = {
-                self.engine_store_server_helper.handle_write_raft_cmd(
-                    &cmds,
-                    RaftCmdHeader::new(region_id, cmd.index, cmd.term),
-                )
-            };
-            match flash_res {
-                EngineStoreApplyRes::None => false,
-                EngineStoreApplyRes::Persist => !region_state.pending_remove,
-                EngineStoreApplyRes::NotFound => false,
-            }
-        };
-        fail::fail_point!("on_post_exec_normal_end", |e| {
-            e.unwrap().parse::<bool>().unwrap()
-        });
-        if persist {
-            info!("should persist query"; "region_id" => region_id, "peer_id" => region_state.peer_id, "state" => ?apply_state);
+            rlog::TYPE_RESOLVE_LOCK => cl.iterate_resolve_lock(|tp, k, ts, del_lock| match tp {
+                rlog::TYPE_COMMIT => {
+                    self.commit_lock(region_id, &mut write_cmds, index, k, ts)
+                }
+                rlog::TYPE_ROLLBACK => {
+                    if del_lock {
+                        Self::del_lock(&mut write_cmds, Key::from_raw(k).into_encoded());
+                    }
+                }
+                _ => unreachable!("unexpected custom log type: {:?}", tp),
+            }),
+            rlog::TYPE_SWITCH_MEM_TABLE => {}
+            rlog::TYPE_TRIGGER_TRIM_OVER_BOUND => {}
+            _ => panic!("unknown custom log type"),
         }
-        persist
+
+        let mut cmds = WriteCmds::with_capacity(write_cmds.len());
+        for write_cmd in &write_cmds {
+            cmds.push(
+                &write_cmd.key,
+                &write_cmd.val,
+                write_cmd.cmd_type,
+                write_cmd.cf,
+            );
+        }
+        self.engine_store_server_helper.handle_write_raft_cmd(
+            &cmds,
+            RaftCmdHeader::new(ob_region.get_id(), index, term),
+        );
+
+        // update apply_state
+        apply_state.set_applied_index(index);
+
+        // `false` means no need to persist apply_state
+        false
     }
 
     pub fn on_raft_message(&self, msg: &RaftMessage) -> bool {

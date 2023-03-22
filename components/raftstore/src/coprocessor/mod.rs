@@ -14,7 +14,7 @@ use kvproto::{
     metapb::Region,
     pdpb::CheckPolicy,
     raft_cmdpb::{AdminRequest, AdminResponse, RaftCmdRequest, RaftCmdResponse, Request},
-    raft_serverpb::RaftApplyState,
+    raft_serverpb::{RaftApplyState, RaftTruncatedState},
 };
 use raft::{eraftpb, StateRole};
 
@@ -49,6 +49,25 @@ pub use self::{
     },
 };
 pub use crate::store::{Bucket, KeyEntry};
+
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum ColumnFamilyType {
+    Lock = 0,
+    Write = 1,
+    Default = 2,
+}
+
+impl From<usize> for ColumnFamilyType {
+    fn from(i: usize) -> Self {
+        match i {
+            0 => ColumnFamilyType::Lock,
+            1 => ColumnFamilyType::Write,
+            2 => ColumnFamilyType::Default,
+            _ => unreachable!(),
+        }
+    }
+}
 
 /// Coprocessor is used to provide a convenient way to inject code to
 /// KV processing.
@@ -153,7 +172,17 @@ pub trait QueryObserver: Coprocessor {
 
     /// Hook before exec write request, returns whether we should skip this
     /// write.
-    fn pre_exec_query(&self, _: &mut ObserverContext<'_>, _: &[Request], _: u64, _: u64) -> bool {
+    fn pre_exec_query(
+        &self,
+        _: &mut ObserverContext<'_>,
+        _: &RaftCmdRequest,
+        _: &mut RaftApplyState,
+        _: u64,
+        _: u64,
+        _: u64,
+        _: &mut RaftTruncatedState,
+        _: &mut u64,
+    ) -> bool {
         false
     }
 
@@ -164,7 +193,7 @@ pub trait QueryObserver: Coprocessor {
         &self,
         _: &mut ObserverContext<'_>,
         _: &Cmd,
-        _: &RaftApplyState,
+        _: &mut RaftApplyState,
         _: &RegionState,
         _: &mut ApplyCtxInfo<'_>,
     ) -> bool {
@@ -191,7 +220,7 @@ pub trait ApplySnapshotObserver: Coprocessor {
         _: &mut ObserverContext<'_>,
         _peer_id: u64,
         _: &crate::store::SnapKey,
-        _: Option<&crate::store::Snapshot>,
+        _: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
     }
 
@@ -202,7 +231,7 @@ pub trait ApplySnapshotObserver: Coprocessor {
         _: &mut ObserverContext<'_>,
         _: u64,
         _: &crate::store::SnapKey,
-        _snapshot: Option<&crate::store::Snapshot>,
+        _snapshot: &Vec<(Vec<u8>, ColumnFamilyType)>,
     ) {
     }
 

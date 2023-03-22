@@ -748,57 +748,19 @@ where
     /// Downloads the file and performs key-rewrite for later ingesting.
     fn download(
         &mut self,
-        _ctx: RpcContext<'_>,
+        ctx: RpcContext<'_>,
         req: DownloadRequest,
         sink: UnarySink<DownloadResponse>,
     ) {
         let label = "download";
         let timer = Instant::now_coarse();
-        let importer = Arc::clone(&self.importer);
-        let limiter = self.limiter.clone();
-        let engine = self.engine.clone();
-        let start = Instant::now();
-
-        let handle_task = async move {
-            // Records how long the download task waits to be scheduled.
-            sst_importer::metrics::IMPORTER_DOWNLOAD_DURATION
-                .with_label_values(&["queue"])
-                .observe(start.saturating_elapsed().as_secs_f64());
-
-            // FIXME: download() should be an async fn, to allow BR to cancel
-            // a download task.
-            // Unfortunately, this currently can't happen because the S3Storage
-            // is not Send + Sync. See the documentation of S3Storage for reason.
-            let cipher = req
-                .cipher_info
-                .to_owned()
-                .into_option()
-                .filter(|c| c.cipher_type != EncryptionMethod::Plaintext);
-
-            let res = importer.download_ext::<E>(
-                req.get_sst(),
-                req.get_storage_backend(),
-                req.get_name(),
-                req.get_rewrite_rule(),
-                cipher,
-                limiter,
-                engine,
-                DownloadExt::default()
-                    .cache_key(req.get_storage_cache_id())
-                    .req_type(req.get_request_type()),
-            );
-            let mut resp = DownloadResponse::default();
-            match res.await {
-                Ok(range) => match range {
-                    Some(r) => resp.set_range(r),
-                    None => resp.set_is_empty(true),
-                },
-                Err(e) => resp.set_error(e.into()),
-            }
-            crate::send_rpc_response!(Ok(resp), sink, label, timer);
+        
+        // proxy don't need to download the RockDB SST files.
+        let task = async move {
+            let res = Ok(DownloadResponse::default());
+            crate::send_rpc_response!(res, sink, label, timer);
         };
-
-        self.threads.spawn(handle_task);
+        ctx.spawn(task);
     }
 
     /// Ingest the file by sending a raft command to raftstore.

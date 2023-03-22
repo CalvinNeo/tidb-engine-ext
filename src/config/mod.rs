@@ -2924,6 +2924,40 @@ impl QuotaConfig {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default, OnlineConfig)]
+#[serde(default)]
+#[serde(rename_all = "kebab-case")]
+pub struct DFSConfig {
+    #[online_config(skip)]
+    pub prefix: String,
+
+    #[online_config(skip)]
+    pub s3_endpoint: String,
+
+    #[online_config(skip)]
+    pub s3_key_id: String,
+
+    #[online_config(skip)]
+    pub s3_secret_key: String,
+
+    #[online_config(skip)]
+    pub s3_bucket: String,
+
+    #[online_config(skip)]
+    pub s3_region: String,
+
+    #[online_config(skip)]
+    pub remote_compactor_addr: String,
+}
+
+impl DFSConfig {
+    #[allow(dead_code)]
+    fn validate(&self) -> Result<(), Box<dyn Error>> {
+        // TODO(x) validate dfs config
+        Ok(())
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug, OnlineConfig)]
 #[serde(default)]
 #[serde(rename_all = "kebab-case")]
@@ -3053,6 +3087,9 @@ pub struct TikvConfig {
 
     #[online_config(submodule)]
     pub resource_control: ResourceControlConfig,
+
+    #[online_config(submodule)]
+    pub dfs: DFSConfig,
 }
 
 impl Default for TikvConfig {
@@ -3096,6 +3133,7 @@ impl Default for TikvConfig {
             backup_stream: BackupStreamConfig::default(),
             causal_ts: CausalTsConfig::default(),
             resource_control: ResourceControlConfig::default(),
+            dfs: DFSConfig::default(),
         }
     }
 }

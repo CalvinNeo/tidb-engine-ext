@@ -48,17 +48,6 @@ pub fn name_to_cf(cf: &str) -> ColumnFamilyType {
     }
 }
 
-impl From<usize> for ColumnFamilyType {
-    fn from(i: usize) -> Self {
-        match i {
-            0 => ColumnFamilyType::Lock,
-            1 => ColumnFamilyType::Write,
-            2 => ColumnFamilyType::Default,
-            _ => unreachable!(),
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct WriteCmds {
     keys: Vec<BaseBuffView>,
@@ -102,6 +91,24 @@ impl WriteCmds {
             cmd_types: self.cmd_type.as_ptr(),
             cmd_cf: self.cf.as_ptr(),
             len: self.cmd_type.len() as u64,
+        }
+    }
+}
+
+pub struct WriteCmd {
+    pub key: Vec<u8>,
+    pub val: Vec<u8>,
+    pub cmd_type: WriteCmdType,
+    pub cf: ColumnFamilyType,
+}
+
+impl WriteCmd {
+    pub fn new(key: Vec<u8>, val: Vec<u8>, cmd_type: WriteCmdType, cf: ColumnFamilyType) -> Self {
+        Self {
+            key,
+            val,
+            cmd_type,
+            cf,
         }
     }
 }

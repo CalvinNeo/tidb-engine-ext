@@ -15,15 +15,21 @@ pub use engine_tiflash::{CachedRegionInfo, CachedRegionInfoManager};
 pub use engine_traits::{RaftEngine, SstMetaInfo, CF_LOCK, CF_RAFT};
 pub use kvproto::{
     metapb::Region,
-    raft_cmdpb::{AdminCmdType, AdminRequest, AdminResponse, CmdType, RaftCmdRequest},
+    raft_cmdpb::{
+        AdminCmdType, AdminRequest, AdminResponse, CmdType, RaftCmdRequest, RaftCmdResponse,
+        Request,
+    },
     raft_serverpb::{PeerState, RaftApplyState, RaftMessage, RegionLocalState},
 };
 pub use protobuf::Message;
+pub use proxy_ffi::{WriteCmd, WriteCmds};
 pub use raft::{eraftpb, eraftpb::MessageType, StateRole};
 pub use raftstore::{
     coprocessor::{ApplyCtxInfo, Cmd, RegionChangeEvent, RegionState, RoleChange, StoreSizeInfo},
     store::{
-        self, check_sst_for_ingestion,
+        self, check_sst_for_ingestion, entry_storage,
+        peer_storage::encode_snap_data,
+        rlog,
         snap::{plain_file_used, SnapEntry},
         SnapKey, SnapManager, Transport,
     },
@@ -31,6 +37,7 @@ pub use raftstore::{
 };
 pub use sst_importer::SstImporter;
 pub use tikv_util::{box_err, crit, debug, defer, error, info, store::find_peer, warn};
+pub use txn_types::{Key, LockType};
 pub use yatp::{
     pool::{Builder, ThreadPool},
     task::future::TaskCell,
@@ -43,7 +50,7 @@ pub(crate) use crate::{
             ColumnFamilyType, EngineStoreApplyRes, EngineStoreServerHelper, RaftCmdHeader,
             RawCppPtr, WriteCmdType,
         },
-        name_to_cf, WriteCmds,
+        name_to_cf,
     },
     TiFlashEngine,
 };

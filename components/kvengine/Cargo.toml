@@ -1,0 +1,74 @@
+[package]
+name = "kvengine"
+version = "0.0.1"
+authors = ["The TiKV Authors"]
+license = "Apache-2.0"
+edition = "2018"
+publish = false
+
+[features]
+protobuf-codec = [
+    "protobuf/bytes",
+]
+
+[dependencies]
+async-trait = "0.1"
+aws = { path = "../cloud/aws" }
+bincode = "1.3"
+bstr = "0.2"
+byteorder = "1.2"
+bytes = "1.0"
+crc32c = "0.6.3"
+dashmap = "4.0"
+dyn-clone = "1.0"
+engine_rocks = { path = "../engine_rocks", default-features = false }
+engine_traits = { path = "../engine_traits", default-features = false }
+fail = "0.5"
+farmhash = "1.1.5"
+file_system = { path = "../file_system", default-features = false }
+fslock = "0.1.7"
+futures = { version = "0.3", features = ["thread-pool"] }
+hex = "0.4"
+http = "0.2"
+hyper = "0.14"
+hyper-tls = "0.5"
+kvenginepb = { path = "../kvenginepb", default-features = false }
+lazy_static = "1.3"
+libc = "0.2"
+log_wrappers = { path = "../log_wrappers" }
+lz4 = "1.24"
+moka = "0.9.6"
+num_cpus = "1"
+prometheus = { version = "0.13", features = ["nightly"] }
+prometheus-static-metric = "0.5"
+protobuf = "2.8"
+quick-xml = { version = "0.23.1", features = ["serialize"] }
+rand = "0.8"
+rusoto_core = "0.46.0"
+rusoto_credential = "0.46.0"
+rusoto_mock = "0.46.0"
+rusoto_s3 = "0.46.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_derive = "1.0"
+serde_json = "1.0"
+slog = { version = "2.3", features = ["max_level_trace", "release_max_level_debug"] }
+slog-global = { version = "0.1", git = "https://github.com/breeswish/slog-global.git", rev = "d592f88e4dbba5eb439998463054f1a44fbf17b9" }
+slog-term = "2.4"
+thiserror = "1.0"
+tidb_query_common = { path = "../tidb_query_common", default-features = false }
+tikv_alloc = { path = "../tikv_alloc" }
+tikv_util = { path = "../tikv_util", default-features = false }
+tokio = { version = "1.5", features = ["full"] }
+tracker = { workspace = true }
+txn_types = { path = "../txn_types", default-features = false }
+# xorf = { version = "0.8", features = ["serde"] }
+xorf = { git = "https://github.com/youjiali1995/xorf", branch = "0.8.0-custom-serde", features = ["serde"] }
+zstd-sys = "2.0.1"
+
+[dependencies.rocksdb]
+git = "https://github.com/tikv/rust-rocksdb.git"
+package = "rocksdb"
+features = ["encryption"]
+
+[dev-dependencies]
+tempfile = "3"
