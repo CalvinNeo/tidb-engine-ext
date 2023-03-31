@@ -544,7 +544,6 @@ impl RaftEngine for PSLogEngine {
                 batch.del_page(&keys::raft_log_key(raft_group_id, index))?;
             }
         }
-        self.consume(batch, true)?;
         Ok(())
     }
 
