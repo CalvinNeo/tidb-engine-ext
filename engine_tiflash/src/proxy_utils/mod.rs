@@ -65,22 +65,22 @@ pub fn check_double_write(batch: &RocksWriteBatchVec) {
 pub fn check_double_write(_: &RocksWriteBatchVec) {}
 
 pub fn log_check_double_write(batch: &RocksWriteBatchVec) -> bool {
-    check_double_write(batch);
-    // TODO(tiflash) re-support this tracker.
-    let mut e = true;
-    for wb in batch.wbs.iter() {
-        if !wb.is_empty() {
-            e = false;
-            break;
-        }
-    }
-    if e {
-        let bt = std::backtrace::Backtrace::capture();
-        tikv_util::info!("abnormal empty write batch";
-            "backtrace" => ?bt
-        );
-        // We don't return true here, since new version TiKV will not cause
-        // deadlock here.
-    }
+    // check_double_write(batch);
+    // // TODO(tiflash) re-support this tracker.
+    // let mut e = true;
+    // for wb in batch.wbs.iter() {
+    //     if !wb.is_empty() {
+    //         e = false;
+    //         break;
+    //     }
+    // }
+    // if e {
+    //     let bt = std::backtrace::Backtrace::capture();
+    //     tikv_util::info!("abnormal empty write batch";
+    //         "backtrace" => ?bt
+    //     );
+    //     // We don't return true here, since new version TiKV will not cause
+    //     // deadlock here.
+    // }
     false
 }
