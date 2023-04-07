@@ -1,11 +1,12 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{collections::HashSet, iter::FromIterator, path::Path};
+use std::{collections::HashSet, fs, iter::FromIterator, path::Path};
 
 use engine_store_ffi::EngineStoreConfig;
 use engine_traits::{CF_DEFAULT, CF_LOCK, CF_WRITE};
 use itertools::Itertools;
 use online_config::OnlineConfig;
+use raftstore::store::util::Blacklist;
 use serde_derive::{Deserialize, Serialize};
 use serde_with::with_prefix;
 use tikv::config::{TikvConfig, LAST_CONFIG_FILE};
@@ -268,6 +269,9 @@ pub struct ProxyConfig {
 
     #[online_config(skip)]
     pub engine_store: EngineStoreConfig,
+
+    #[online_config(skip)]
+    pub blacklist_file: String,
 }
 
 /// We use custom default, in case of later non-ordinary config items.
@@ -285,6 +289,7 @@ impl Default for ProxyConfig {
             readpool: ReadPoolConfig::default(),
             import: ImportConfig::default(),
             engine_store: EngineStoreConfig::default(),
+            blacklist_file: "".to_owned(),
         }
     }
 }
@@ -333,6 +338,35 @@ pub fn ensure_no_common_unrecognized_keys(
         return Err(inter.iter().join(", "));
     }
     Ok(())
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug, Default)]
+#[serde(default)]
+struct BlacklistConfig {
+    keyspace_ids: Vec<u32>,
+    region_ids: Vec<u64>,
+}
+
+pub fn load_blacklist(blacklist_path: &str) -> Option<Blacklist> {
+    if blacklist_path.is_empty() {
+        return None;
+    }
+    if let Ok(data) = fs::read(blacklist_path) {
+        match serde_json::from_slice::<BlacklistConfig>(&data) {
+            Ok(config) => {
+                info!(
+                    "load blacklist done, total {} keyspaces and {} regions loaded",
+                    config.keyspace_ids.len(),
+                    config.region_ids.len(),
+                );
+                return Some(Blacklist::new(config.keyspace_ids, config.region_ids));
+            }
+            Err(err) => {
+                error!("failed to load black list file {:?}", err);
+            }
+        }
+    }
+    None
 }
 
 // Not the same as TiKV

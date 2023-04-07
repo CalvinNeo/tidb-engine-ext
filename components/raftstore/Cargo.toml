@@ -28,6 +28,7 @@ cloud-gcp = ["sst_importer/cloud-gcp"]
 cloud-azure = ["sst_importer/cloud-azure"]
 
 [dependencies]
+api_version = { workspace = true }
 batch-system = { workspace = true }
 bitflags = "1.0.1"
 byteorder = "1.2"

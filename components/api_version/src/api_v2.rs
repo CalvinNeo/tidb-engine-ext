@@ -1,5 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
+use ::bytes::Buf;
 use codec::byte::MemComparableByteCodec;
 use engine_traits::Result;
 use tikv_util::codec::{
@@ -18,6 +19,9 @@ pub const TIDB_META_KEY_PREFIX: u8 = b'm';
 pub const TIDB_TABLE_KEY_PREFIX: u8 = b't';
 pub const DEFAULT_KEY_SPACE_ID: [u8; 3] = [0, 0, 0]; // reserve 3 bytes for key space id.
 pub const DEFAULT_KEY_SPACE_ID_END: [u8; 3] = [0, 0, 1];
+pub const KEYSPACE_ID_LEN: usize = DEFAULT_KEY_SPACE_ID.len();
+pub const KEYSPACE_PREFIX_LEN: usize = KEYSPACE_ID_LEN + 1;
+pub const UNKOWN_KEYSPACE_ID: [u8; 3] = [0xFF, 0xFF, 0xFF];
 
 pub const TIDB_RANGES: &[(&[u8], &[u8])] = &[
     (&[TIDB_META_KEY_PREFIX], &[TIDB_META_KEY_PREFIX + 1]),
@@ -243,6 +247,40 @@ impl ApiV2 {
         apiv2_key.extend(key_space); // Reserved 3 bytes for key space id.
         apiv2_key.extend(key);
         apiv2_key
+    }
+
+    pub fn get_keyspace_id(key: &[u8]) -> [u8; KEYSPACE_ID_LEN] {
+        assert!(key.len() >= KEYSPACE_PREFIX_LEN);
+        [key[1], key[2], key[3]]
+    }
+
+    pub fn get_u32_keyspace_id(keyspace_id: [u8; KEYSPACE_ID_LEN]) -> u32 {
+        [0, keyspace_id[0], keyspace_id[1], keyspace_id[2]]
+            .as_slice()
+            .get_u32()
+    }
+
+    pub fn get_keyspace_id_str(key: &[u8]) -> String {
+        let key_mode = ApiV2::parse_key_mode(key);
+
+        // let mut keyspace_id_string = String::new();
+        if key_mode == KeyMode::Raw || key_mode == KeyMode::Txn {
+            let keyspace_id = ApiV2::get_keyspace_id(key);
+            let keyspace_id_u32 = ApiV2::get_u32_keyspace_id(keyspace_id);
+            let keyspace_id_string = keyspace_id_u32.to_string();
+            return keyspace_id_string;
+        }
+        String::new()
+    }
+
+    pub fn get_txn_keyspace_range(keyspace_id: u32) -> (Vec<u8>, Vec<u8>) {
+        let mut start_key = keyspace_id.to_be_bytes();
+        start_key[0] = TXN_KEY_PREFIX;
+
+        let mut end_key = (keyspace_id + 1).to_be_bytes();
+        end_key[0] = TXN_KEY_PREFIX;
+
+        (start_key.to_vec(), end_key.to_vec())
     }
 
     pub const ENCODED_LOGICAL_DELETE: [u8; 1] = [ValueMeta::DELETE_FLAG.bits];

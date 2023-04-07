@@ -116,8 +116,12 @@ use tikv_util::{
 use tokio::runtime::Builder;
 
 use crate::{
-    config::ProxyConfig, engine::ProxyRocksEngine, fatal,
-    hacked_lock_mgr::HackedLockManager as LockManager, setup::*, status_server::StatusServer,
+    config::{load_blacklist, ProxyConfig},
+    engine::ProxyRocksEngine,
+    fatal,
+    hacked_lock_mgr::HackedLockManager as LockManager,
+    setup::*,
+    status_server::StatusServer,
     util::ffi_server_info,
 };
 
@@ -908,7 +912,13 @@ impl<ER: RaftEngine> TiKvServer<ER> {
     }
 
     pub fn init_engines(&mut self, engines: Engines<TiFlashEngine, ER>) {
-        let store_meta = Arc::new(Mutex::new(StoreMeta::new(PENDING_MSG_CAP)));
+        let mut store_meta_impl = StoreMeta::new(PENDING_MSG_CAP);
+        // load blacklist
+        if let Some(blacklist) = load_blacklist(&self.proxy_config.blacklist_file) {
+            store_meta_impl.blacklist = Some(blacklist);
+        }
+
+        let store_meta = Arc::new(Mutex::new(store_meta_impl));
         let engine = RaftKv::new(
             ServerRaftStoreRouter::new(
                 self.router.clone(),

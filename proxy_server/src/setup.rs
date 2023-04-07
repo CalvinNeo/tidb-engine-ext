@@ -130,6 +130,10 @@ pub fn overwrite_config_with_cmd_args(
         warn!("metrics push is not supported any more.");
     }
 
+    if let Some(blacklist_file) = matches.value_of("blacklist-file") {
+        proxy_config.blacklist_file = blacklist_file.to_owned();
+    }
+
     // User can specify engine label, because we need to distinguish TiFlash role
     // (tiflash-compute or tiflash-storage) in the disaggregated architecture.
     // If no engine label is specified, we use 'ENGINE_LABEL_VALUE'(env variable

@@ -281,6 +281,13 @@ pub unsafe fn run_proxy(
                 .help("Set engine role label")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("blacklist-file")
+                .long("blacklist-file")
+                .help("blacklist file contains keyspace id list in json format")
+                .required(false)
+                .takes_value(true),
+        )
         .get_matches_from(args);
 
     if matches.is_present("print-sample-config") {

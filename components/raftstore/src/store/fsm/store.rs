@@ -90,7 +90,7 @@ use crate::{
         peer_storage,
         transport::Transport,
         util,
-        util::{is_initial_msg, RegionReadProgressRegistry},
+        util::{get_keyspace_id, is_initial_msg, Blacklist, RegionReadProgressRegistry},
         worker::{
             AutoSplitController, CleanupRunner, CleanupSstRunner, CleanupSstTask, CleanupTask,
             CompactRunner, CompactTask, ConsistencyCheckRunner, ConsistencyCheckTask,
@@ -161,6 +161,8 @@ pub struct StoreMeta {
     pub region_read_progress: RegionReadProgressRegistry,
     /// record sst_file_name -> (sst_smallest_key, sst_largest_key)
     pub damaged_ranges: HashMap<String, (Vec<u8>, Vec<u8>)>,
+
+    pub blacklist: Option<Blacklist>,
 }
 
 impl StoreRegionMeta for StoreMeta {
@@ -206,6 +208,7 @@ impl StoreMeta {
             destroyed_region_for_snap: HashMap::default(),
             region_read_progress: RegionReadProgressRegistry::new(),
             damaged_ranges: HashMap::default(),
+            blacklist: None,
         }
     }
 
@@ -1174,6 +1177,7 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
         let mut total_count = 0;
         let mut tombstone_count = 0;
         let mut applying_count = 0;
+        let mut blocked_count = 0;
         let mut region_peers = vec![];
 
         let t = TiInstant::now();
@@ -1189,12 +1193,24 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
                 return Ok(true);
             }
 
-            total_count += 1;
-
             let mut local_state = RegionLocalState::default();
             local_state.merge_from_bytes(value)?;
 
             let region = local_state.get_region();
+
+            if let Some(blacklist) = meta.blacklist.as_ref() {
+                if blacklist.is_blocked(region_id, region.get_start_key(), region.get_end_key()) {
+                    debug!(
+                        "region is blocked";
+                        "region_id" => region_id
+                    );
+                    blocked_count += 1;
+                    return Ok(true);
+                }
+            }
+
+            total_count += 1;
+
             if local_state.get_state() == PeerState::Tombstone {
                 tombstone_count += 1;
                 debug!("region is tombstone"; "region" => ?region, "store_id" => store_id);
@@ -1204,7 +1220,7 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
             if local_state.get_state() == PeerState::Applying {
                 // in case of restart happen when we just write region state to Applying,
                 // but not write raft_local_state to raft rocksdb in time.
-                let change_set =  box_try!(peer_storage::recover_from_applying_state(
+                let change_set = box_try!(peer_storage::recover_from_applying_state(
                     &self.engines,
                     &mut raft_wb,
                     region_id
@@ -1280,6 +1296,7 @@ impl<EK: KvEngine, ER: RaftEngine, T> RaftPollerBuilder<EK, ER, T> {
             "region_count" => total_count,
             "tombstone_count" => tombstone_count,
             "applying_count" =>  applying_count,
+            "blocked_count" => blocked_count,
             "merge_count" => merging_count,
             "takes" => ?t.saturating_elapsed(),
         );
@@ -2063,6 +2080,21 @@ impl<'a, EK: KvEngine, ER: RaftEngine, T: Transport> StoreFsmDelegate<'a, EK, ER
             // Target tombstone peer doesn't exist, so ignore it.
             return Ok(());
         }
+
+        {
+            let store_meta = self.ctx.store_meta.lock().unwrap();
+
+            if let Some(blacklist) = store_meta.blacklist.as_ref() {
+                if blacklist.is_blocked(region_id, msg.get_start_key(), msg.get_end_key()) {
+                    debug!(
+                        "raft msg blocked by blacklist";
+                        "region_id" => region_id,
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         let check_msg_status = self.check_msg(&msg)?;
         let is_first_request = match check_msg_status {
             CheckMsgStatus::DropMsg => return Ok(()),

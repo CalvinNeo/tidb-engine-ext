@@ -6,6 +6,7 @@ use std::{
     collections::{HashMap, VecDeque},
     fmt,
     fmt::Display,
+    iter::FromIterator,
     option::Option,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
@@ -14,6 +15,7 @@ use std::{
     u64,
 };
 
+use api_version::{ApiV2, KeyMode, KvFormat};
 use collections::HashSet;
 use engine_traits::KvEngine;
 use kvproto::{
@@ -1711,6 +1713,56 @@ pub fn validate_split_region(
         check_key_in_region(key, region)?;
     }
     Ok(())
+}
+
+#[derive(Clone)]
+pub struct Blacklist {
+    keyspace_ids: HashSet<u32>,
+    region_ids: HashSet<u64>,
+}
+
+impl Blacklist {
+    pub fn new(mut keyspace_ids: Vec<u32>, mut region_ids: Vec<u64>) -> Self {
+        Self {
+            keyspace_ids: HashSet::from_iter(keyspace_ids.drain(..)),
+            region_ids: HashSet::from_iter(region_ids.drain(..)),
+        }
+    }
+
+    pub(crate) fn check_blocked(&mut self, region_id: u64, start: &[u8], end: &[u8]) -> bool {
+        if let Some(keyspace_id) = get_keyspace_id(start, end) {
+            if self.keyspace_ids.contains(&keyspace_id) {
+                self.region_ids.insert(region_id);
+            }
+        }
+        self.region_ids.contains(&region_id)
+    }
+
+    pub(crate) fn is_blocked(&self, region_id: u64, start: &[u8], end: &[u8]) -> bool {
+        if let Some(keyspace_id) = get_keyspace_id(start, end) {
+            if self.keyspace_ids.contains(&keyspace_id) {
+                return true;
+            }
+        }
+        self.region_ids.contains(&region_id)
+    }
+
+    pub(crate) fn is_region_blocked(&self, region_id: u64) -> bool {
+        self.region_ids.contains(&region_id)
+    }
+
+    pub(crate) fn is_keyspace_blocked(&self, keyspace_id: u32) -> bool {
+        self.keyspace_ids.contains(&keyspace_id)
+    }
+}
+
+pub(crate) fn get_keyspace_id(start: &[u8], end: &[u8]) -> Option<u32> {
+    let start_mode = ApiV2::parse_key_mode(start);
+    let end_mode = ApiV2::parse_key_mode(end);
+    if start_mode != KeyMode::Txn || end_mode != KeyMode::Txn {
+        return None;
+    }
+    Some(ApiV2::get_u32_keyspace_id(ApiV2::get_keyspace_id(start)))
 }
 
 #[cfg(test)]

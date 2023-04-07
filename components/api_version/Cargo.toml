@@ -9,6 +9,7 @@ testexport = []
 
 [dependencies]
 bitflags = "1.0.1"
+bytes = "1.0"
 codec = { workspace = true }
 engine_traits = { workspace = true }
 kvproto = { workspace = true }
