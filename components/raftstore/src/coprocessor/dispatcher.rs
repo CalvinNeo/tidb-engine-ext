@@ -569,7 +569,16 @@ impl<E: KvEngine> CoprocessorHost<E> {
         if !cmd.has_admin_request() {
             for observer in &self.registry.query_observers {
                 let observer = observer.observer.inner();
-                if observer.pre_exec_query(&mut ctx, cmd, apply_state, index, term, applied_term, truncated_state, first_index) {
+                if observer.pre_exec_query(
+                    &mut ctx,
+                    cmd,
+                    apply_state,
+                    index,
+                    term,
+                    applied_term,
+                    truncated_state,
+                    first_index,
+                ) {
                     return true;
                 }
             }
@@ -1281,13 +1290,31 @@ mod tests {
 
         let mut query_req = RaftCmdRequest::default();
         query_req.set_requests(vec![Request::default()].into());
-        host.pre_exec(&region, &query_req, &mut apply_state, 0, 0, 0, &mut truncated_state, &mut first_index);
+        host.pre_exec(
+            &region,
+            &query_req,
+            &mut apply_state,
+            0,
+            0,
+            0,
+            &mut truncated_state,
+            &mut first_index,
+        );
         index += ObserverIndex::PreExecQuery as usize;
         assert_all!([&ob.called], &[index]);
 
         let mut admin_req = RaftCmdRequest::default();
         admin_req.set_admin_request(AdminRequest::default());
-        host.pre_exec(&region, &admin_req, &mut apply_state, 0, 0, 0, &mut truncated_state, &mut first_index);
+        host.pre_exec(
+            &region,
+            &admin_req,
+            &mut apply_state,
+            0,
+            0,
+            0,
+            &mut truncated_state,
+            &mut first_index,
+        );
         index += ObserverIndex::PreExecAdmin as usize;
         assert_all!([&ob.called], &[index]);
 
@@ -1318,7 +1345,7 @@ mod tests {
         host.post_apply_snapshot(&region, 0, &key, &vec![]);
         index += ObserverIndex::PostApplySnapshot as usize;
         assert_all!([&ob.called], &[index]);
- 
+
         host.should_pre_apply_snapshot();
         index += ObserverIndex::ShouldPreApplySnapshot as usize;
         assert_all!([&ob.called], &[index]);

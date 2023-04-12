@@ -4,7 +4,7 @@ use std::sync::Arc;
 use engine_traits::RaftEngine;
 use kvproto::{
     raft_cmdpb::{AdminRequest, RaftCmdRequest},
-    raft_serverpb::{RaftApplyState, RaftMessage},
+    raft_serverpb::{RaftApplyState, RaftMessage, RaftTruncatedState},
 };
 use raft::StateRole;
 use raftstore::{
@@ -136,6 +136,29 @@ impl<T: Transport + 'static, ER: RaftEngine> AdminObserver for TiFlashObserver<T
 impl<T: Transport + 'static, ER: RaftEngine> QueryObserver for TiFlashObserver<T, ER> {
     fn on_empty_cmd(&self, ob_ctx: &mut ObserverContext<'_>, index: u64, term: u64) {
         self.forwarder.on_empty_cmd(ob_ctx.region(), index, term)
+    }
+
+    fn pre_exec_query(
+        &self,
+        ob_ctx: &mut ObserverContext<'_>,
+        req: &RaftCmdRequest,
+        apply_state: &mut RaftApplyState,
+        index: u64,
+        term: u64,
+        applied_term: u64,
+        truncated_state: &mut RaftTruncatedState,
+        first_index: &mut u64,
+    ) -> bool {
+        self.forwarder.pre_exec_query(
+            ob_ctx,
+            req,
+            apply_state,
+            index,
+            term,
+            applied_term,
+            truncated_state,
+            first_index,
+        )
     }
 
     fn post_exec_query(

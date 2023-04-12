@@ -304,7 +304,6 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
 
                         *first_index = entry_storage::first_index(apply_state);
                         apply_state.set_truncated_state(truncated_state.clone());
-
                     }
                     // Return true to skip the normal execution.
                     return true;
@@ -449,10 +448,8 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                 if cs.has_ingest_files() {
                     let cs_bin = cs.write_to_bytes().unwrap();
                     let sst_views = vec![(cs_bin.as_slice(), ColumnFamilyType::Write)];
-                    let header =
-                        RaftCmdHeader::new(region_id, index, term);
-                    self
-                        .engine_store_server_helper
+                    let header = RaftCmdHeader::new(region_id, index, term);
+                    self.engine_store_server_helper
                         .handle_ingest_sst(sst_views, header);
 
                     // update apply_state
@@ -461,9 +458,7 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                 }
             }
             rlog::TYPE_RESOLVE_LOCK => cl.iterate_resolve_lock(|tp, k, ts, del_lock| match tp {
-                rlog::TYPE_COMMIT => {
-                    self.commit_lock(region_id, &mut write_cmds, index, k, ts)
-                }
+                rlog::TYPE_COMMIT => self.commit_lock(region_id, &mut write_cmds, index, k, ts),
                 rlog::TYPE_ROLLBACK => {
                     if del_lock {
                         Self::del_lock(&mut write_cmds, Key::from_raw(k).into_encoded());
@@ -485,10 +480,8 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                 write_cmd.cf,
             );
         }
-        self.engine_store_server_helper.handle_write_raft_cmd(
-            &cmds,
-            RaftCmdHeader::new(ob_region.get_id(), index, term),
-        );
+        self.engine_store_server_helper
+            .handle_write_raft_cmd(&cmds, RaftCmdHeader::new(ob_region.get_id(), index, term));
 
         // update apply_state
         apply_state.set_applied_index(index);
