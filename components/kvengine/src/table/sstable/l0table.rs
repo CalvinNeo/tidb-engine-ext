@@ -9,7 +9,7 @@ use moka::sync::SegmentedCache;
 use super::*;
 use crate::{
     max_ts_by_cf,
-    table::{table::Result, Value},
+    table::{table::Result, ExternalLink, Value},
     LOCK_CF, NUM_CFS, WRITE_CF,
 };
 
@@ -59,12 +59,13 @@ impl L0Table {
 pub struct L0TableCore {
     footer: L0Footer,
     file: Arc<dyn File>,
-    cfs: [Option<sstable::SSTable>; NUM_CFS],
+    cfs: [Option<sstable::SsTable>; NUM_CFS],
     max_ts: u64,
     entries: u64,
     kv_size: u64,
     smallest: Bytes,
     biggest: Bytes,
+    total_blob_size: u64,
 }
 
 impl L0TableCore {
@@ -83,7 +84,7 @@ impl L0TableCore {
         for i in 0..NUM_CFS {
             cf_offs[i] = LittleEndian::read_u32(&cf_offs_buf[i * 4..]);
         }
-        let mut cfs: [Option<SSTable>; NUM_CFS] = [None, None, None];
+        let mut cfs: [Option<SsTable>; NUM_CFS] = [None, None, None];
         let mut entries = 0;
         let mut kv_size = 0;
         for i in 0..NUM_CFS {
@@ -95,7 +96,7 @@ impl L0TableCore {
             if start_off == end_off || ignore_lock && i == LOCK_CF {
                 continue;
             }
-            let tbl = sstable::SSTable::new_l0_cf(file.clone(), start_off, end_off, cache.clone())?;
+            let tbl = sstable::SsTable::new_l0_cf(file.clone(), start_off, end_off, cache.clone())?;
             entries += tbl.entries as u64;
             if i == WRITE_CF {
                 kv_size += tbl.kv_size;
@@ -104,6 +105,7 @@ impl L0TableCore {
             cfs[i] = Some(tbl)
         }
         let (smallest, biggest, max_ts) = Self::compute_smallest_biggest(&cfs);
+        let total_blob_size = Self::compute_total_blob_size(&cfs);
         Ok(Self {
             footer,
             file,
@@ -113,11 +115,12 @@ impl L0TableCore {
             kv_size,
             smallest,
             biggest,
+            total_blob_size,
         })
     }
 
     // Return: smallest, biggest, max_ts
-    fn compute_smallest_biggest(cfs: &[Option<SSTable>; NUM_CFS]) -> (Bytes, Bytes, u64) {
+    fn compute_smallest_biggest(cfs: &[Option<SsTable>; NUM_CFS]) -> (Bytes, Bytes, u64) {
         let mut smallest_buf = BytesMut::new();
         let mut biggest_buf = BytesMut::new();
         let mut max_ts = 0;
@@ -143,11 +146,21 @@ impl L0TableCore {
         (smallest_buf.freeze(), biggest_buf.freeze(), max_ts)
     }
 
+    fn compute_total_blob_size(cfs: &[Option<SsTable>; NUM_CFS]) -> u64 {
+        let mut total_blob_size = 0;
+        for i in 0..NUM_CFS {
+            if let Some(cf_tbl) = &cfs[i] {
+                total_blob_size += cf_tbl.total_blob_size();
+            }
+        }
+        total_blob_size
+    }
+
     pub fn id(&self) -> u64 {
         self.file.id()
     }
 
-    pub fn get_cf(&self, cf: usize) -> &Option<sstable::SSTable> {
+    pub fn get_cf(&self, cf: usize) -> &Option<sstable::SsTable> {
         &self.cfs[cf]
     }
 
@@ -188,6 +201,10 @@ impl L0TableCore {
             .filter_map(|t| t.as_ref())
             .any(|t| t.has_overlap(start, end, false))
     }
+
+    pub fn total_blob_size(&self) -> u64 {
+        self.total_blob_size
+    }
 }
 
 pub struct L0Builder {
@@ -212,8 +229,8 @@ impl L0Builder {
         }
     }
 
-    pub fn add(&mut self, cf: usize, key: &[u8], val: Value) {
-        self.builders[cf].add(key, val);
+    pub fn add(&mut self, cf: usize, key: &[u8], val: &Value, external_link: Option<ExternalLink>) {
+        self.builders[cf].add(key, val, external_link);
         self.count += 1;
     }
 
@@ -256,6 +273,14 @@ impl L0Builder {
             }
         }
         (smallest_buf.freeze(), biggest_buf.freeze())
+    }
+
+    pub fn total_blob_size(&self) -> u64 {
+        let mut total_blob_size = 0;
+        for builder in &self.builders {
+            total_blob_size += builder.get_total_blob_size();
+        }
+        total_blob_size
     }
 
     pub fn is_empty(&self) -> bool {

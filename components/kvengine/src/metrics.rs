@@ -38,12 +38,14 @@ lazy_static! {
     .unwrap();
     pub static ref ENGINE_CACHE_MISS: IntCounter =
         register_int_counter!("kv_engine_cache_miss", "kv engine cache miss",).unwrap();
-    pub static ref KVENGINE_LEVEL_WRITE_VEC: IntCounterVec = register_int_counter_vec!(
+    pub static ref ENGINE_LEVEL_WRITE_VEC: IntCounterVec = register_int_counter_vec!(
         "kv_engine_level_write_bytes",
         "Write bytes of kvengine of each level",
         &["level"]
     )
     .unwrap();
+    pub static ref ENGINE_OPEN_FILES: IntGauge =
+        register_int_gauge!("kv_engine_open_files", "kv engine open files",).unwrap();
 }
 
 pub(crate) fn elapsed_secs(t: Instant) -> f64 {

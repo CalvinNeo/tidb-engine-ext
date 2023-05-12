@@ -16,7 +16,7 @@ use super::arena::*;
 use crate::{
     table::{
         is_deleted,
-        table::{Iterator, Value},
+        table::{Iterator, Value, VALUE_VERSION_LEN, VALUE_VERSION_OFF},
     },
     SnapAccess,
 };
@@ -118,11 +118,20 @@ impl WriteBatchEntry {
     }
 
     pub fn encoded_val_size(self) -> usize {
-        1 + 1 + 8 + self.user_meta_len as usize + self.val_len as usize
+        VALUE_VERSION_OFF + VALUE_VERSION_LEN + self.user_meta_len as usize + self.val_len as usize
     }
 
     pub fn encoded_full_size(self) -> usize {
-        2 + self.key_len as usize + 1 + 1 + 8 + self.user_meta_len as usize + self.val_len as usize
+        2 + self.key_len as usize
+            + VALUE_VERSION_OFF
+            + VALUE_VERSION_LEN
+            + self.user_meta_len as usize
+            + self.val_len as usize
+    }
+
+    pub fn trim_to_inner_key(&mut self, inner_key_off: usize) {
+        self.buf_off += inner_key_off as u32;
+        self.key_len -= inner_key_off as u16;
     }
 }
 
@@ -184,8 +193,8 @@ impl SkipList {
         }
     }
 
-    pub fn new_iterator(&self, reversed: bool) -> SKIterator {
-        SKIterator {
+    pub fn new_iterator(&self, reversed: bool) -> SkIterator {
+        SkIterator {
             list: self.clone(),
             n: ArenaAddr::null(),
             uk: BytesMut::new(),
@@ -298,8 +307,8 @@ impl SkipListCore {
     }
 
     fn put_with_hint(&self, buf: &[u8], entry: &WriteBatchEntry, h: &mut Hint) {
-        // Since we allow overwrite, we may not need to create a new node. We might not even need to
-        // increase the height. Let's defer these actions.
+        // Since we allow overwrite, we may not need to create a new node. We might not
+        // even need to increase the height. Let's defer these actions.
         let mut list_height = self.get_height();
         let height = self.random_height();
 
@@ -330,7 +339,8 @@ impl SkipListCore {
                 }
             }
         } else {
-            // Even the recomputeHeight is 0, we still need to check match and do in place update to insert the new version.
+            // Even the recomputeHeight is 0, we still need to check match and do in place
+            // update to insert the new version.
             if !h.next[0].is_null() {
                 let node = deref(self.arena.get_node(h.next[0]));
                 if self.arena.get_key(node).eq(key) {
@@ -343,8 +353,9 @@ impl SkipListCore {
         // We do need to create a new node.
         let x = self.arena.put_node(height, buf, entry);
 
-        // We always insert from the base level and up. After you add a node in base level, we cannot
-        // create a node in the level above because it would have discovered the node in the base level.
+        // We always insert from the base level and up. After you add a node in base
+        // level, we cannot create a node in the level above because it would
+        // have discovered the node in the base level.
         for i in 0..height {
             loop {
                 let next_off = h.next[i];
@@ -354,8 +365,9 @@ impl SkipListCore {
                     break;
                 }
                 // CAS failed. We need to recompute prev and next.
-                // It is unlikely to be helpful to try to use a different level as we redo the search,
-                // because it is unlikely that lots of nodes are inserted between prev[i] and next[i].
+                // It is unlikely to be helpful to try to use a different level as we redo the
+                // search, because it is unlikely that lots of nodes are
+                // inserted between prev[i] and next[i].
                 let (prev, next, _) = self.find_splice_for_level(key, h.prev[i], i);
                 h.prev[i] = prev;
                 h.next[i] = next;
@@ -401,7 +413,7 @@ impl SkipListCore {
 
     pub fn get_with_hint(&self, key: &[u8], version: u64, h: &mut Hint) -> Value {
         let list_height = self.get_height();
-        let recompute_height = self.calculate_recompute_height(key, h, list_height as usize);
+        let recompute_height = self.calculate_recompute_height(key, h, list_height);
         let mut n = ArenaAddr(NULL_ARENA_ADDR);
         if recompute_height > 0 {
             for i in (0..recompute_height).rev() {
@@ -601,8 +613,8 @@ impl SkipListCore {
         }
     }
 
-    // find_last returns the last element. If head (empty list), we return nil. All the find functions
-    // will NEVER return the head nodes.
+    // find_last returns the last element. If head (empty list), we return nil. All
+    // the find functions will NEVER return the head nodes.
     fn find_last(&self) -> ArenaAddr {
         let mut n = self.head;
         let mut level = self.height.load(SeqCst) - 1;
@@ -708,7 +720,8 @@ pub struct Hint {
 
     // hitHeight is used to reduce cost of calculate_recomput_height.
     // For random workload, comparing Hint keys from bottom up is wasted work.
-    // So we record the hit height of the last operation, only grow recompute height from near that height.
+    // So we record the hit height of the last operation, only grow recompute height from near that
+    // height.
     hit_height: usize,
     prev: [ArenaAddr; MAX_HEIGHT + 1],
     next: [ArenaAddr; MAX_HEIGHT + 1],
@@ -731,7 +744,7 @@ impl Default for Hint {
     }
 }
 
-pub struct SKIterator {
+pub struct SkIterator {
     list: SkipList,
     n: ArenaAddr,
 
@@ -742,10 +755,10 @@ pub struct SKIterator {
     reversed: bool,
 }
 
-unsafe impl Send for SKIterator {}
+unsafe impl Send for SkIterator {}
 
 #[allow(dead_code)]
-impl SKIterator {
+impl SkIterator {
     fn load_node(&mut self) {
         if self.n.is_null() {
             return;
@@ -814,7 +827,7 @@ impl SKIterator {
     }
 }
 
-impl Iterator for SKIterator {
+impl Iterator for SkIterator {
     fn next(&mut self) {
         if self.reversed {
             self.next_backward()
@@ -913,9 +926,9 @@ mod tests {
 
         let mut wb = WriteBatch::new();
 
-        wb.put("key1".as_bytes(), 56, &[0], 0, val1.as_bytes());
-        wb.put("key2".as_bytes(), 57, &[0], 2, val2.as_bytes());
-        wb.put("key3".as_bytes(), 58, &[0], 0, val3.as_bytes());
+        wb.put("key1".as_bytes(), 0, &[0], 0, val1.as_bytes());
+        wb.put("key2".as_bytes(), 0, &[0], 2, val2.as_bytes());
+        wb.put("key3".as_bytes(), 0, &[0], 0, val3.as_bytes());
 
         l.put_batch_impl(&mut wb, None, 0);
 
@@ -925,7 +938,6 @@ mod tests {
         v = l.get("key1".as_bytes(), 0);
         assert_eq!(v.is_empty(), false);
         assert_eq!(v.get_value(), "00042".as_bytes());
-        assert_eq!(v.meta, 56);
 
         v = l.get("key2".as_bytes(), 0);
         assert_eq!(v.is_empty(), true);
@@ -933,15 +945,13 @@ mod tests {
         v = l.get("key3".as_bytes(), 0);
         assert_eq!(v.is_empty(), false);
         assert_eq!(v.get_value(), "00062".as_bytes());
-        assert_eq!(v.meta, 58);
 
         let mut wb = WriteBatch::new();
-        wb.put("key3".as_bytes(), 12, &[0], 1, val4.as_bytes());
+        wb.put("key3".as_bytes(), 0, &[0], 1, val4.as_bytes());
         l.put_batch_impl(&mut wb, None, 0);
         v = l.get("key3".as_bytes(), 1);
         assert_eq!(v.is_empty(), false);
         assert_eq!(v.get_value(), "00072".as_bytes());
-        assert_eq!(v.meta, 12);
     }
 
     #[test]
@@ -1278,5 +1288,46 @@ mod tests {
         }
         assert!(l.size() > l.arena.size() as u64);
         assert!(l.size() * 9 / 10 < l.arena.size() as u64);
+    }
+
+    #[test]
+    fn test_race() {
+        for _ in 0..100 {
+            let l = Arc::new(SkipList::new(None));
+            let new_key = Arc::new(AtomicU64::new(0));
+            for _ in 0..4 {
+                let new_key = new_key.clone();
+                let l = l.clone();
+                std::thread::spawn(move || {
+                    let mut hint = Hint::new();
+                    loop {
+                        let i = new_key.load(Ordering::Acquire);
+                        let bin = i.to_le_bytes();
+                        let val = l.get_with_hint(&bin, u64::MAX, &mut hint);
+                        if val.is_valid() {
+                            assert_eq!(val.user_meta(), &bin, "{}", i);
+                            assert_eq!(val.get_value(), &bin, "{}", i);
+                        }
+                        if i == 10000 - 1 {
+                            return;
+                        }
+                    }
+                });
+            }
+            let mut wb = WriteBatch::new();
+            let mut hint = Hint::new();
+            for i in 0u64..10000 {
+                let bin = i.to_le_bytes();
+                let key = &bin;
+                let um = &bin;
+                let val = &bin;
+                wb.put(key, 1, um, i, val);
+                let entry = wb.get(0);
+                let buf = wb.buf.chunk();
+                l.put_with_hint(buf, &entry, &mut hint);
+                new_key.store(i, Ordering::Release);
+                wb.reset();
+            }
+        }
     }
 }

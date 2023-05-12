@@ -1,6 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use dyn_clone::DynClone;
 
@@ -33,6 +33,18 @@ pub struct Options {
     pub max_mem_table_size: u64,
 
     pub allow_fallback_local: bool,
+
+    pub min_blob_size: u32,
+
+    pub max_blob_table_size: usize,
+
+    pub blob_table_gc_ratio: f64,
+
+    pub blob_prefetch_size: usize,
+
+    pub max_del_range_delay: Duration,
+
+    pub enable_inner_key_offset: bool,
 }
 
 impl Default for Options {
@@ -48,17 +60,23 @@ impl Default for Options {
             preparation_concurrency: Default::default(),
             max_mem_table_size: 96 << 20,
             allow_fallback_local: true,
+            min_blob_size: 0,
+            max_blob_table_size: 64 * 1024 * 1024,
+            blob_table_gc_ratio: 0.5,
+            blob_prefetch_size: 256 * 1024,
+            max_del_range_delay: Duration::from_secs(3600),
+            enable_inner_key_offset: false,
         }
     }
 }
 
 #[derive(Default, Clone, Copy)]
-pub struct CFConfig {
+pub struct CfConfig {
     pub managed: bool,
     pub max_levels: usize,
 }
 
-impl CFConfig {
+impl CfConfig {
     pub fn new(managed: bool, max_levels: usize) -> Self {
         Self {
             managed,
@@ -67,20 +85,20 @@ impl CFConfig {
     }
 }
 
-pub trait IDAllocator: Sync + Send {
+pub trait IdAllocator: Sync + Send {
     // alloc_id returns the last id, and last_id - count is valid.
-    fn alloc_id(&self, count: usize) -> Vec<u64>;
+    fn alloc_id(&self, count: usize) -> Result<Vec<u64>>;
 }
 
 pub trait RecoverHandler: Clone + Send {
-    // Recovers from the shard's state to the state that is stored in the toState property.
-    // So the Engine has a chance to execute pre-split command.
+    // Recovers from the shard's state to the state that is stored in the toState
+    // property. So the Engine has a chance to execute pre-split command.
     // If toState is nil, the implementation should recovers to the latest state.
     fn recover(&self, engine: &Engine, shard: &Arc<Shard>, info: &ShardMeta) -> Result<()>;
 }
 
 pub trait MetaIterator {
-    fn iterate<F>(&self, f: F) -> Result<()>
+    fn iterate<F>(&mut self, f: F) -> Result<()>
     where
         F: FnMut(kvenginepb::ChangeSet);
 

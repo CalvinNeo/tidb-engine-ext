@@ -1,5 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
+pub mod blobtable;
 pub mod memtable;
 pub mod merge_iterator;
 pub mod sstable;

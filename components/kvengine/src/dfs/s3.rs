@@ -10,10 +10,12 @@ use std::{
 use async_trait::async_trait;
 use bstr::ByteSlice;
 use bytes::{Buf, Bytes};
-use engine_traits::ObjectStorage;
+use engine_traits::{GetObjectOptions, ObjectStorage};
 use farmhash::fingerprint64;
 use futures::StreamExt;
+use http::StatusCode;
 use hyper_tls::HttpsConnector;
+use regex::Regex;
 use rusoto_core::{
     param::{Params, ServiceParams},
     request::{BufferedHttpResponse, HttpResponse},
@@ -21,26 +23,33 @@ use rusoto_core::{
     HttpClient, HttpDispatchError, Region, RusotoError,
 };
 use rusoto_s3::{
-    CopyObjectError, GetObjectError, GetObjectTaggingError, ListObjectsV2Error, PutObjectError,
-    PutObjectTaggingError,
+    CopyObjectError, DeleteObjectError, DeleteObjectTaggingError, GetObjectError,
+    GetObjectTaggingError, ListObjectsV2Error, PutObjectError, PutObjectTaggingError,
 };
-use tikv_util::time::Instant;
+use tikv_util::{box_err, time::Instant};
 use tokio::runtime::Runtime;
 
-use crate::dfs::{metrics::*, Options, DFS};
+use crate::dfs::{self, metrics::*, Dfs, Options};
 
-const MAX_RETRY_COUNT: u32 = 7;
+const MAX_RETRY_COUNT: u32 = 9;
 const RETRY_SLEEP_MS: u64 = 500;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_BODY_TIMEOUT: Duration = Duration::from_secs(60);
 
+pub const STORAGE_CLASS_DEFAULT: &str = "STANDARD";
+pub const STORAGE_CLASS_STANDARD_IA: &str = "STANDARD_IA";
+
+const AWS_DOMAIN_STRING: &str = "amazonaws";
+
+const SMALL_FILE_THRESHOLD_BYTES: u64 = 1024 * 1024; // 1MB
+
 #[derive(Clone)]
-pub struct S3FS {
-    core: Arc<S3FSCore>,
+pub struct S3Fs {
+    core: Arc<S3FsCore>,
 }
 
-impl S3FS {
+impl S3Fs {
     pub fn new(
         prefix: String,
         endpoint: String,
@@ -49,7 +58,7 @@ impl S3FS {
         region: String,
         bucket: String,
     ) -> Self {
-        let core = Arc::new(S3FSCore::new(
+        let core = Arc::new(S3FsCore::new(
             endpoint, key_id, secret_key, region, bucket, prefix,
         ));
         Self { core }
@@ -58,7 +67,7 @@ impl S3FS {
     #[cfg(test)]
     pub fn new_for_test(s3c: rusoto_core::Client, bucket: String, prefix: String) -> Self {
         Self {
-            core: Arc::new(S3FSCore::new_with_s3_client(
+            core: Arc::new(S3FsCore::new_with_s3_client(
                 s3c,
                 "".to_string(),
                 "local".to_string(),
@@ -69,15 +78,15 @@ impl S3FS {
     }
 }
 
-impl Deref for S3FS {
-    type Target = S3FSCore;
+impl Deref for S3Fs {
+    type Target = S3FsCore;
 
     fn deref(&self) -> &Self::Target {
         &self.core
     }
 }
 
-pub struct S3FSCore {
+pub struct S3FsCore {
     s3c: rusoto_core::Client,
     hostname: String,
     region: Region,
@@ -87,7 +96,7 @@ pub struct S3FSCore {
     virtual_host: bool,
 }
 
-impl S3FSCore {
+impl S3FsCore {
     pub fn new(
         endpoint: String,
         key_id: String,
@@ -148,8 +157,8 @@ impl S3FSCore {
             .find("://")
             .map(|p| &endpoint[p + 3..])
             .unwrap_or(&endpoint);
-        // local deployed s3 service like minio does not support virtual host addressing, it always
-        // has a port defined at the end.
+        // local deployed s3 service like minio does not support virtual host
+        // addressing, it always has a port defined at the end.
         let virtual_host = !no_schema_endpoint.contains(':');
         let hostname = if virtual_host {
             format!("{}.{}", &bucket, no_schema_endpoint)
@@ -171,13 +180,17 @@ impl S3FSCore {
         }
     }
 
-    fn file_key(&self, file_id: u64) -> String {
+    pub fn file_key(&self, file_id: u64) -> String {
         let idx = (fingerprint64(file_id.to_le_bytes().as_slice())) as u8;
         format!("{}/{:02x}/{:016x}.sst", self.prefix, idx, file_id)
     }
 
     pub fn get_prefix(&self) -> String {
         self.prefix.clone()
+    }
+
+    pub fn is_on_aws(&self) -> bool {
+        self.hostname.contains(AWS_DOMAIN_STRING)
     }
 
     // parse the sst file's suffix with format {idx}/{file_id}.sst
@@ -195,6 +208,17 @@ impl S3FSCore {
         u64::from_str_radix(file_part, 16).unwrap()
     }
 
+    // Try to parse the sst file id from file key.
+    // Expected file key format: "/{prefix}/{idx}/{file_id}.sst".
+    // Note: do NOT use in performance critical path as regex is used.
+    pub fn try_parse_file_id(&self, key: &str) -> Option<u64> {
+        lazy_static::lazy_static! {
+            static ref RE: Regex = Regex::new(r"/[0-9a-f]{2}/([0-9a-f]{16})\.sst$").unwrap();
+        }
+        let caps = RE.captures(key)?;
+        Some(u64::from_str_radix(&caps[1], 16).unwrap())
+    }
+
     fn is_err_retryable<T>(&self, rustoto_err: &RusotoError<T>) -> bool {
         match rustoto_err {
             RusotoError::Service(_) => true,
@@ -203,8 +227,15 @@ impl S3FSCore {
             RusotoError::Credentials(_) => false,
             RusotoError::Validation(_) => false,
             RusotoError::ParseError(_) => false,
-            RusotoError::Unknown(_) => true,
+            RusotoError::Unknown(resp) => resp.status.is_server_error(),
             RusotoError::Blocking => false,
+        }
+    }
+
+    fn is_err_not_found<T>(&self, rustoto_err: &RusotoError<T>) -> bool {
+        match rustoto_err {
+            RusotoError::Unknown(resp) => resp.status == StatusCode::NOT_FOUND,
+            _ => false,
         }
     }
 
@@ -223,11 +254,31 @@ impl S3FSCore {
         }
     }
 
-    // list gets a list of file ids(full path) greater than start_after.
-    // The result contains a vector of file ids and a boolean indicate if there is more.
-    pub async fn list(&self, start_after: &str) -> crate::dfs::Result<(Vec<String>, bool)> {
-        let prefix = format!("{}/", self.prefix.clone());
-        let start_after = format!("{}/{}", self.prefix.clone(), start_after);
+    /// list gets a list of file ids(full path) greater than `start_after`, with
+    /// optional prefix `prefix`.
+    ///
+    /// The result contains:
+    ///     A vector of file content with `key` & `last_modified` timestamp.
+    ///     A boolean `has_more` indicate if there is more.
+    ///     An optional `next_start_after` for next loop if `has_more` is true.
+    ///
+    /// Note:
+    ///     `prefix` should NOT be contained in `start_after`.
+    ///     The file ids in result are in full path, including `S3Fs.prefix` and
+    /// `prefix`.
+    ///
+    /// Ref: https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListObjectsV2.html
+    pub async fn list(
+        &self,
+        start_after: &str,
+        prefix: Option<&str>,
+    ) -> crate::dfs::Result<(
+        Vec<ListObjectContent>,
+        bool,           // has_more. Deprecated, use `next_start_after`
+        Option<String>, // next_start_after
+    )> {
+        let prefix = format!("{}/{}", self.prefix.clone(), prefix.unwrap_or_default());
+        let start_after = format!("{}{}", prefix, start_after);
         let mut retry_cnt = 0;
         loop {
             let mut req = self.new_request("GET", "");
@@ -244,17 +295,18 @@ impl S3FSCore {
                     let body = body_res.unwrap();
                     let body_str = body.to_str().unwrap();
                     let list: ListObjects = quick_xml::de::from_str(body_str).unwrap();
-                    let mut files = vec![];
-                    for content in list.contents {
-                        files.push(content.key);
-                    }
-                    return Ok((files, list.is_truncated));
+                    let next_start_after = list.is_truncated.then(|| {
+                        list.contents.last().unwrap().key.as_str()[prefix.len()..].to_string()
+                    });
+                    return Ok((list.contents, list.is_truncated, next_start_after));
                 } else {
                     result = Err(body_res.unwrap_err().into());
                 }
             }
             let err = result.unwrap_err();
-            if self.is_err_retryable(&err) && retry_cnt < MAX_RETRY_COUNT {
+            if self.is_err_not_found(&err) {
+                return Ok((vec![], false, None));
+            } else if self.is_err_retryable(&err) && retry_cnt < MAX_RETRY_COUNT {
                 retry_cnt += 1;
                 let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
                 tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
@@ -268,14 +320,11 @@ impl S3FSCore {
         }
     }
 
-    pub async fn is_removed(&self, file_id: u64) -> bool {
+    pub async fn is_removed(&self, file_id: u64) -> Result<bool, dfs::Error> {
         let mut retry_cnt = 0;
         loop {
             let key = self.file_key(file_id);
-            let mut req = self.new_request("GET", &key);
-            let mut params = Params::new();
-            params.put_key("tagging");
-            req.set_params(params);
+            let req = self.new_tagging_request("GET", &key);
             let mut result = self
                 .dispatch(req, GetObjectTaggingError::from_response)
                 .await;
@@ -286,30 +335,32 @@ impl S3FSCore {
                     let body = body_res.unwrap();
                     let body_str = body.to_str().unwrap();
                     let tagging: Tagging = quick_xml::de::from_str(body_str).unwrap();
-                    return tagging
-                        .tag_set
-                        .tag
-                        .iter()
-                        .any(|tag| tag.key == "deleted" && tag.value == "true");
+                    return Ok(tagging.has_deleted_tag());
                 } else {
                     result = Err(body_res.unwrap_err().into());
                 }
             }
             let err = result.unwrap_err();
             if let RusotoError::Service(_) = err {
-                return true;
+                return Err(dfs::Error::S3(format!(
+                    "Get file {} tagging fail {:?}",
+                    file_id, err
+                )));
             }
             if self.is_err_retryable(&err) && retry_cnt < MAX_RETRY_COUNT {
                 retry_cnt += 1;
                 let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
+                warn!(
+                    "Get file {} tagging fail {:?}, retry_cnt {}, retry after {}ms",
+                    file_id, err, retry_cnt, retry_sleep
+                );
                 tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
                 continue;
             }
-            error!(
-                "failed to get tagging for file {}, reach max retry count {}, err {:?}",
+            return Err(dfs::Error::S3(format!(
+                "Get file {} tagging, reach max retry count {}, err {:?}",
                 file_id, MAX_RETRY_COUNT, err,
-            );
-            return true;
+            )));
         }
     }
 
@@ -321,6 +372,14 @@ impl S3FSCore {
         };
         let mut req = SignedRequest::new(method, "s3", &self.region, &path);
         req.scheme = Some("http".to_string());
+        req
+    }
+
+    fn new_tagging_request(&self, method: &str, key: &str) -> SignedRequest {
+        let mut req = self.new_request(method, key);
+        let mut params = Params::new();
+        params.put_key("tagging");
+        req.set_params(params);
         req
     }
 
@@ -358,11 +417,19 @@ impl S3FSCore {
         Ok(Bytes::from(buf))
     }
 
-    pub async fn get_object(&self, key: String, file_name: String) -> crate::dfs::Result<Bytes> {
+    pub async fn get_object(
+        &self,
+        key: String,
+        file_name: String,
+        opts: GetObjectOptions,
+    ) -> crate::dfs::Result<Bytes> {
         let mut retry_cnt = 0;
         let start_time = Instant::now_coarse();
         loop {
-            let req = self.new_request("GET", &key);
+            let mut req = self.new_request("GET", &key);
+            if !opts.is_full_range() {
+                req.add_header("Range", &format!("bytes={}", opts.range_string()));
+            }
             let mut result = self.dispatch(req, GetObjectError::from_response).await;
 
             if result.is_ok() {
@@ -460,61 +527,254 @@ impl S3FSCore {
             return Err(err.into());
         }
     }
-}
 
-impl ObjectStorage for S3FS {
-    fn put_objects(&self, objects: Vec<(String, Bytes)>) -> engine_traits::Result<()> {
-        let runtime = self.get_runtime();
-        let len = objects.len();
-        let (tx, rx) = tikv_util::mpsc::bounded(len);
-        for (key, data) in objects {
-            let full_key = format!("{}/{}", self.prefix, key);
-            let fs = self.clone();
-            let tx = tx.clone();
-            runtime.spawn(async move {
-                let result = fs
-                    .put_object(full_key, data, key.clone())
-                    .await
-                    .map_err(|err| format!("put {} failed {:?}", &key, err));
-                tx.send(result).unwrap();
-            });
-        }
-        let mut errs = vec![];
-        for _ in 0..len {
-            if let Err(err) = rx.recv().unwrap() {
-                errs.push(err)
+    // Ref: https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html
+    pub async fn delete_object(&self, key: String, file_name: String) -> crate::dfs::Result<()> {
+        let mut retry_cnt = 0;
+        let start_time = Instant::now();
+        loop {
+            let req = self.new_request("DELETE", &key);
+            let result = self.dispatch(req, DeleteObjectError::from_response).await;
+            if result.is_ok() {
+                info!(
+                    "delete file {}, takes {:?}, retry {}",
+                    &file_name,
+                    start_time.saturating_elapsed(),
+                    retry_cnt
+                );
+                KVENGINE_DFS_LATENCY_VEC
+                    .with_label_values(&["delete"])
+                    .observe(start_time.saturating_elapsed().as_millis() as f64);
+                return Ok(());
             }
+            let err = result.unwrap_err();
+            if self.is_err_retryable(&err) {
+                if retry_cnt < MAX_RETRY_COUNT {
+                    KVENGINE_DFS_RETRY_COUNTER_VEC
+                        .with_label_values(&["delete"])
+                        .inc();
+                    retry_cnt += 1;
+                    let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
+                    tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
+                    warn!(
+                        "retry delete file {}, error {:?}, retry cnt {}, retry after {}ms",
+                        &file_name, &err, retry_cnt, retry_sleep
+                    );
+                    continue;
+                } else {
+                    error!(
+                        "delete file {}, takes {:?}, reach max retry count {}",
+                        &file_name,
+                        start_time.saturating_elapsed(),
+                        MAX_RETRY_COUNT
+                    );
+                }
+            }
+            return Err(err.into());
         }
-        if errs.len() > 0 {
-            return Err(engine_traits::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("{:?}", errs),
-            )));
+    }
+
+    /// Copy object from `source_file_id` to `target_file_id`.
+    ///
+    /// `source_file_id` and `target_file_id` can be the same. And it's the only
+    /// way to update the object creation timestamp, which is used for
+    /// expiration rules of lifecycle.
+    ///
+    /// `target_tags`: replace tags if some, otherwise copy from source.
+    ///
+    /// `target_storage_class`: copy to another storage class if some. Note than
+    /// only AWS S3 support storage class.
+    pub async fn copy_object(
+        &self,
+        source_file_id: u64,
+        target_file_id: u64,
+        target_tagging: Option<&Tagging>,
+        target_storage_class: Option<&str>,
+    ) -> Result<(), dfs::Error> {
+        let mut retry_cnt = 0;
+        let mut copied = false;
+        let source_key = format!("{}/{}", self.bucket, self.file_key(source_file_id));
+        let target_key = self.file_key(target_file_id);
+
+        loop {
+            if !copied {
+                let mut req = self.new_request("PUT", &target_key);
+                req.add_header("x-amz-copy-source", &source_key);
+                req.add_header("x-amz-metadata-directive", "REPLACE");
+                if let Some(target_tagging) = target_tagging {
+                    req.add_header("x-amz-tagging", &target_tagging.to_url_encoded());
+                    req.add_header("x-amz-tagging-directive", "REPLACE");
+                }
+                if let Some(target_storage_class) = target_storage_class.as_ref() {
+                    if self.is_on_aws() {
+                        req.add_header("x-amz-storage-class", target_storage_class);
+                    } else {
+                        debug!(
+                            "{} ignore target_storage_class {} which is not supported by {}",
+                            target_file_id, target_storage_class, self.hostname
+                        );
+                    }
+                }
+                if let Err(err) = self.dispatch(req, CopyObjectError::from_response).await {
+                    if retry_cnt < MAX_RETRY_COUNT {
+                        retry_cnt += 1;
+                        let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
+                        warn!(
+                            "retry copy file {}, retry count {}, retry after {}ms, err {:?}",
+                            target_file_id, retry_cnt, retry_sleep, err,
+                        );
+                        tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
+                        continue;
+                    } else {
+                        let err_msg = format!(
+                            "failed to copy file {} from {}, reach max retry count {}, err {:?}",
+                            target_file_id, source_file_id, MAX_RETRY_COUNT, err,
+                        );
+                        error!("{}", err_msg);
+                        return Err(dfs::Error::S3(err_msg));
+                    }
+                }
+                copied = true;
+            }
+
+            if target_tagging.is_none() || !self.hostname.contains("ksyuncs.com") {
+                return Ok(());
+            }
+
+            // ks3 doesn't support copy object with tagging, workaround to send another
+            // request. TODO: remove it when KS3 fixed the compatibility issue.
+            let target_tagging = target_tagging.unwrap();
+            let mut req = self.new_tagging_request("PUT", &target_key);
+            let tagging_xml = target_tagging.to_xml();
+            let stream = futures::stream::once(async move { Ok(Bytes::from(tagging_xml)) });
+            req.set_content_type("application/xml".to_string());
+            req.set_payload_stream(rusoto_core::ByteStream::new(stream));
+            if let Err(err) = self
+                .dispatch(req, PutObjectTaggingError::from_response)
+                .await
+            {
+                if retry_cnt < MAX_RETRY_COUNT {
+                    retry_cnt += 1;
+                    let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
+                    warn!("retry tagging file {}, error {:?}", target_file_id, &err);
+                    tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
+                    continue;
+                } else {
+                    let err_msg = format!(
+                        "failed to tagging file {}, reach max retry count {}, err {:?}",
+                        target_file_id, MAX_RETRY_COUNT, err,
+                    );
+                    error!("{}", err_msg);
+                    return Err(dfs::Error::S3(err_msg));
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    async fn _remove_file_tagging(&self, file_id: u64) -> Result<(), dfs::Error> {
+        let mut retry_cnt = 0;
+        loop {
+            let key = self.file_key(file_id);
+            let req = self.new_tagging_request("DELETE", &key);
+            if let Err(err) = self
+                .dispatch(req, DeleteObjectTaggingError::from_response)
+                .await
+            {
+                if retry_cnt < MAX_RETRY_COUNT {
+                    retry_cnt += 1;
+                    warn!(
+                        "{}nd retry remove file {} tag error {:?}",
+                        retry_cnt, file_id, &err
+                    );
+                    let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
+                    tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
+                    continue;
+                } else {
+                    return Err(dfs::Error::S3(format!(
+                        "Failed to remove file {} tag, reach max retry count {}, err {:?}",
+                        file_id, MAX_RETRY_COUNT, err,
+                    )));
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    pub async fn retain_file(&self, file_id: u64) -> Result<(), dfs::Error> {
+        if self.is_removed(file_id).await? {
+            let empty_tagging = Tagging::default();
+            self.copy_object(
+                file_id,
+                file_id,
+                Some(&empty_tagging),
+                Some(STORAGE_CLASS_DEFAULT),
+            )
+            .await?;
         }
         Ok(())
     }
 
-    fn get_objects(&self, keys: Vec<String>) -> engine_traits::Result<Vec<(String, Bytes)>> {
+    /// Choose proper storage class for removed files.
+    pub fn choose_storage_class_for_removed_files(&self, file_len: Option<u64>) -> &'static str {
+        // STORAGE_CLASS_STANDARD_IA is more cost efficient than STORAGE_CLASS_STANDARD
+        // for NOT small files.
+        if file_len.is_some() && file_len.unwrap() > SMALL_FILE_THRESHOLD_BYTES {
+            STORAGE_CLASS_STANDARD_IA
+        } else {
+            STORAGE_CLASS_DEFAULT
+        }
+    }
+}
+
+impl ObjectStorage for S3Fs {
+    fn put_objects(&self, objects: Vec<(String, Bytes)>) -> Result<(), String> {
         let runtime = self.get_runtime();
-        let len = keys.len();
-        let (tx, rx) = tikv_util::mpsc::bounded(len);
-        let mut objects = vec![];
-        for key in keys {
+        let len = objects.len();
+        let mut handles = Vec::with_capacity(len);
+        for (key, data) in objects {
             let full_key = format!("{}/{}", self.prefix, key);
             let fs = self.clone();
-            let tx = tx.clone();
-            runtime.spawn(async move {
-                let result = fs
-                    .get_object(full_key, key.clone())
+            handles.push(runtime.spawn(async move {
+                fs.put_object(full_key, data, key.clone())
                     .await
                     .map_err(|err| format!("put {} failed {:?}", &key, err))
-                    .map(|data| (key.clone(), data));
-                tx.send(result).unwrap();
-            });
+            }));
         }
+
+        let errs: Vec<_> = runtime
+            .block_on(futures::future::join_all(handles))
+            .into_iter()
+            .filter_map(|r| r.unwrap().err())
+            .collect();
+        if !errs.is_empty() {
+            return Err(format!("{:?}", errs));
+        }
+        Ok(())
+    }
+
+    fn get_objects(
+        &self,
+        keys: Vec<(String, GetObjectOptions)>,
+    ) -> Result<Vec<(String, Bytes)>, String> {
+        let runtime = self.get_runtime();
+        let len = keys.len();
+        let mut handles = Vec::with_capacity(len);
+        for (key, opts) in keys {
+            let full_key = format!("{}/{}", self.prefix, key);
+            let fs = self.clone();
+            handles.push(runtime.spawn(async move {
+                fs.get_object(full_key, key.clone(), opts)
+                    .await
+                    .map_err(|err| format!("put {} failed {:?}", &key, err))
+                    .map(|data| (key.clone(), data))
+            }));
+        }
+
+        let mut objects = vec![];
         let mut errs = vec![];
-        for _ in 0..len {
-            match rx.recv().unwrap() {
+        for res in runtime.block_on(futures::future::join_all(handles)) {
+            match res.unwrap() {
                 Ok((key, data)) => {
                     objects.push((key, data));
                 }
@@ -523,21 +783,22 @@ impl ObjectStorage for S3FS {
                 }
             }
         }
-        if errs.len() > 0 {
-            return Err(engine_traits::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("{:?}", errs),
-            )));
+        if !errs.is_empty() {
+            return Err(format!("{:?}", errs));
         }
         Ok(objects)
     }
 }
 
 #[async_trait]
-impl DFS for S3FS {
+impl Dfs for S3Fs {
     async fn read_file(&self, file_id: u64, _opts: Options) -> crate::dfs::Result<Bytes> {
-        self.get_object(self.file_key(file_id), file_id.to_string())
-            .await
+        self.get_object(
+            self.file_key(file_id),
+            file_id.to_string(),
+            GetObjectOptions::default(),
+        )
+        .await
     }
 
     async fn create(&self, file_id: u64, data: Bytes, _opts: Options) -> crate::dfs::Result<()> {
@@ -545,20 +806,43 @@ impl DFS for S3FS {
             .await
     }
 
-    async fn remove(&self, file_id: u64, _opts: Options) {
+    /// Logically remove the file on S3 by tagging with "deleted=true".
+    /// And the file would be permanently removed after `gc_lifetime`. See
+    /// `DfsGc`.
+    async fn remove(&self, file_id: u64, file_len: Option<u64>, _opts: Options) {
+        // TODO: Reuse `copy_object` method.
+
+        // Only AWS supports storage class.
+        let target_storage_class = if self.is_on_aws() {
+            let new_storage_class = self.choose_storage_class_for_removed_files(file_len);
+            (new_storage_class != STORAGE_CLASS_DEFAULT).then_some(new_storage_class)
+        } else {
+            None
+        };
+
         let mut retry_cnt = 0;
         let mut copied = false;
         loop {
             let key = self.file_key(file_id);
-            // copy object
+            // Copy object to update the creation time, as the s3 clean policy
+            // depends on the creation time.
             if !copied {
                 let mut req = self.new_request("PUT", &key);
                 req.add_header("x-amz-copy-source", &format!("{}/{}", self.bucket, key));
                 req.add_header("x-amz-metadata-directive", "REPLACE");
+                req.add_header("x-amz-tagging", "deleted=true");
+                req.add_header("x-amz-tagging-directive", "REPLACE");
+                if let Some(target_storage_class) = target_storage_class {
+                    req.add_header("x-amz-storage-class", target_storage_class);
+                }
                 if let Err(err) = self.dispatch(req, CopyObjectError::from_response).await {
                     if retry_cnt < MAX_RETRY_COUNT {
                         retry_cnt += 1;
-                        let retry_sleep = 2u64.pow(retry_cnt as u32) * RETRY_SLEEP_MS;
+                        let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
+                        warn!(
+                            "retry remove file {}, retry count {}, retry after {}ms, err {:?}",
+                            file_id, retry_cnt, retry_sleep, err,
+                        );
                         tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
                         continue;
                     } else {
@@ -571,15 +855,16 @@ impl DFS for S3FS {
                 }
                 copied = true;
             }
-            // put tagging
-            let mut req = self.new_request("PUT", &key);
-            let mut params = Params::new();
-            params.put_key("tagging");
-            req.set_params(params);
-            req.set_content_type("application/xml".to_string());
-            let tagging = Tagging::new_single("deleted", "true");
+            if !self.hostname.contains("ksyuncs.com") {
+                return;
+            }
+            // ks3 doesn't support copy object with tagging, workaround to send another
+            // request. TODO: remove it when KS3 fixed the compatibility issue.
+            let mut req = self.new_tagging_request("PUT", &key);
+            let tagging = Tagging::new_single_deleted();
             let tagging_xml = quick_xml::se::to_string(&tagging).unwrap();
             let stream = futures::stream::once(async move { Ok(Bytes::from(tagging_xml)) });
+            req.set_content_type("application/xml".to_string());
             req.set_payload_stream(rusoto_core::ByteStream::new(stream));
             if let Err(err) = self
                 .dispatch(req, PutObjectTaggingError::from_response)
@@ -587,7 +872,7 @@ impl DFS for S3FS {
             {
                 if retry_cnt < MAX_RETRY_COUNT {
                     retry_cnt += 1;
-                    let retry_sleep = 2u64.pow(retry_cnt as u32) * RETRY_SLEEP_MS;
+                    let retry_sleep = 2u64.pow(retry_cnt) * RETRY_SLEEP_MS;
                     tokio::time::sleep(Duration::from_millis(retry_sleep)).await;
                     warn!("retry remove file {}, error {:?}", file_id, &err);
                     continue;
@@ -600,6 +885,20 @@ impl DFS for S3FS {
             }
             return;
         }
+    }
+
+    /// Permanently remove the file on S3.
+    /// This method should be used by `DfsGc` ONLY to meet GC rules.
+    async fn permanently_remove(&self, file_id: u64, _opts: Options) -> crate::dfs::Result<()> {
+        if self.is_on_aws() {
+            return Err(box_err!(
+                "{} permanently_remove is forbidden on AWS",
+                file_id
+            ));
+        }
+
+        self.delete_object(self.file_key(file_id), file_id.to_string())
+            .await
     }
 
     fn get_runtime(&self) -> &Runtime {
@@ -615,41 +914,72 @@ struct ListObjects {
     is_truncated: bool,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "PascalCase")]
-struct ListObjectContent {
-    key: String,
+pub struct ListObjectContent {
+    pub key: String,
+    pub last_modified: String,
+    pub storage_class: String,
+    pub size: u64, // in bytes.
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "PascalCase")]
-struct Tagging {
+pub struct Tagging {
     tag_set: TagSet,
 }
 
 impl Tagging {
-    fn new_single(key: &str, value: &str) -> Tagging {
+    fn new_single_deleted() -> Tagging {
         Self {
             tag_set: TagSet {
-                tag: vec![Tag {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                }],
+                tag: vec![Tag::new_deleted()],
             },
         }
     }
+
+    pub fn add_tag(&mut self, key: String, value: String) {
+        self.tag_set.tag.push(Tag { key, value });
+    }
+
+    fn has_deleted_tag(&self) -> bool {
+        self.tag_set.tag.iter().any(|tag| tag.is_deleted())
+    }
+
+    pub fn to_xml(&self) -> String {
+        quick_xml::se::to_string(&self).unwrap()
+    }
+
+    pub fn to_url_encoded(&self) -> String {
+        let mut se = url::form_urlencoded::Serializer::new(String::new());
+        for tag in &self.tag_set.tag {
+            se.append_pair(&tag.key, &tag.value);
+        }
+        se.finish()
+    }
+
+    pub fn from_url_encoded(query: &str) -> Tagging {
+        let mut tagging = Self::default();
+        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            tagging.tag_set.tag.push(Tag {
+                key: key.into_owned(),
+                value: value.into_owned(),
+            });
+        }
+        tagging
+    }
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "PascalCase")]
 struct TagSet {
     tag: Vec<Tag>,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 #[serde(rename_all = "PascalCase")]
 struct Tag {
@@ -657,6 +987,19 @@ struct Tag {
     key: String,
     #[serde(rename = "$unflatten=Value")]
     value: String,
+}
+
+impl Tag {
+    fn new_deleted() -> Self {
+        Self {
+            key: "deleted".to_string(),
+            value: "true".to_string(),
+        }
+    }
+
+    fn is_deleted(&self) -> bool {
+        self.key == "deleted" && self.value == "true"
+    }
 }
 
 struct Response {
@@ -696,24 +1039,27 @@ mod tests {
     use super::*;
     use crate::table::sstable::{new_filename, File, LocalFile};
 
+    fn new_s3fs(file_data: &[u8]) -> S3Fs {
+        let s3c = rusoto_core::Client::new_with(
+            MockCredentialsProvider,
+            MultipleMockRequestDispatcher::new(vec![
+                MockRequestDispatcher::with_status(200),
+                MockRequestDispatcher::with_status(200)
+                    .with_body(str::from_utf8(file_data).unwrap()),
+                MockRequestDispatcher::with_status(200),
+                MockRequestDispatcher::with_status(200),
+            ]),
+        );
+        S3Fs::new_for_test(s3c, "shard-db".into(), "prefix".into())
+    }
+
     #[test]
     fn test_s3() {
         crate::tests::init_logger();
 
         let local_dir = tempfile::tempdir().unwrap();
         let file_data = "abcdefgh".to_string().into_bytes();
-
-        let s3c = rusoto_core::Client::new_with(
-            MockCredentialsProvider,
-            MultipleMockRequestDispatcher::new(vec![
-                MockRequestDispatcher::with_status(200),
-                MockRequestDispatcher::with_status(200)
-                    .with_body(str::from_utf8(&file_data).unwrap()),
-                MockRequestDispatcher::with_status(200),
-                MockRequestDispatcher::with_status(200),
-            ]),
-        );
-        let s3fs = S3FS::new_for_test(s3c, "shard-db".into(), "prefix".into());
+        let s3fs = new_s3fs(&file_data);
         let (tx, rx) = tikv_util::mpsc::bounded(1);
 
         let fs = s3fs.clone();
@@ -758,7 +1104,7 @@ mod tests {
         assert!(rx.recv().unwrap());
         let data = std::fs::read(&local_file).unwrap();
         assert_eq!(&data, &file_data);
-        let file = LocalFile::open(321, &local_file).unwrap();
+        let file = LocalFile::open(321, &local_file, false).unwrap();
         assert_eq!(file.size(), 8u64);
         assert_eq!(file.id(), 321u64);
         let data = file.read(0, 8).unwrap();
@@ -766,7 +1112,7 @@ mod tests {
         let fs = s3fs.clone();
         let (tx, rx) = tikv_util::mpsc::bounded(1);
         let f = async move {
-            fs.remove(321, Options::new(1, 1)).await;
+            fs.remove(321, None, Options::new(1, 1)).await;
             tx.send(true).unwrap();
         };
         s3fs.runtime.spawn(f);
@@ -775,23 +1121,40 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_sst_file_suffix() {
-        let file_data = "abcdefgh".to_string().into_bytes();
-        let s3c = rusoto_core::Client::new_with(
-            MockCredentialsProvider,
-            MultipleMockRequestDispatcher::new(vec![
-                MockRequestDispatcher::with_status(200),
-                MockRequestDispatcher::with_status(200)
-                    .with_body(str::from_utf8(&file_data).unwrap()),
-                MockRequestDispatcher::with_status(200),
-                MockRequestDispatcher::with_status(200),
-            ]),
-        );
-        let s3fs = S3FS::new_for_test(s3c, "shard-db".into(), "prefix".into());
+    fn test_parse_sst_file() {
+        let s3fs = new_s3fs(b"abcdefgh");
+
         let file_key = s3fs.file_key(random());
         assert_eq!(
             format!("{}/{}", "prefix", s3fs.parse_sst_file_suffix(&file_key)),
             file_key
+        );
+
+        for file_id in [0, 42, 0x1_0000_0000, 0xffff_ffff_ffff_ffff] {
+            let file_key = s3fs.file_key(file_id);
+            assert_eq!(s3fs.try_parse_file_id(&file_key), Some(file_id));
+        }
+
+        for file_key in [
+            "",
+            "cse/0000000000000001/e00000001/0000000000800000_00000000008e9000.wal",
+        ] {
+            assert_eq!(s3fs.try_parse_file_id(file_key), None);
+        }
+    }
+
+    #[test]
+    fn test_tagging() {
+        let tagging_deleted = Tagging::new_single_deleted();
+
+        assert_eq!(
+            tagging_deleted.to_xml(),
+            "<Tagging><TagSet><Tag><Key>deleted</Key><Value>true</Value></Tag></TagSet></Tagging>"
+        );
+        assert_eq!(tagging_deleted.to_url_encoded(), "deleted=true");
+        assert_eq!(
+            tagging_deleted.tag_set.tag,
+            Tagging::from_url_encoded("deleted=true").tag_set.tag
         );
     }
 }

@@ -2,6 +2,7 @@
 
 use std::{
     cmp,
+    collections::HashMap,
     iter::Iterator,
     ops::Deref,
     sync::{
@@ -13,15 +14,17 @@ use std::{
 use bytes::{Buf, BufMut, Bytes};
 use dashmap::DashMap;
 use kvenginepb as pb;
+use rand::Rng;
 use slog_global::*;
 use tikv_util::codec::number::U64_SIZE;
 
 use crate::{
     table::{
         self,
-        memtable::{self, CFTable},
+        blobtable::blobtable::BlobTable,
+        memtable::{self, CfTable},
         search,
-        sstable::{L0Table, SSTable},
+        sstable::{L0Table, SsTable},
     },
     Iterator as TableIterator, *,
 };
@@ -30,8 +33,7 @@ pub struct Shard {
     pub engine_id: u64,
     pub id: u64,
     pub ver: u64,
-    pub start: Bytes,
-    pub end: Bytes,
+    pub range: ShardRange,
     pub parent_id: u64,
     pub(crate) data: RwLock<ShardData>,
     pub(crate) opt: Arc<Options>,
@@ -43,7 +45,7 @@ pub struct Shard {
     pub(crate) compacting: AtomicBool,
     pub(crate) initial_flushed: AtomicBool,
 
-    pub(crate) base_version: u64,
+    pub(crate) base_version: AtomicU64,
 
     pub(crate) estimated_size: AtomicU64,
     pub(crate) estimated_entries: AtomicU64,
@@ -71,25 +73,29 @@ pub const TRIM_OVER_BOUND: &str = "_trim_over_bound";
 pub const TRIM_OVER_BOUND_ENABLE: &[u8] = &[1];
 pub const TRIM_OVER_BOUND_DISABLE: &[u8] = b"";
 
+impl Deref for Shard {
+    type Target = ShardRange;
+
+    fn deref(&self) -> &Self::Target {
+        &self.range
+    }
+}
+
 impl Shard {
     pub fn new(
         engine_id: u64,
         props: &pb::Properties,
         ver: u64,
-        start: &[u8],
-        end: &[u8],
+        range: ShardRange,
         opt: Arc<Options>,
     ) -> Self {
-        let start = Bytes::copy_from_slice(start);
-        let end = Bytes::copy_from_slice(end);
         let shard = Self {
             engine_id,
             id: props.shard_id,
             ver,
-            start: start.clone(),
-            end: end.clone(),
+            range: range.clone(),
             parent_id: 0,
-            data: RwLock::new(ShardData::new_empty(start, end)),
+            data: RwLock::new(ShardData::new_empty(range)),
             opt,
             active: Default::default(),
             properties: Properties::new().apply_pb(props),
@@ -124,14 +130,8 @@ impl Shard {
 
     pub fn new_for_ingest(engine_id: u64, cs: &pb::ChangeSet, opt: Arc<Options>) -> Self {
         let snap = cs.get_snapshot();
-        let mut shard = Self::new(
-            engine_id,
-            snap.get_properties(),
-            cs.shard_ver,
-            snap.start.as_slice(),
-            snap.end.as_slice(),
-            opt,
-        );
+        let range = ShardRange::from_snap(snap);
+        let mut shard = Self::new(engine_id, snap.get_properties(), cs.shard_ver, range, opt);
         if !cs.has_parent() {
             store_bool(&shard.initial_flushed, true);
         } else {
@@ -139,7 +139,7 @@ impl Shard {
             let mut guard = shard.parent_snap.write().unwrap();
             *guard = Some(cs.get_parent().get_snapshot().clone());
         }
-        shard.base_version = snap.base_version;
+        shard.base_version.store(snap.base_version, Release);
         shard.meta_seq.store(cs.sequence, Release);
         shard.write_sequence.store(snap.data_sequence, Release);
         info!(
@@ -149,6 +149,10 @@ impl Shard {
             &cs,
         );
         shard
+    }
+
+    pub(crate) fn id_ver(&self) -> IdVer {
+        IdVer::new(self.id, self.ver)
     }
 
     pub(crate) fn set_active(&self, active: bool) {
@@ -187,16 +191,24 @@ impl Shard {
         store_u64(&self.estimated_kv_size, kv_size);
     }
 
+    pub(crate) fn gen_rand_schedule_del_range_time(&self) -> u64 {
+        let now = time::precise_time_ns();
+        let delay = rand::thread_rng().gen_range(0..self.opt.max_del_range_delay.as_nanos() as u64);
+        now + delay
+    }
+
     pub(crate) fn set_del_prefix(&self, val: &[u8]) {
+        let mut del_prefixes = DeletePrefixes::unmarshal(val, self.inner_key_off);
+        del_prefixes.schedule_at = self.gen_rand_schedule_del_range_time();
         let data = self.get_data();
         let new_data = ShardData::new(
-            data.start.clone(),
-            data.end.clone(),
-            DeletePrefixes::unmarshal(val),
+            data.range.clone(),
+            del_prefixes,
             data.truncate_ts,
             data.trim_over_bound,
             data.mem_tbls.clone(),
             data.l0_tbls.clone(),
+            data.blob_tbl_map.clone(),
             data.cfs.clone(),
         );
         self.set_data(new_data);
@@ -204,14 +216,16 @@ impl Shard {
 
     pub(crate) fn merge_del_prefix(&self, prefix: &[u8]) {
         let data = self.get_data();
+        let mut del_prefixes = data.del_prefixes.merge(prefix);
+        del_prefixes.schedule_at = self.gen_rand_schedule_del_range_time();
         let new_data = ShardData::new(
-            data.start.clone(),
-            data.end.clone(),
-            data.del_prefixes.merge(prefix),
+            data.range.clone(),
+            del_prefixes,
             data.truncate_ts,
             data.trim_over_bound,
             data.mem_tbls.clone(),
             data.l0_tbls.clone(),
+            data.blob_tbl_map.clone(),
             data.cfs.clone(),
         );
         self.set_data(new_data);
@@ -234,13 +248,13 @@ impl Shard {
         }
 
         let new_data = ShardData::new(
-            data.start.clone(),
-            data.end.clone(),
+            data.range.clone(),
             data.del_prefixes.clone(),
             Some(truncate_ts),
             data.trim_over_bound,
             data.mem_tbls.clone(),
             data.l0_tbls.clone(),
+            data.blob_tbl_map.clone(),
             data.cfs.clone(),
         );
         self.set_data(new_data);
@@ -254,13 +268,13 @@ impl Shard {
 
         let data = self.get_data();
         let new_data = ShardData::new(
-            data.start.clone(),
-            data.end.clone(),
+            data.range.clone(),
             data.del_prefixes.clone(),
             data.truncate_ts,
             trim_over_bound,
             data.mem_tbls.clone(),
             data.l0_tbls.clone(),
+            data.blob_tbl_map.clone(),
             data.cfs.clone(),
         );
         self.set_data(new_data);
@@ -281,10 +295,17 @@ impl Shard {
             return None;
         }
         if max_level.tables.len() == 1 {
-            return max_level.tables[0].get_suggest_split_key();
+            if let Some(key) = max_level.tables[0].get_suggest_split_key() {
+                return Some([self.key_prefix(), key.to_vec().as_slice()].concat().into());
+            }
+            return None;
         }
         let tbl_idx = max_level.tables.len() * 2 / 3;
-        Some(Bytes::copy_from_slice(max_level.tables[tbl_idx].smallest()))
+        Some(
+            [self.key_prefix(), max_level.tables[tbl_idx].smallest()]
+                .concat()
+                .into(),
+        )
     }
 
     pub fn get_evenly_split_keys(&self, count: usize) -> Option<Vec<Bytes>> {
@@ -309,22 +330,22 @@ impl Shard {
                 .skip(1)
                 .filter_map(|tbl| {
                     (self.overlap_key(tbl.smallest()))
-                        .then(|| Bytes::copy_from_slice(tbl.smallest()))
+                        .then(|| [self.key_prefix(), tbl.smallest()].concat().into())
                 })
                 .collect(),
         )
     }
 
-    pub fn overlap_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
-        self.start <= biggest && smallest < self.end
+    pub(crate) fn overlap_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+        self.inner_start() <= biggest && smallest < self.inner_end()
     }
 
-    pub fn cover_full_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
-        self.start <= smallest && biggest < self.end
+    pub(crate) fn cover_full_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+        self.inner_start() <= smallest && biggest < self.inner_end()
     }
 
-    pub fn overlap_key(&self, key: &[u8]) -> bool {
-        self.start <= key && key < self.end
+    pub(crate) fn overlap_key(&self, key: &[u8]) -> bool {
+        self.inner_start() <= key && key < self.inner_end()
     }
 
     pub fn get_property(&self, key: &str) -> Option<Bytes> {
@@ -336,7 +357,7 @@ impl Shard {
     }
 
     pub(crate) fn load_mem_table_version(&self) -> u64 {
-        self.base_version + self.write_sequence.load(Acquire)
+        self.get_base_version() + self.write_sequence.load(Acquire)
     }
 
     pub fn get_all_files(&self) -> Vec<u64> {
@@ -344,32 +365,18 @@ impl Shard {
         data.get_all_files()
     }
 
-    pub fn split_mem_tables(&self, parent_mem_tbls: &[CFTable]) -> Vec<CFTable> {
-        let mut new_mem_tbls = vec![CFTable::new()];
+    pub(crate) fn split_mem_tables(&self, parent_mem_tbls: &[CfTable]) -> Vec<CfTable> {
+        let mut new_mem_tbls = vec![CfTable::new()];
         for old_mem_tbl in parent_mem_tbls {
-            if old_mem_tbl.has_data_in_range(self.start.chunk(), self.end.chunk()) {
+            if old_mem_tbl.has_data_in_range(self.inner_start(), self.inner_end()) {
                 new_mem_tbls.push(old_mem_tbl.new_split());
             }
         }
         new_mem_tbls
     }
 
-    pub fn add_mem_table(&self, mem_tbl: CFTable) {
-        let old_data = self.get_data();
-        let mut new_mem_tbls = Vec::with_capacity(old_data.mem_tbls.len());
-        new_mem_tbls.push(mem_tbl);
-        new_mem_tbls.extend_from_slice(old_data.mem_tbls.as_slice());
-        let new_data = ShardData::new(
-            self.start.clone(),
-            self.end.clone(),
-            old_data.del_prefixes.clone(),
-            old_data.truncate_ts,
-            old_data.trim_over_bound,
-            new_mem_tbls,
-            old_data.l0_tbls.clone(),
-            old_data.cfs.clone(),
-        );
-        self.set_data(new_data);
+    pub fn get_base_version(&self) -> u64 {
+        self.base_version.load(Ordering::Acquire)
     }
 
     pub fn get_write_sequence(&self) -> u64 {
@@ -406,22 +413,51 @@ impl Shard {
     }
 
     fn refresh_compaction_priority(&self) {
-        let mut max_pri = CompactionPriority::default();
-        max_pri.shard_id = self.id;
-        max_pri.shard_ver = self.ver;
-        max_pri.cf = -1;
         let data = self.get_data();
+        if !data.blob_tbl_map.is_empty() {
+            let blob_table_utilization = {
+                let mut in_use_blob_size = 0;
+                let mut total_blob_size = 0;
+                for l0 in &data.l0_tbls {
+                    in_use_blob_size += l0.total_blob_size();
+                }
+                for cf in &data.cfs {
+                    for lh in &cf.levels {
+                        for sst in &(*lh.tables) {
+                            in_use_blob_size += sst.total_blob_size();
+                        }
+                    }
+                }
+
+                for blob_table in data.blob_tbl_map.values() {
+                    total_blob_size += blob_table.total_blob_size();
+                }
+                if total_blob_size == 0 {
+                    1.0
+                } else {
+                    in_use_blob_size as f64 / total_blob_size as f64
+                }
+            };
+            if blob_table_utilization < self.opt.blob_table_gc_ratio {
+                let mut lock = self.compaction_priority.write().unwrap();
+                *lock = Some(CompactionPriority::Major);
+                return;
+            }
+        }
+        let mut score = 0.0;
+        let mut cf_with_highest_score = -1;
+        let mut level_with_highest_score = 0;
         if data.l0_tbls.len() > 2 {
             let size_score = data.get_l0_total_size() as f64 / self.opt.base_size as f64;
             let num_tbl_score = data.l0_tbls.len() as f64 / 4.0;
-            max_pri.score = size_score * 0.6 + num_tbl_score * 0.4;
+            score = size_score * 0.6 + num_tbl_score * 0.4;
         }
         for l0 in &data.l0_tbls {
             if !data.cover_full_table(l0.smallest(), l0.biggest()) {
                 // set highest priority for newly split L0.
-                max_pri.score += 2.0;
+                score += 2.0;
                 let mut lock = self.compaction_priority.write().unwrap();
-                *lock = Some(max_pri);
+                *lock = Some(CompactionPriority::L0 { score });
                 return;
             }
         }
@@ -429,17 +465,31 @@ impl Shard {
             let scf = data.get_cf(cf);
             for lh in &scf.levels[..scf.levels.len() - 1] {
                 let level_total_size = data.get_level_total_size(lh);
-                let score = level_total_size as f64
+                let lvl_score = level_total_size as f64
                     / ((self.opt.base_size as f64) * 10f64.powf((lh.level - 1) as f64));
-                if max_pri.score < score {
-                    max_pri.score = score;
-                    max_pri.level = lh.level;
-                    max_pri.cf = cf as isize;
+                if score < lvl_score {
+                    score = lvl_score;
+                    level_with_highest_score = lh.level;
+                    cf_with_highest_score = cf as isize;
                 }
             }
         }
+        let priority = if score > 1.0 {
+            let max_pri = if level_with_highest_score == 0 {
+                CompactionPriority::L0 { score }
+            } else {
+                CompactionPriority::L1Plus {
+                    cf: cf_with_highest_score,
+                    level: level_with_highest_score,
+                    score,
+                }
+            };
+            Some(max_pri)
+        } else {
+            None
+        };
         let mut lock = self.compaction_priority.write().unwrap();
-        *lock = (max_pri.score > 1.0).then(|| max_pri);
+        *lock = priority;
     }
 
     pub(crate) fn get_compaction_priority(&self) -> Option<CompactionPriority> {
@@ -477,16 +527,17 @@ impl Shard {
     }
 
     pub fn tag(&self) -> ShardTag {
-        ShardTag::new(self.engine_id, IDVer::new(self.id, self.ver))
+        ShardTag::new(self.engine_id, IdVer::new(self.id, self.ver))
     }
 
     pub(crate) fn ready_to_compact(&self) -> bool {
+        let data = self.get_data();
         self.is_active()
             && self.get_initial_flushed()
             && (self.get_compaction_priority().is_some()
-                || self.get_data().ready_to_destroy_range()
-                || self.get_data().ready_to_truncate_ts()
-                || self.get_data().ready_to_trim_over_bound())
+                || data.ready_to_destroy_range()
+                || data.ready_to_truncate_ts()
+                || data.ready_to_trim_over_bound())
     }
 
     pub(crate) fn add_parent_mem_tbls(&self, parent: Arc<Shard>) {
@@ -496,16 +547,34 @@ impl Shard {
         let mem_tbl_vers: Vec<u64> = mem_tbls.iter().map(|tbl| tbl.get_version()).collect();
         info!("{} add parent mem-tables {:?}", self.tag(), mem_tbl_vers);
         let new_data = ShardData::new(
-            shard_data.start.clone(),
-            shard_data.end.clone(),
+            shard_data.range.clone(),
             shard_data.del_prefixes.clone(),
             shard_data.truncate_ts,
             shard_data.trim_over_bound,
             mem_tbls,
             shard_data.l0_tbls.clone(),
+            shard_data.blob_tbl_map.clone(),
             shard_data.cfs.clone(),
         );
         self.set_data(new_data);
+    }
+
+    pub(crate) fn inner_start(&self) -> &[u8] {
+        &self.outer_start[self.inner_key_off..]
+    }
+
+    pub(crate) fn inner_end(&self) -> &[u8] {
+        if self.inner_key_off == self.outer_end.len() {
+            return GLOBAL_SHARD_END_KEY;
+        }
+        &self.outer_end[self.inner_key_off..]
+    }
+
+    pub(crate) fn key_prefix(&self) -> &[u8] {
+        if self.inner_key_off > 0 {
+            return &self.outer_start[0..self.inner_key_off];
+        }
+        &[]
     }
 }
 
@@ -523,39 +592,41 @@ impl Deref for ShardData {
 }
 
 impl ShardData {
-    pub fn new_empty(start: Bytes, end: Bytes) -> Self {
+    pub(crate) fn new_empty(shard_range: ShardRange) -> Self {
+        let inner_key_off = shard_range.inner_key_off;
         Self::new(
-            start,
-            end,
-            DeletePrefixes::default(),
+            shard_range,
+            DeletePrefixes::new_with_inner_key_off(inner_key_off),
             None,
             false,
-            vec![CFTable::new()],
+            vec![CfTable::new()],
             vec![],
-            [ShardCF::new(0), ShardCF::new(1), ShardCF::new(2)],
+            Arc::new(HashMap::new()),
+            [ShardCf::new(0), ShardCf::new(1), ShardCf::new(2)],
         )
     }
 
-    pub fn new(
-        start: Bytes,
-        end: Bytes,
+    pub(crate) fn new(
+        range: ShardRange,
         del_prefixes: DeletePrefixes,
         truncate_ts: Option<TruncateTs>,
         trim_over_bound: bool,
-        mem_tbls: Vec<memtable::CFTable>,
+        mem_tbls: Vec<memtable::CfTable>,
         l0_tbls: Vec<L0Table>,
-        cfs: [ShardCF; 3],
+        blob_tbl_map: Arc<HashMap<u64, BlobTable>>,
+        cfs: [ShardCf; 3],
     ) -> Self {
         assert!(!mem_tbls.is_empty());
+
         Self {
             core: Arc::new(ShardDataCore {
-                start,
-                end,
+                range,
                 del_prefixes,
                 truncate_ts,
                 trim_over_bound,
                 mem_tbls,
                 l0_tbls,
+                blob_tbl_map,
                 cfs,
             }),
         }
@@ -563,22 +634,30 @@ impl ShardData {
 }
 
 pub(crate) struct ShardDataCore {
-    pub(crate) start: Bytes,
-    pub(crate) end: Bytes,
+    pub(crate) range: ShardRange,
     pub(crate) del_prefixes: DeletePrefixes,
     pub(crate) truncate_ts: Option<TruncateTs>,
     pub(crate) trim_over_bound: bool,
-    pub(crate) mem_tbls: Vec<memtable::CFTable>,
+    pub(crate) mem_tbls: Vec<memtable::CfTable>,
     pub(crate) l0_tbls: Vec<L0Table>,
-    pub(crate) cfs: [ShardCF; 3],
+    pub(crate) blob_tbl_map: Arc<HashMap<u64, BlobTable>>,
+    pub(crate) cfs: [ShardCf; 3],
+}
+
+impl Deref for ShardDataCore {
+    type Target = ShardRange;
+
+    fn deref(&self) -> &Self::Target {
+        &self.range
+    }
 }
 
 impl ShardDataCore {
-    pub fn get_writable_mem_table(&self) -> &memtable::CFTable {
+    pub fn get_writable_mem_table(&self) -> &memtable::CfTable {
         self.mem_tbls.first().unwrap()
     }
 
-    pub(crate) fn get_cf(&self, cf: usize) -> &ShardCF {
+    pub(crate) fn get_cf(&self, cf: usize) -> &ShardCf {
         &self.cfs[cf]
     }
 
@@ -586,6 +665,9 @@ impl ShardDataCore {
         let mut files = Vec::new();
         for l0 in &self.l0_tbls {
             files.push(l0.id());
+        }
+        for blob_tbl_id in self.blob_tbl_map.keys() {
+            files.push(*blob_tbl_id);
         }
         self.for_each_level(|_cf, lh| {
             for tbl in lh.tables.iter() {
@@ -599,7 +681,7 @@ impl ShardDataCore {
 
     pub(crate) fn for_each_level<F>(&self, mut f: F)
     where
-        F: FnMut(usize /*cf*/, &LevelHandler) -> bool, /*stopped*/
+        F: FnMut(usize /* cf */, &LevelHandler) -> bool, // stopped
     {
         for cf in 0..NUM_CFS {
             let scf = self.get_cf(cf);
@@ -643,6 +725,20 @@ impl ShardDataCore {
         (total_size, total_entries, total_kv_size, max_ts)
     }
 
+    // Return (total_size, total_blob_size).
+    // pub(crate) fn get_blob_total_size(&self) -> u64 {
+    // let mut total_size = 0u64;
+    //
+    // self.blob_tbls.iter().for_each(|blob_tbl| {
+    // if self.cover_full_table(blob_tbl.smallest_key(), blob_tbl.biggest_key()) {
+    // total_size += blob_tbl.size();
+    // } else {
+    // total_size += blob_tbl.size() / 2;
+    // };
+    // });
+    // total_size
+    // }
+
     pub(crate) fn get_level_total_size(&self, level: &LevelHandler) -> u64 {
         let (total_size, ..) = self.get_level_stats(level);
         total_size
@@ -666,13 +762,13 @@ impl ShardDataCore {
         (total_size, total_entries, total_kv_size, max_ts)
     }
 
-    fn is_over_bound_table(&self, level: &LevelHandler, i: usize, tbl: &SSTable) -> bool {
+    fn is_over_bound_table(&self, level: &LevelHandler, i: usize, tbl: &SsTable) -> bool {
         let is_bound = i == 0 || i == level.tables.len() - 1;
         is_bound && !self.cover_full_table(tbl.smallest(), tbl.biggest())
     }
 
-    pub fn cover_full_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
-        self.start <= smallest && biggest < self.end
+    pub(crate) fn cover_full_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+        self.inner_start() <= smallest && biggest < self.inner_end()
     }
 
     pub fn all_presisted(&self) -> bool {
@@ -682,16 +778,16 @@ impl ShardDataCore {
     pub fn writable_mem_table_has_data_in_deleted_prefix(&self) -> bool {
         let mem_tbl = self.get_writable_mem_table();
         self.del_prefixes
-            .delete_ranges()
+            .inner_delete_ranges()
             .any(|(start, end)| mem_tbl.has_data_in_range(start, end))
     }
 
     pub fn ready_to_destroy_range(&self) -> bool {
-        !self.del_prefixes.is_empty()
+        !self.del_prefixes.is_empty() && self.del_prefixes.after_scheduled_time()
             // No memtable contains data covered by deleted prefixes.
             && !self.mem_tbls.iter().any(|mem_tbl| {
                 self.del_prefixes
-                    .delete_ranges()
+                    .inner_delete_ranges()
                     .any(|(start, end)| mem_tbl.has_data_in_range(start, end))
             })
     }
@@ -702,12 +798,12 @@ impl ShardDataCore {
                 let skl = mem_tbl.get_cf(cf);
                 let mut iter = skl.new_iterator(false);
                 iter.rewind();
-                if iter.valid() && iter.key() < &self.start {
+                if iter.valid() && iter.key() < self.inner_start() {
                     return true;
                 }
                 let mut rev_iter = skl.new_iterator(true);
                 rev_iter.rewind();
-                if iter.valid() && iter.key() >= &self.end {
+                if iter.valid() && iter.key() >= self.inner_end() {
                     return true;
                 }
             }
@@ -717,14 +813,14 @@ impl ShardDataCore {
 
     pub(crate) fn has_file_over_bound_data(&self) -> bool {
         for l0 in &self.l0_tbls {
-            if l0.smallest() < &self.start || l0.biggest() >= &self.end {
+            if l0.smallest() < self.inner_start() || l0.biggest() >= self.inner_end() {
                 return true;
             }
         }
         for cf in 0..NUM_CFS {
             let scf = &self.cfs[cf];
             for level in &scf.levels {
-                if level.has_over_bound_data(self.start.chunk(), self.end.chunk()) {
+                if level.has_over_bound_data(self.inner_start().chunk(), self.inner_end().chunk()) {
                     return true;
                 }
             }
@@ -770,33 +866,33 @@ pub fn load_bool(ptr: &AtomicBool) -> bool {
     ptr.load(Acquire)
 }
 
-pub(crate) struct ShardCFBuilder {
+pub(crate) struct ShardCfBuilder {
     levels: Vec<LevelHandlerBuilder>,
 }
 
-impl ShardCFBuilder {
+impl ShardCfBuilder {
     pub(crate) fn new(cf: usize) -> Self {
         Self {
             levels: vec![LevelHandlerBuilder::new(); CF_LEVELS[cf]],
         }
     }
 
-    pub(crate) fn build(&mut self) -> ShardCF {
+    pub(crate) fn build(&mut self) -> ShardCf {
         let mut levels = Vec::with_capacity(self.levels.len());
         for i in 0..self.levels.len() {
             levels.push(self.levels[i].build(i + 1))
         }
-        ShardCF { levels }
+        ShardCf { levels }
     }
 
-    pub(crate) fn add_table(&mut self, tbl: SSTable, level: usize) {
+    pub(crate) fn add_table(&mut self, tbl: SsTable, level: usize) {
         self.levels[level - 1].add_table(tbl)
     }
 }
 
 #[derive(Clone)]
 struct LevelHandlerBuilder {
-    tables: Option<Vec<SSTable>>,
+    tables: Option<Vec<SsTable>>,
 }
 
 impl LevelHandlerBuilder {
@@ -812,7 +908,7 @@ impl LevelHandlerBuilder {
         LevelHandler::new(level, tables)
     }
 
-    fn add_table(&mut self, tbl: SSTable) {
+    fn add_table(&mut self, tbl: SsTable) {
         if self.tables.is_none() {
             self.tables = Some(vec![])
         }
@@ -821,32 +917,17 @@ impl LevelHandlerBuilder {
 }
 
 #[derive(Clone)]
-pub(crate) struct ShardCF {
+pub(crate) struct ShardCf {
     pub(crate) levels: Vec<LevelHandler>,
 }
 
-impl ShardCF {
+impl ShardCf {
     pub(crate) fn new(cf: usize) -> Self {
         let mut levels = vec![];
         for j in 1..=CF_LEVELS[cf] {
             levels.push(LevelHandler::new(j, vec![]));
         }
         Self { levels }
-    }
-
-    pub(crate) fn set_has_overlapping(&self, cd: &mut CompactDef) {
-        if cd.move_down() {
-            return;
-        }
-        let kr = get_key_range(&cd.top);
-        for lvl_idx in (cd.level + 1)..self.levels.len() {
-            let lh = &self.levels[lvl_idx];
-            let (left, right) = lh.overlapping_tables(&kr);
-            if left < right {
-                cd.has_overlap = true;
-                return;
-            }
-        }
     }
 
     pub(crate) fn get_level(&self, level: usize) -> &LevelHandler {
@@ -861,13 +942,13 @@ impl ShardCF {
 
 #[derive(Default, Clone)]
 pub struct LevelHandler {
-    pub(crate) tables: Arc<Vec<SSTable>>,
+    pub(crate) tables: Arc<Vec<SsTable>>,
     pub(crate) level: usize,
     pub(crate) max_ts: u64,
 }
 
 impl LevelHandler {
-    pub fn new(level: usize, tables: Vec<SSTable>) -> Self {
+    pub fn new(level: usize, tables: Vec<SsTable>) -> Self {
         let mut max_ts = 0;
         for tbl in &tables {
             if max_ts < tbl.max_ts {
@@ -889,8 +970,14 @@ impl LevelHandler {
         )
     }
 
-    pub fn get(&self, key: &[u8], version: u64, key_hash: u64) -> table::Value {
-        self.get_in_table(key, version, key_hash, self.get_table(key))
+    pub fn get(
+        &self,
+        key: &[u8],
+        version: u64,
+        key_hash: u64,
+        out_val_owner: &mut Vec<u8>,
+    ) -> table::Value {
+        self.get_in_table(key, version, key_hash, self.get_table(key), out_val_owner)
     }
 
     fn get_in_table(
@@ -898,15 +985,17 @@ impl LevelHandler {
         key: &[u8],
         version: u64,
         key_hash: u64,
-        tbl: Option<&SSTable>,
+        tbl: Option<&SsTable>,
+        out_val_owner: &mut Vec<u8>,
     ) -> table::Value {
         if tbl.is_none() {
             return table::Value::new();
         }
-        tbl.unwrap().get(key, version, key_hash)
+        tbl.unwrap()
+            .get(key, version, key_hash, out_val_owner, self.level)
     }
 
-    pub(crate) fn get_table(&self, key: &[u8]) -> Option<&SSTable> {
+    pub(crate) fn get_table(&self, key: &[u8]) -> Option<&SsTable> {
         let idx = search(self.tables.len(), |i| self.tables[i].biggest() >= key);
         if idx >= self.tables.len() {
             return None;
@@ -914,7 +1003,7 @@ impl LevelHandler {
         Some(&self.tables[idx])
     }
 
-    pub(crate) fn get_table_by_id(&self, id: u64) -> Option<SSTable> {
+    pub(crate) fn get_table_by_id(&self, id: u64) -> Option<SsTable> {
         for tbl in self.tables.as_slice() {
             if tbl.id() == id {
                 return Some(tbl.clone());
@@ -951,12 +1040,18 @@ impl LevelHandler {
         }
     }
 
-    pub(crate) fn get_newer(&self, key: &[u8], version: u64, key_hash: u64) -> table::Value {
+    pub(crate) fn get_newer(
+        &self,
+        key: &[u8],
+        version: u64,
+        key_hash: u64,
+        out_val_owner: &mut Vec<u8>,
+    ) -> table::Value {
         if self.max_ts < version {
             return table::Value::new();
         }
         if let Some(tbl) = self.get_table(key) {
-            return tbl.get_newer(key, version, key_hash);
+            return tbl.get_newer(key, version, key_hash, out_val_owner, self.level);
         }
         table::Value::new()
     }
@@ -1043,12 +1138,14 @@ pub fn get_splitting_start_end<'a: 'b, 'b>(
     (start_key, end_key)
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct DeletePrefixes {
     pub(crate) prefixes: Vec<Vec<u8>>,
     // prefixes_nexts are prefix-next keys of prefixes, i.e., [prefixes[i], prefixes_nexts[i]) is
     // the range that should be destroyed.
     prefixes_nexts: Vec<Vec<u8>>,
+    pub(crate) schedule_at: u64,
+    pub(crate) inner_key_off: usize,
 }
 
 impl std::fmt::Debug for DeletePrefixes {
@@ -1067,6 +1164,14 @@ impl std::fmt::Debug for DeletePrefixes {
 }
 
 impl DeletePrefixes {
+    pub fn new_with_inner_key_off(inner_key_off: usize) -> Self {
+        Self {
+            prefixes: vec![],
+            prefixes_nexts: vec![],
+            schedule_at: 0,
+            inner_key_off,
+        }
+    }
     fn gen_prefixes_nexts(prefixes: &[Vec<u8>]) -> Vec<Vec<u8>> {
         prefixes
             .iter()
@@ -1082,7 +1187,13 @@ impl DeletePrefixes {
         self.prefixes.is_empty()
     }
 
+    pub fn after_scheduled_time(&self) -> bool {
+        time::precise_time_ns() > self.schedule_at
+    }
+
     pub fn merge(&self, prefix: &[u8]) -> Self {
+        assert!(prefix.len() >= self.inner_key_off);
+
         let mut new_prefixes = vec![];
         for old_prefix in &self.prefixes {
             if prefix.starts_with(old_prefix) {
@@ -1101,6 +1212,8 @@ impl DeletePrefixes {
         Self {
             prefixes: new_prefixes,
             prefixes_nexts: new_prefixes_nexts,
+            schedule_at: 0,
+            inner_key_off: self.inner_key_off,
         }
     }
 
@@ -1121,7 +1234,7 @@ impl DeletePrefixes {
         buf
     }
 
-    pub fn unmarshal(mut data: &[u8]) -> Self {
+    pub fn unmarshal(mut data: &[u8], inner_key_off: usize) -> Self {
         let mut prefixes = vec![];
         while !data.is_empty() {
             let len = data.get_u16_le() as usize;
@@ -1132,10 +1245,12 @@ impl DeletePrefixes {
         Self {
             prefixes,
             prefixes_nexts,
+            schedule_at: 0,
+            inner_key_off,
         }
     }
 
-    pub fn build_split(&self, start: &[u8], end: &[u8]) -> Self {
+    pub fn build_split(&self, start: &[u8], end: &[u8], inner_key_off: usize) -> Self {
         let prefixes: Vec<_> = self
             .prefixes
             .iter()
@@ -1145,27 +1260,55 @@ impl DeletePrefixes {
             .cloned()
             .collect();
         let prefixes_nexts = DeletePrefixes::gen_prefixes_nexts(&prefixes);
+        let scheduled_at = self.schedule_at;
         Self {
             prefixes,
             prefixes_nexts,
+            schedule_at: scheduled_at,
+            inner_key_off,
         }
     }
 
-    pub fn cover_prefix(&self, prefix: &[u8]) -> bool {
-        self.prefixes.iter().any(|old| prefix.starts_with(old))
+    pub(crate) fn cover_prefix(&self, inner_prefix: &[u8]) -> bool {
+        let inner_key_off = self.inner_key_off;
+        self.prefixes.iter().any(|p| {
+            if inner_key_off >= p.len() {
+                return true;
+            }
+            let inner_p = &p[inner_key_off..];
+            inner_prefix.starts_with(inner_p)
+        })
     }
 
-    pub fn cover_range(&self, start: &[u8], end: &[u8]) -> bool {
-        self.prefixes
-            .iter()
-            .any(|p| start.starts_with(p) && end.starts_with(p))
+    pub(crate) fn cover_range(&self, inner_start: &[u8], inner_end: &[u8]) -> bool {
+        let inner_key_off = self.inner_key_off;
+        self.prefixes.iter().any(|p| {
+            if inner_key_off >= p.len() {
+                return true;
+            }
+            let inner_p = &p[inner_key_off..];
+            inner_start.starts_with(inner_p) && inner_end.starts_with(inner_p)
+        })
     }
 
-    pub fn delete_ranges(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+    pub(crate) fn inner_delete_ranges(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        let inner_key_off = self.inner_key_off;
         self.prefixes
             .iter()
-            .map(|p| p.as_slice())
-            .zip(self.prefixes_nexts.iter().map(|p| p.as_slice()))
+            .map(move |p| {
+                if inner_key_off >= p.len() {
+                    &[]
+                } else {
+                    &p[inner_key_off..]
+                }
+            })
+            .zip(self.prefixes_nexts.iter().map(move |p| {
+                if inner_key_off >= p.len() {
+                    GLOBAL_SHARD_END_KEY
+                } else {
+                    &p[inner_key_off..]
+                }
+            }))
     }
 }
 
@@ -1202,116 +1345,180 @@ pub(crate) fn need_update_truncate_ts(cur: Option<TruncateTs>, new: TruncateTs) 
     new <= cur.unwrap()
 }
 
+#[derive(Clone, Default)]
+pub struct ShardRange {
+    pub outer_start: Bytes,
+    pub outer_end: Bytes,
+    pub inner_key_off: usize,
+}
+
+impl ShardRange {
+    pub fn new(outer_start: &[u8], outer_end: &[u8], inner_key_off: usize) -> Self {
+        Self {
+            outer_start: Bytes::from(outer_start.to_vec()),
+            outer_end: Bytes::from(outer_end.to_vec()),
+            inner_key_off,
+        }
+    }
+
+    pub(crate) fn from_snap(snap: &kvenginepb::Snapshot) -> Self {
+        Self::new(
+            snap.get_outer_start(),
+            snap.get_outer_end(),
+            snap.inner_key_off as usize,
+        )
+    }
+
+    pub fn inner_start(&self) -> &[u8] {
+        &self.outer_start[self.inner_key_off..]
+    }
+
+    pub fn inner_end(&self) -> &[u8] {
+        if self.inner_key_off == self.outer_end.len() {
+            return GLOBAL_SHARD_END_KEY;
+        }
+        &self.outer_end[self.inner_key_off..]
+    }
+
+    pub(crate) fn prefix(&self) -> &[u8] {
+        &self.outer_start[..self.inner_key_off]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_delete_prefix() {
-        let assert_prefix_invariant = |del_prefix: &DeletePrefixes| {
-            assert_eq!(del_prefix.prefixes.len(), del_prefix.prefixes_nexts.len());
-            assert_eq!(
-                del_prefix.prefixes.len(),
-                del_prefix.delete_ranges().count()
+        for inner_key_off in [0, 4] {
+            let assert_prefix_invariant = |del_prefix: &DeletePrefixes| {
+                assert_eq!(del_prefix.prefixes.len(), del_prefix.prefixes_nexts.len());
+                assert_eq!(
+                    del_prefix.prefixes.len(),
+                    del_prefix.inner_delete_ranges().count()
+                );
+                assert!(del_prefix.inner_delete_ranges().all(|(p, p_n)| {
+                    let mut p_c = p.to_vec();
+                    tidb_query_common::util::convert_to_prefix_next(&mut p_c);
+                    p_c == p_n
+                }));
+            };
+
+            let mut del_prefix = DeletePrefixes::new_with_inner_key_off(inner_key_off);
+            assert_prefix_invariant(&del_prefix);
+            assert!(del_prefix.is_empty());
+            del_prefix = del_prefix.merge("0000101".as_bytes());
+            assert!(!del_prefix.is_empty());
+            assert_eq!(del_prefix.prefixes.len(), 1);
+            assert_prefix_invariant(&del_prefix);
+            for prefix in ["00001010", "0000101"] {
+                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                assert!(del_prefix.cover_prefix(inner_prefix));
+            }
+            for prefix in ["000010", "0000103"] {
+                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                assert!(!del_prefix.cover_prefix(inner_prefix));
+            }
+
+            del_prefix = del_prefix.merge("0000105".as_bytes());
+            assert_prefix_invariant(&del_prefix);
+            let bin = del_prefix.marshal();
+            del_prefix = DeletePrefixes::unmarshal(&bin, inner_key_off);
+            assert_prefix_invariant(&del_prefix);
+            assert_eq!(del_prefix.prefixes.len(), 2);
+            for prefix in ["00001010", "0000101", "00001050", "0000105"] {
+                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                assert!(del_prefix.cover_prefix(inner_prefix));
+            }
+            for prefix in ["000010", "0000103"] {
+                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                assert!(!del_prefix.cover_prefix(inner_prefix));
+            }
+
+            del_prefix = del_prefix.merge("000010".as_bytes());
+            assert_prefix_invariant(&del_prefix);
+            assert_eq!(del_prefix.prefixes.len(), 1);
+            for prefix in ["000010", "0000101", "0000103", "0000104"] {
+                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                assert!(del_prefix.cover_prefix(inner_prefix));
+            }
+            for prefix in ["00001", "000011"] {
+                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                assert!(!del_prefix.cover_prefix(inner_prefix));
+            }
+
+            del_prefix = DeletePrefixes::new_with_inner_key_off(inner_key_off);
+            del_prefix = del_prefix.merge("0000101".as_bytes());
+            del_prefix = del_prefix.merge("0000102".as_bytes());
+            assert_prefix_invariant(&del_prefix);
+            for (start, end) in [("0000101", "00001011"), ("0000102", "00001022")] {
+                let inner_start = &start.as_bytes()[inner_key_off..];
+                let inner_end = &end.as_bytes()[inner_key_off..];
+                assert!(del_prefix.cover_range(inner_start, inner_end));
+            }
+            for (start, end) in [
+                ("000099", "0000100"),
+                ("0000101", "0000102"),
+                ("0000102", "0000103"),
+            ] {
+                let inner_start = &start.as_bytes()[inner_key_off..];
+                let inner_end = &end.as_bytes()[inner_key_off..];
+                assert!(!del_prefix.cover_range(inner_start, inner_end));
+            }
+
+            del_prefix = DeletePrefixes::new_with_inner_key_off(inner_key_off);
+            del_prefix = del_prefix.merge("0000101".as_bytes());
+            del_prefix = del_prefix.merge("00001033".as_bytes());
+            del_prefix = del_prefix.merge("00001055".as_bytes());
+            del_prefix = del_prefix.merge("0000107".as_bytes());
+            assert_prefix_invariant(&del_prefix);
+
+            let split_del_range =
+                del_prefix.build_split("00001033".as_bytes(), "00001055".as_bytes(), inner_key_off);
+            assert_prefix_invariant(&split_del_range);
+            assert_eq!(split_del_range.prefixes.len(), 1);
+            assert_eq!(&split_del_range.prefixes[0], "00001033".as_bytes());
+
+            let split_del_range =
+                del_prefix.build_split("00001034".as_bytes(), "00001055".as_bytes(), inner_key_off);
+            assert_prefix_invariant(&split_del_range);
+            assert_eq!(split_del_range.prefixes.len(), 0);
+
+            let split_del_range = del_prefix.build_split(
+                "000010334".as_bytes(),
+                "000010555".as_bytes(),
+                inner_key_off,
             );
-            assert!(del_prefix.delete_ranges().all(|(p, p_n)| {
-                let mut p_c = p.to_vec();
-                tidb_query_common::util::convert_to_prefix_next(&mut p_c);
-                p_c == p_n
-            }));
-        };
+            assert_prefix_invariant(&split_del_range);
+            assert_eq!(split_del_range.prefixes.len(), 2);
+            assert_eq!(&split_del_range.prefixes[0], "00001033".as_bytes());
+            assert_eq!(&split_del_range.prefixes[1], "00001055".as_bytes());
 
-        let mut del_prefix = DeletePrefixes::default();
-        assert_prefix_invariant(&del_prefix);
-        assert!(del_prefix.is_empty());
-        del_prefix = del_prefix.merge("101".as_bytes());
-        assert!(!del_prefix.is_empty());
-        assert_eq!(del_prefix.prefixes.len(), 1);
-        assert_prefix_invariant(&del_prefix);
-        for prefix in ["1010", "101"] {
-            assert!(del_prefix.cover_prefix(prefix.as_bytes()));
+            del_prefix = DeletePrefixes::new_with_inner_key_off(inner_key_off)
+                .merge("0000100".as_bytes())
+                .merge("0000200".as_bytes())
+                .merge("0000300".as_bytes());
+            assert_prefix_invariant(&del_prefix);
+            del_prefix = del_prefix.split(
+                &DeletePrefixes::new_with_inner_key_off(inner_key_off).merge("0000100".as_bytes()),
+            );
+            assert_prefix_invariant(&del_prefix);
+            assert_eq!(del_prefix.prefixes.len(), 2);
+            assert!(!del_prefix.cover_prefix(&"0000100".as_bytes()[inner_key_off..]));
+            assert!(del_prefix.cover_prefix(&"0000200".as_bytes()[inner_key_off..]));
+            assert!(del_prefix.cover_prefix(&"0000300".as_bytes()[inner_key_off..]));
+            del_prefix = del_prefix.split(
+                &DeletePrefixes::new_with_inner_key_off(inner_key_off)
+                    .merge("0000200".as_bytes())
+                    .merge("0000300".as_bytes()),
+            );
+            assert_prefix_invariant(&del_prefix);
+            assert_eq!(del_prefix.prefixes.len(), 0);
+            assert!(!del_prefix.cover_prefix(&"0000100".as_bytes()[inner_key_off..]));
+            assert!(!del_prefix.cover_prefix(&"0000200".as_bytes()[inner_key_off..]));
+            assert!(!del_prefix.cover_prefix(&"0000300".as_bytes()[inner_key_off..]));
         }
-        for prefix in ["10", "103"] {
-            assert!(!del_prefix.cover_prefix(prefix.as_bytes()));
-        }
-
-        del_prefix = del_prefix.merge("105".as_bytes());
-        assert_prefix_invariant(&del_prefix);
-        let bin = del_prefix.marshal();
-        del_prefix = DeletePrefixes::unmarshal(&bin);
-        assert_prefix_invariant(&del_prefix);
-        assert_eq!(del_prefix.prefixes.len(), 2);
-        for prefix in ["1010", "101", "1050", "105"] {
-            assert!(del_prefix.cover_prefix(prefix.as_bytes()));
-        }
-        for prefix in ["10", "103"] {
-            assert!(!del_prefix.cover_prefix(prefix.as_bytes()));
-        }
-
-        del_prefix = del_prefix.merge("10".as_bytes());
-        assert_prefix_invariant(&del_prefix);
-        assert_eq!(del_prefix.prefixes.len(), 1);
-        for prefix in ["10", "101", "103", "104"] {
-            assert!(del_prefix.cover_prefix(prefix.as_bytes()));
-        }
-        for prefix in ["1", "11"] {
-            assert!(!del_prefix.cover_prefix(prefix.as_bytes()));
-        }
-
-        del_prefix = DeletePrefixes::default();
-        del_prefix = del_prefix.merge("101".as_bytes());
-        del_prefix = del_prefix.merge("102".as_bytes());
-        assert_prefix_invariant(&del_prefix);
-        for (start, end) in [("101", "1011"), ("102", "1022")] {
-            assert!(del_prefix.cover_range(start.as_bytes(), end.as_bytes()));
-        }
-        for (start, end) in [("99", "100"), ("101", "102"), ("102", "103")] {
-            assert!(!del_prefix.cover_range(start.as_bytes(), end.as_bytes()));
-        }
-
-        del_prefix = DeletePrefixes::default();
-        del_prefix = del_prefix.merge("101".as_bytes());
-        del_prefix = del_prefix.merge("1033".as_bytes());
-        del_prefix = del_prefix.merge("1055".as_bytes());
-        del_prefix = del_prefix.merge("107".as_bytes());
-        assert_prefix_invariant(&del_prefix);
-
-        let split_del_range = del_prefix.build_split("1033".as_bytes(), "1055".as_bytes());
-        assert_prefix_invariant(&split_del_range);
-        assert_eq!(split_del_range.prefixes.len(), 1);
-        assert_eq!(&split_del_range.prefixes[0], "1033".as_bytes());
-
-        let split_del_range = del_prefix.build_split("1034".as_bytes(), "1055".as_bytes());
-        assert_prefix_invariant(&split_del_range);
-        assert_eq!(split_del_range.prefixes.len(), 0);
-
-        let split_del_range = del_prefix.build_split("10334".as_bytes(), "10555".as_bytes());
-        assert_prefix_invariant(&split_del_range);
-        assert_eq!(split_del_range.prefixes.len(), 2);
-        assert_eq!(&split_del_range.prefixes[0], "1033".as_bytes());
-        assert_eq!(&split_del_range.prefixes[1], "1055".as_bytes());
-
-        del_prefix = DeletePrefixes::default()
-            .merge("100".as_bytes())
-            .merge("200".as_bytes())
-            .merge("300".as_bytes());
-        assert_prefix_invariant(&del_prefix);
-        del_prefix = del_prefix.split(&DeletePrefixes::default().merge("100".as_bytes()));
-        assert_prefix_invariant(&del_prefix);
-        assert_eq!(del_prefix.prefixes.len(), 2);
-        assert!(!del_prefix.cover_prefix("100".as_bytes()));
-        assert!(del_prefix.cover_prefix("200".as_bytes()));
-        assert!(del_prefix.cover_prefix("300".as_bytes()));
-        del_prefix = del_prefix.split(
-            &DeletePrefixes::default()
-                .merge("200".as_bytes())
-                .merge("300".as_bytes()),
-        );
-        assert_prefix_invariant(&del_prefix);
-        assert_eq!(del_prefix.prefixes.len(), 0);
-        assert!(!del_prefix.cover_prefix("100".as_bytes()));
-        assert!(!del_prefix.cover_prefix("200".as_bytes()));
-        assert!(!del_prefix.cover_prefix("300".as_bytes()));
     }
 
     #[test]

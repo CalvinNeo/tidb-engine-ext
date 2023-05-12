@@ -14,28 +14,28 @@ use super::{Arena, SkipList};
 use crate::{Iterator, EXTRA_CF, NUM_CFS, WRITE_CF};
 
 #[derive(Clone)]
-pub struct CFTable {
-    pub core: Arc<CFTableCore>,
+pub struct CfTable {
+    pub core: Arc<CfTableCore>,
 }
 
-impl Deref for CFTable {
-    type Target = CFTableCore;
+impl Deref for CfTable {
+    type Target = CfTableCore;
 
     fn deref(&self) -> &Self::Target {
         &self.core
     }
 }
 
-impl Default for CFTable {
+impl Default for CfTable {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CFTable {
+impl CfTable {
     pub fn new() -> Self {
         Self {
-            core: Arc::new(CFTableCore::new()),
+            core: Arc::new(CfTableCore::new()),
         }
     }
 
@@ -48,7 +48,7 @@ impl CFTable {
         let ver = AtomicU64::new(self.ver.load(Ordering::Acquire));
         let props = Mutex::new(self.core.props.lock().unwrap().clone());
         Self {
-            core: Arc::new(CFTableCore {
+            core: Arc::new(CfTableCore {
                 tbls,
                 arena,
                 ver,
@@ -58,20 +58,20 @@ impl CFTable {
     }
 }
 
-pub struct CFTableCore {
+pub struct CfTableCore {
     tbls: [SkipList; NUM_CFS],
     arena: Arc<Arena>,
     ver: AtomicU64,
     props: Mutex<Option<kvenginepb::Properties>>,
 }
 
-impl Default for CFTableCore {
+impl Default for CfTableCore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CFTableCore {
+impl CfTableCore {
     pub fn new() -> Self {
         let arena = Arc::new(Arena::new());
         Self {

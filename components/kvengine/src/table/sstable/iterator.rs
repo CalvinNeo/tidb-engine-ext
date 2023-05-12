@@ -1,12 +1,17 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::mem;
+use std::{mem, sync::Arc};
 
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, Bytes, BytesMut};
 
-use super::{builder::META_HAS_OLD, SSTable};
-use crate::table::{search, sstable::BLOCK_FORMAT_V1, table, LocalAddr};
+use super::SsTable;
+use crate::table::{
+    search,
+    sstable::{Index, BLOCK_FORMAT_V1},
+    table::{self, is_old_version, Value, VALUE_VERSION_LEN},
+    LocalAddr,
+};
 
 #[derive(Default)]
 pub struct BlockIterator {
@@ -126,7 +131,7 @@ impl BlockIterator {
     fn set_idx(&mut self, i: i32) {
         self.idx = i;
         if i >= self.num_entries() as i32 || i < 0 {
-            self.err = Some(table::Error::EOF);
+            self.err = Some(table::Error::Eof);
             return;
         }
         self.err = None;
@@ -139,11 +144,15 @@ impl BlockIterator {
         let mut field_off = 2 + diff_key_len;
         self.meta = entry_data[field_off];
         field_off += 1;
-        self.ver = LittleEndian::read_u64(&entry_data[field_off..]);
-        field_off += 8;
-        if self.meta & META_HAS_OLD != 0 {
-            self.old_ver = LittleEndian::read_u64(&entry_data[field_off..]);
-            field_off += 8;
+        {
+            let version = Value::get_version(&entry_data[field_off..]);
+            self.ver = version;
+            field_off += VALUE_VERSION_LEN;
+        }
+        if is_old_version(self.meta) {
+            let version = Value::get_version(&entry_data[field_off..]);
+            self.old_ver = version;
+            field_off += VALUE_VERSION_LEN;
         } else {
             self.old_ver = 0;
         }
@@ -171,7 +180,9 @@ enum IterState {
 }
 
 pub struct TableIterator {
-    t: SSTable,
+    t: SsTable,
+    idx: Arc<Index>,
+    old_idx: Option<Arc<Index>>,
     b_pos: i32,
     bi: BlockIterator,
     old_b_pos: i32,
@@ -185,9 +196,12 @@ pub struct TableIterator {
 }
 
 impl TableIterator {
-    pub fn new(t: SSTable, reversed: bool, fill_cache: bool) -> Self {
+    pub fn new(t: SsTable, reversed: bool, fill_cache: bool) -> Self {
+        let idx = t.load_index();
         Self {
             t,
+            idx,
+            old_idx: None,
             b_pos: 0,
             bi: BlockIterator::default(),
             old_b_pos: 0,
@@ -215,7 +229,12 @@ impl TableIterator {
         self.b_pos = b_pos;
         let block = self
             .t
-            .load_block(self.b_pos as usize, &mut self.block_buf, self.fill_cache)
+            .load_block(
+                &self.idx,
+                self.b_pos as usize,
+                &mut self.block_buf,
+                self.fill_cache,
+            )
             .unwrap();
         self.bi.set_block(block);
         true
@@ -223,7 +242,9 @@ impl TableIterator {
 
     fn set_old_block(&mut self, b_pos: i32) -> bool {
         self.old_b_pos = b_pos;
+        let old_block = self.get_old_idx();
         let block = match self.t.load_old_block(
+            &old_block,
             self.old_b_pos as usize,
             &mut self.block_buf,
             self.fill_cache,
@@ -240,9 +261,9 @@ impl TableIterator {
 
     fn seek_to_first(&mut self) {
         self.reset();
-        let num_blocks = self.t.idx.num_blocks();
+        let num_blocks = self.idx.num_blocks();
         if num_blocks == 0 {
-            self.err = Some(table::Error::EOF);
+            self.err = Some(table::Error::Eof);
             return;
         }
         if !self.set_block(0) {
@@ -254,9 +275,9 @@ impl TableIterator {
 
     fn seek_to_last(&mut self) {
         self.reset();
-        let num_blocks = self.t.idx.num_blocks();
+        let num_blocks = self.idx.num_blocks();
         if num_blocks == 0 {
-            self.err = Some(table::Error::EOF);
+            self.err = Some(table::Error::Eof);
             return;
         }
         if !self.set_block(num_blocks as i32 - 1) {
@@ -289,7 +310,7 @@ impl TableIterator {
 
     fn seek_inner(&mut self, key: &[u8]) {
         self.reset();
-        let idx = self.t.idx.seek_block(key);
+        let idx = self.idx.seek_block(key);
         if idx == 0 {
             // The smallest key in our table is already strictly > key. We can return that.
             // This is like a SeekToFirst.
@@ -300,22 +321,25 @@ impl TableIterator {
         // block[idx].smallest is > key.
         // Since idx>0, we know block[idx-1].smallest is <= key.
         // There are two cases.
-        // 1) Everything in block[idx-1] is strictly < key. In this case, we should go to the first
-        //    element of block[idx].
+        // 1) Everything in block[idx-1] is strictly < key. In this case, we should go
+        // to the first    element of block[idx].
         // 2) Some element in block[idx-1] is >= key. We should go to that element.
         self.seek_in_block(idx - 1, key);
         if self.err.is_some() {
             // Case 1. Need to visit block[idx].
-            if idx == self.t.idx.num_blocks() {
-                // If idx == len(itr.t.blockEndOffsets), then input key is greater than ANY element of table.
-                // There's nothing we can do. Valid() should return false as we seek to end of table.
+            if idx == self.idx.num_blocks() {
+                // If idx == len(itr.t.blockEndOffsets), then input key is greater than ANY
+                // element of table. There's nothing we can do. Valid() should
+                // return false as we seek to end of table.
                 return;
             }
             self.err = None;
-            // Since block[idx].smallest is > key. This is essentially a block[idx].SeekToFirst.
+            // Since block[idx].smallest is > key. This is essentially a
+            // block[idx].SeekToFirst.
             self.seek_from_offset(idx, 0, key);
         }
-        // Case 2: No need to do anything. We already did the seek in block[idx-1].
+        // Case 2: No need to do anything. We already did the seek in
+        // block[idx-1].
     }
 
     fn seek_for_prev(&mut self, key: &[u8]) {
@@ -329,8 +353,8 @@ impl TableIterator {
     fn next_inner(&mut self) {
         self.err = None;
         self.iter_state = IterState::NewVersion;
-        if self.b_pos >= self.t.idx.num_blocks() as i32 {
-            self.err = Some(table::Error::EOF);
+        if self.b_pos >= self.idx.num_blocks() as i32 {
+            self.err = Some(table::Error::Eof);
             return;
         }
         if self.bi.b.is_empty() {
@@ -354,7 +378,7 @@ impl TableIterator {
         self.err = None;
         self.iter_state = IterState::NewVersion;
         if self.b_pos < 0 {
-            self.err = Some(table::Error::EOF);
+            self.err = Some(table::Error::Eof);
             return;
         }
         if self.bi.b.is_empty() {
@@ -395,9 +419,18 @@ impl TableIterator {
             && &key[prefix_len..] == self.old_bi.get_diff_key()
     }
 
+    fn get_old_idx(&mut self) -> Arc<Index> {
+        if self.old_idx.is_none() {
+            let old_idx = self.t.load_old_index();
+            self.old_idx = Some(old_idx);
+        }
+        self.old_idx.as_ref().unwrap().clone()
+    }
+
     fn seek_old_block(&mut self) -> Option<table::Error> {
         assert!(self.iter_state == IterState::NewVersion);
-        let mut old_b_pos = self.t.old_idx.seek_block(self.key_buf.chunk()) as i32 - 1;
+        let old_idx = self.get_old_idx();
+        let mut old_b_pos = old_idx.seek_block(self.key_buf.chunk()) as i32 - 1;
         if old_b_pos == -1 {
             old_b_pos = 0;
         }
@@ -437,10 +470,12 @@ impl table::Iterator for TableIterator {
         if self.same_old_key() {
             if self.iter_state == IterState::NewVersion {
                 // If it's the first time call, and the key is the same,
-                // the old version key must be iterated by a previous key, we should not call next.
+                // the old version key must be iterated by a previous key, we should not call
+                // next.
                 assert!(self.bi.old_ver == self.old_bi.ver);
             } else {
-                // It's the successive call of next_version, we need to move to the next version.
+                // It's the successive call of next_version, we need to move to the next
+                // version.
                 self.old_bi.next();
             }
             if self.old_bi.err.is_some() {
@@ -479,14 +514,14 @@ impl table::Iterator for TableIterator {
         self.key_buf.chunk()
     }
 
-    fn value(&self) -> table::Value {
+    fn value(&self) -> Value {
         let bi = if self.iter_state == IterState::NewVersion {
             &self.bi
         } else {
             &self.old_bi
         };
-        let bin = bi.val_addr.get(bi.b.chunk());
-        table::Value::new_with_meta_version(bi.meta, bi.ver, bi.user_meta_len, bin)
+        let buf = bi.val_addr.get(bi.b.chunk());
+        Value::new_with_meta_version(bi.meta, bi.ver, bi.user_meta_len, buf)
     }
 
     fn valid(&self) -> bool {

@@ -8,10 +8,9 @@ use std::sync::{
 use encryption::DataKeyManager;
 
 use super::{
-    CloudHelper,
     interfaces_ffi::{ConstRawVoidPtr, RaftProxyStatus, RaftStoreProxyPtr},
     raftstore_proxy_helper_impls::*,
-    read_index_helper,
+    read_index_helper, CloudHelper,
 };
 
 pub type Eng = Box<dyn RaftStoreProxyEngineTrait + Sync + Send>;
@@ -30,7 +29,7 @@ impl RaftStoreProxy {
         key_manager: Option<Arc<DataKeyManager>>,
         read_index_client: Option<Box<dyn read_index_helper::ReadIndex>>,
         raftstore_proxy_engine: Option<Eng>,
-        dfs: Arc<dyn kvengine::dfs::DFS>,
+        dfs: Arc<dyn kvengine::dfs::Dfs>,
     ) -> Self {
         RaftStoreProxy {
             status,

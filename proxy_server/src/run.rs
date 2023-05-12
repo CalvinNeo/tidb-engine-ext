@@ -547,7 +547,7 @@ struct TiKvServer<ER: RaftEngine> {
     quota_limiter: Arc<QuotaLimiter>,
     resource_manager: Option<Arc<ResourceGroupManager>>,
     tablet_registry: Option<TabletRegistry<RocksEngine>>,
-    dfs: Arc<dyn kvengine::dfs::DFS>,
+    dfs: Arc<dyn kvengine::dfs::Dfs>,
 }
 
 struct TiKvEngines<EK: KvEngine, ER: RaftEngine> {
@@ -656,7 +656,7 @@ impl<ER: RaftEngine> TiKvServer<ER> {
             let dfs_s3_key_id = env::var("DFS_S3_KEY_ID").unwrap_or_default();
             let dfs_s3_secret_key = env::var("DFS_S3_SECRET_KEY").unwrap_or_default();
             let dfs_s3_region = env::var("DFS_S3_REGION").unwrap_or_default();
-            Arc::new(kvengine::dfs::S3FS::new(
+            Arc::new(kvengine::dfs::S3Fs::new(
                 dfs_prefix,
                 dfs_s3_endpoint,
                 dfs_s3_key_id,
@@ -665,7 +665,7 @@ impl<ER: RaftEngine> TiKvServer<ER> {
                 dfs_s3_bucket,
             ))
         } else {
-            Arc::new(kvengine::dfs::S3FS::new(
+            Arc::new(kvengine::dfs::S3Fs::new(
                 dfs_conf.prefix.clone(),
                 dfs_conf.s3_endpoint.clone(),
                 dfs_conf.s3_key_id.clone(),

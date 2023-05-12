@@ -3,7 +3,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use byteorder::{ByteOrder, LittleEndian};
-use kvengine::{dfs::DFS, table, table::sstable::InMemFile, ChangeSet};
+use bytes::{Buf, BytesMut};
+use kvengine::{dfs::Dfs, meta::GLOBAL_SHARD_END_KEY, table, table::sstable::InMemFile, ChangeSet};
 use kvproto::metapb;
 use protobuf::Message;
 use tikv_util::{
@@ -12,15 +13,15 @@ use tikv_util::{
 };
 use txn_types::WriteType;
 
-use super::interfaces_ffi::BaseBuffView;
+use crate::interfaces_ffi::BaseBuffView;
 
 #[derive(Clone)]
 pub struct CloudHelper {
-    dfs: Arc<dyn DFS>,
+    dfs: Arc<dyn Dfs>,
 }
 
 impl CloudHelper {
-    pub fn new(dfs: Arc<dyn DFS>) -> Self {
+    pub fn new(dfs: Arc<dyn Dfs>) -> Self {
         Self { dfs }
     }
 }
@@ -84,7 +85,7 @@ impl CloudHelper {
             match result_rx.recv().unwrap() {
                 Ok((id, level, data)) => {
                     let file = InMemFile::new(id, data);
-                    cs.add_file(id, Arc::new(file), level, None).unwrap();
+                    cs.add_file_legacy(id, Arc::new(file), level, None).unwrap();
                 }
                 Err(err) => {
                     error!("prefetch failed {:?}", &err);
@@ -113,29 +114,54 @@ pub struct CloudSstReader {
     iter: Box<dyn kvengine::table::Iterator>,
     key_buf: Vec<u8>,
     val_buf: Vec<u8>,
-    start: Vec<u8>,
-    end: Vec<u8>,
+    outer_start: Vec<u8>,
+    outer_end: Vec<u8>,
+    inner_key_off: usize,
+    raw_key: BytesMut,
 }
 
 impl CloudSstReader {
     pub fn new(cs: &kvengine::ChangeSet) -> Self {
-        let mut iter = new_table_iterator(&cs, 0);
-        let (start, end) = if cs.has_snapshot() {
+        let iter = new_table_iterator(&cs, 0);
+        let (outer_start, outer_end, inner_key_off) = if cs.has_snapshot() {
             let snap = cs.get_snapshot();
-            (snap.start.clone(), snap.end.clone())
+            (
+                snap.outer_start.clone(),
+                snap.outer_end.clone(),
+                snap.inner_key_off as usize,
+            )
         } else {
-            (vec![], vec![])
+            (vec![], vec![], 0)
         };
+        let mut raw_key = BytesMut::new();
+        raw_key.extend_from_slice(&outer_start[..inner_key_off]);
         let mut reader = Self {
             iter,
             key_buf: vec![],
             val_buf: vec![],
-            start,
-            end,
+            outer_start: outer_start.clone(),
+            outer_end,
+            inner_key_off,
+            raw_key,
         };
-        reader.iter.seek(&reader.start);
+        reader.iter.seek(&outer_start[inner_key_off..]);
         reader.sync_iter();
         reader
+    }
+
+    fn inner_start(&self) -> &[u8] {
+        &self.outer_start[self.inner_key_off..]
+    }
+
+    fn inner_end(&self) -> &[u8] {
+        if self.inner_key_off == self.outer_end.len() {
+            return GLOBAL_SHARD_END_KEY;
+        }
+        &self.outer_end[self.inner_key_off..]
+    }
+
+    fn prefix(&self) -> &[u8] {
+        &self.outer_start[..self.inner_key_off]
     }
 
     pub fn ffi_remained(&self) -> u8 {
@@ -152,15 +178,19 @@ impl CloudSstReader {
 
     fn sync_iter(&mut self) {
         self.key_buf.truncate(0);
+        self.raw_key.truncate(self.inner_key_off);
         while self.iter.valid() {
-            if !self.end.is_empty() && self.iter.key() >= self.end.as_slice() {
+            if !self.outer_end.is_empty() && self.iter.key() >= self.outer_end.as_slice() {
                 return;
             }
             if table::is_deleted(self.iter.value().meta) {
                 self.iter.next();
                 continue;
             }
-            self.key_buf.encode_bytes(self.iter.key(), false).unwrap();
+            self.raw_key.extend_from_slice(self.iter.key());
+            self.key_buf
+                .encode_bytes(self.raw_key.chunk(), false)
+                .unwrap();
             let short_value = self.iter.value().get_value().to_vec();
             let user_meta = UserMeta::from_slice(self.iter.value().user_meta());
             self.key_buf.encode_u64_desc(user_meta.commit_ts).unwrap();
@@ -169,11 +199,8 @@ impl CloudSstReader {
             } else {
                 WriteType::Delete
             };
-            let write = txn_types::Write::new(
-                write_type,
-                user_meta.start_ts.into(),
-                Some(short_value),
-            );
+            let write =
+                txn_types::Write::new(write_type, user_meta.start_ts.into(), Some(short_value));
             self.val_buf = write.as_ref().to_bytes();
             return;
         }
@@ -193,31 +220,56 @@ pub struct CloudLockSstReader {
     iter: Box<dyn kvengine::table::Iterator>,
     key_buf: Vec<u8>,
     val_buf: Vec<u8>,
-    start: Vec<u8>,
-    end: Vec<u8>,
+    outer_start: Vec<u8>,
+    outer_end: Vec<u8>,
+    inner_key_off: usize,
+    raw_key: BytesMut,
 }
 
 impl CloudLockSstReader {
     pub fn new(cs: &kvengine::ChangeSet) -> Self {
-        let mut iter = new_table_iterator(&cs, 1);
-        let (start, end) = if cs.has_snapshot() {
+        let iter = new_table_iterator(&cs, 1);
+        let (outer_start, outer_end, inner_key_off) = if cs.has_snapshot() {
             let snap = cs.get_snapshot();
-            (snap.start.clone(), snap.end.clone())
+            (
+                snap.outer_start.clone(),
+                snap.outer_end.clone(),
+                snap.inner_key_off as usize,
+            )
         } else {
-            (vec![], vec![])
+            (vec![], vec![], 0)
         };
         let key_buf = vec![];
         let val_buf = vec![];
+        let mut raw_key = BytesMut::new();
+        raw_key.extend_from_slice(&outer_start[..inner_key_off]);
         let mut reader = Self {
             iter,
             key_buf,
             val_buf,
-            start,
-            end,
+            outer_start: outer_start.clone(),
+            outer_end,
+            inner_key_off,
+            raw_key,
         };
-        reader.iter.seek(&reader.start);
+        reader.iter.seek(&outer_start[inner_key_off..]);
         reader.sync_iter();
         reader
+    }
+
+    fn inner_start(&self) -> &[u8] {
+        &self.outer_start[self.inner_key_off..]
+    }
+
+    fn inner_end(&self) -> &[u8] {
+        if self.inner_key_off == self.outer_end.len() {
+            return GLOBAL_SHARD_END_KEY;
+        }
+        &self.outer_end[self.inner_key_off..]
+    }
+
+    fn prefix(&self) -> &[u8] {
+        &self.outer_start[..self.inner_key_off]
     }
 
     pub fn ffi_remained(&self) -> u8 {
@@ -239,16 +291,20 @@ impl CloudLockSstReader {
 
     fn sync_iter(&mut self) {
         self.key_buf.truncate(0);
+        self.raw_key.truncate(self.inner_key_off);
         while self.iter.valid() && kvengine::table::is_deleted(self.iter.value().meta) {
             self.iter.next();
         }
         if !self.iter.valid() {
             return;
         }
-        if !self.end.is_empty() && self.iter.key() >= self.end.as_slice() {
+        if !self.inner_end().is_empty() && self.iter.key() >= self.inner_end() {
             return;
         }
-        self.key_buf.encode_bytes(self.iter.key(), false).unwrap();
+        self.raw_key.extend_from_slice(self.iter.key());
+        self.key_buf
+            .encode_bytes(self.raw_key.chunk(), false)
+            .unwrap();
         self.val_buf.truncate(0);
         self.val_buf
             .extend_from_slice(self.iter.value().get_value());

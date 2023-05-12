@@ -388,3 +388,127 @@ fn test_multi_version_merge_iterator() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use std::{mem::size_of, sync::Arc};
+
+    use bytes::BytesMut;
+
+    use super::*;
+    use crate::table::{
+        blobtable::{blobtable::BlobTable, builder::BlobTableBuilder},
+        sstable::{
+            file::InMemFile,
+            sstable::{
+                get_test_key, new_table_builder_for_test, new_test_cache, SsTable, TEST_ID_ALLOC,
+            },
+        },
+        Iterator,
+    };
+
+    #[cfg(test)]
+    pub(crate) fn get_blob_test_value(n: usize) -> String {
+        format!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa - {}", n)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generate_key_values(prefix: &str, n: usize) -> Vec<(String, String)> {
+        assert!(n <= 10000);
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            let k = get_test_key(prefix, i);
+            let v = get_blob_test_value(i);
+            results.push((k, v));
+        }
+        results
+    }
+
+    #[cfg(test)]
+    fn test_fetch_value_from_blob_table(bt: &BlobTable, v: Value) -> Result<Vec<u8>> {
+        assert!(v.is_external_link());
+        let external_link = v.get_external_link();
+        assert_eq!(bt.id(), external_link.fid);
+        bt.get(external_link.offset, external_link.len)
+    }
+
+    #[cfg(test)]
+    fn test_store_value_in_blob_table(
+        blob_builder: &mut BlobTableBuilder,
+        blob_fid: u64,
+        k: &String,
+        v: &mut Value,
+    ) -> ExternalLink {
+        assert!(v.value_len() > size_of::<ExternalLink>() + v.user_meta_len());
+        v.set_external_link();
+        let mut external_link = ExternalLink::new();
+        external_link.fid = blob_fid;
+        let (offset, len) = blob_builder.add(k.as_bytes(), v);
+        external_link.len = len;
+        external_link.offset = offset;
+        external_link
+    }
+
+    #[cfg(test)]
+    pub(crate) fn build_blob_test_table_with_kvs(
+        kvs: &Vec<(String, String)>,
+        load_filter: bool,
+    ) -> (SsTable, BlobTable) {
+        use crate::table::sstable::NO_COMPRESSION;
+
+        let sst_fid = TEST_ID_ALLOC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let blob_fid = TEST_ID_ALLOC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let mut sst_builder = new_table_builder_for_test(sst_fid);
+        let mut blob_builder = BlobTableBuilder::new(0, 0, NO_COMPRESSION, 0, 0);
+        let meta = 0u8;
+
+        for (k, v) in kvs {
+            let value_buf = Value::encode_buf(meta, &[0], 0, v.as_bytes());
+            let mut v = Value::decode(value_buf.as_slice());
+            let external_link =
+                test_store_value_in_blob_table(&mut blob_builder, blob_fid, k, &mut v);
+            sst_builder.add(k.as_bytes(), &v, Some(external_link));
+        }
+
+        let mut buf = BytesMut::with_capacity(sst_builder.estimated_size());
+
+        sst_builder.finish(0, &mut buf);
+
+        let bytes = blob_builder.finish();
+
+        let sst_file = InMemFile::new(sst_fid, buf.freeze());
+        let blob_file = InMemFile::new(blob_fid, bytes);
+
+        (
+            SsTable::new(Arc::new(sst_file), new_test_cache(), load_filter).unwrap(),
+            BlobTable::new(Arc::new(blob_file)).unwrap(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn create_blob_sst_table(
+        prefix: &str,
+        n: usize,
+        load_filter: bool,
+    ) -> ((SsTable, BlobTable), Vec<(String, String)>) {
+        let kvs = generate_key_values(prefix, n);
+        (build_blob_test_table_with_kvs(&kvs, load_filter), kvs)
+    }
+
+    #[test]
+    fn test_value_external_storage() {
+        let ((t, bt), _) = create_blob_sst_table("key", 10000, true);
+        let mut it = t.new_iterator(false, true);
+        let mut count = 0;
+        it.rewind();
+        while it.valid() {
+            let k = it.key();
+            assert_eq!(k, get_test_key("key", count).as_bytes());
+            let value = test_fetch_value_from_blob_table(&bt, it.value());
+            assert_eq!(value.unwrap(), get_blob_test_value(count).as_bytes());
+            count += 1;
+            it.next()
+        }
+    }
+}

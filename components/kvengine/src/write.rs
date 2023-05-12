@@ -1,6 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::collections::HashMap;
+use std::{cmp, collections::HashMap};
 
 use bytes::{Buf, BytesMut};
 use slog_global::info;
@@ -109,18 +109,18 @@ impl Engine {
             return;
         }
         mem_table.set_version(version);
-        let new_tbl = memtable::CFTable::new();
+        let new_tbl = memtable::CfTable::new();
         let mut new_mem_tbls = Vec::with_capacity(data.mem_tbls.len() + 1);
         new_mem_tbls.push(new_tbl);
         new_mem_tbls.extend_from_slice(data.mem_tbls.as_slice());
         let new_data = ShardData::new(
-            shard.start.clone(),
-            shard.end.clone(),
+            data.range.clone(),
             data.del_prefixes.clone(),
             data.truncate_ts,
             data.trim_over_bound,
             new_mem_tbls,
             data.l0_tbls.clone(),
+            data.blob_tbl_map.clone(),
             data.cfs.clone(),
         );
         shard.set_data(new_data);
@@ -136,13 +136,20 @@ impl Engine {
 
     pub fn write(&self, wb: &mut WriteBatch) -> u64 {
         let shard = self.get_shard(wb.shard_id).unwrap_or_else(|| {
-            let tag = ShardTag::new(self.get_engine_id(), IDVer::new(wb.shard_id, 0));
+            let tag = ShardTag::new(self.get_engine_id(), IdVer::new(wb.shard_id, 0));
             panic!("{} unable to get shard", tag);
         });
-        let snap = shard.new_snap_access();
-        let version = shard.base_version + wb.sequence;
+        if shard.inner_key_off > 0 {
+            for cf in &mut wb.cf_batches {
+                for entry in &mut cf.entries {
+                    entry.trim_to_inner_key(shard.inner_key_off);
+                }
+            }
+        }
+        let version = shard.get_base_version() + wb.sequence;
         self.update_write_batch_version(wb, version);
         let data = shard.get_data();
+        let snap = shard.new_snap_access();
         let mem_tbl = data.get_writable_mem_table();
         for cf in 0..NUM_CFS {
             mem_tbl.get_cf(cf).put_batch(wb.get_cf_mut(cf), &snap, cf);
@@ -194,5 +201,23 @@ impl Engine {
                 });
             };
         }
+    }
+
+    pub fn flush_shard_for_restore(&self, shard: &Shard) {
+        let ver = shard.get_base_version()
+            + cmp::max(shard.get_write_sequence(), shard.get_meta_sequence())
+            + 1;
+        debug!(
+            "{} flush_shard_for_restore, ver: {}, base_ver: {}, write_seq: {}, meta_seq: {}",
+            shard.tag(),
+            ver,
+            shard.get_base_version(),
+            shard.get_write_sequence(),
+            shard.get_meta_sequence(),
+        );
+
+        self.switch_mem_table(shard, ver);
+        self.set_shard_active(shard.id, true);
+        self.trigger_flush(shard);
     }
 }

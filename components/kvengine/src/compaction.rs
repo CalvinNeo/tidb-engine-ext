@@ -3,6 +3,7 @@
 use std::{
     cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet},
+    hash::Hash,
     iter::Iterator as StdIterator,
     ops::Sub,
     sync::{atomic::Ordering, Arc, Mutex},
@@ -19,8 +20,10 @@ use tikv_util::mpsc;
 use crate::{
     dfs,
     table::{
+        blobtable::{blobtable::BlobTable, builder::BlobTableBuilder},
         search,
-        sstable::{self, InMemFile, L0Builder, SSTable},
+        sstable::{self, InMemFile, L0Builder, SsTable, NO_COMPRESSION},
+        ExternalLink,
     },
     Error::{FallbackLocalCompactorDisabled, IncompatibleRemoteCompactor, RemoteCompaction},
     Iterator, EXTRA_CF, LOCK_CF, WRITE_CF, *,
@@ -65,7 +68,7 @@ impl RemoteCompactors {
 
 #[derive(Clone)]
 pub struct CompactionClient {
-    dfs: Arc<dyn dfs::DFS>,
+    dfs: Arc<dyn dfs::Dfs>,
     remote_compactors: Arc<Mutex<RemoteCompactors>>,
     client: Option<hyper::Client<hyper::client::HttpConnector>>,
     compression_lvl: i32,
@@ -74,16 +77,19 @@ pub struct CompactionClient {
 
 impl CompactionClient {
     pub(crate) fn new(
-        dfs: Arc<dyn dfs::DFS>,
+        dfs: Arc<dyn dfs::Dfs>,
         remote_url: String,
         compression_lvl: i32,
         allow_fallback_local: bool,
     ) -> Self {
         let remote_compactors = RemoteCompactors::new(remote_url);
+        let client = hyper::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build_http();
         Self {
             dfs,
             remote_compactors: Arc::new(Mutex::new(remote_compactors)),
-            client: Some(hyper::Client::new()),
+            client: Some(client),
             compression_lvl,
             allow_fallback_local,
         }
@@ -251,9 +257,10 @@ impl CompactionClient {
     }
 }
 
-/// `CURRENT_COMPACTOR_VERSION` is used for version compatibility checking of remote compactor.
-/// NOTE: Increase `CURRENT_COMPACTOR_VERSION` by 1 when add new feature to remote compactor.
-const CURRENT_COMPACTOR_VERSION: u32 = 1;
+/// `CURRENT_COMPACTOR_VERSION` is used for version compatibility checking of
+/// remote compactor. NOTE: Increase `CURRENT_COMPACTOR_VERSION` by 1 when add
+/// new feature to remote compactor.
+const CURRENT_COMPACTOR_VERSION: u32 = 2;
 
 const INCOMPATIBLE_COMPACTOR_ERROR_CODE: StatusCode = StatusCode::NOT_IMPLEMENTED;
 
@@ -268,23 +275,27 @@ pub struct CompactionRequest {
     pub engine_id: u64,
     pub shard_id: u64,
     pub shard_ver: u64,
-    pub start: Vec<u8>,
-    pub end: Vec<u8>,
 
-    /// If `destroy_range` is true, `in_place_compact_files` will be compacted in place
-    /// to filter out data that covered by `del_prefixes`.
+    #[serde(rename = "start")]
+    pub outer_start: Vec<u8>,
+    #[serde(rename = "end")]
+    pub outer_end: Vec<u8>,
+    pub inner_key_off: usize,
+
+    /// If `destroy_range` is true, `in_place_compact_files` will be compacted
+    /// in place to filter out data that covered by `del_prefixes`.
     pub destroy_range: bool,
     pub del_prefixes: Vec<u8>,
     // Vec<(id, level, cf)>
     pub in_place_compact_files: Vec<(u64, u32, i32)>,
 
-    /// If `truncate_ts` is some, `in_place_compact_files` will be compacted in place
-    /// to filter out data with version > `truncated_ts`.
+    /// If `truncate_ts` is some, `in_place_compact_files` will be compacted in
+    /// place to filter out data with version > `truncated_ts`.
     pub truncate_ts: Option<u64>,
 
     /// Requires `compactor_version >= 1`.
-    /// If `trim_over_bound` is true, `in_place_compact_files` will be compacted in place
-    /// to filter out data out of shard bound.
+    /// If `trim_over_bound` is true, `in_place_compact_files` will be compacted
+    /// in place to filter out data out of shard bound.
     pub trim_over_bound: bool,
 
     // Used for L1+ compaction.
@@ -292,7 +303,7 @@ pub struct CompactionRequest {
 
     // Used for L0 compaction.
     pub multi_cf_bottoms: Vec<Vec<u64>>,
-
+    // End of deprecating members
     pub overlap: bool,
     pub safe_ts: u64,
     pub block_size: usize,
@@ -300,168 +311,38 @@ pub struct CompactionRequest {
     pub compression_tp: u8,
     pub file_ids: Vec<u64>,
 
+    pub major_compaction: Option<MajorCompaction>,
     /// Required version of remote compactor.
     /// Must be set to `CURRENT_COMPACTOR_VERSION`.
     pub compactor_version: u32,
 }
 
-pub struct CompactDef {
-    pub(crate) cf: usize,
-    pub(crate) level: usize,
+impl CompactionRequest {
+    pub fn inner_start(&self) -> &[u8] {
+        &self.outer_start[self.inner_key_off..]
+    }
 
-    pub(crate) top: Vec<sstable::SSTable>,
-    pub(crate) bot: Vec<sstable::SSTable>,
+    pub fn inner_end(&self) -> &[u8] {
+        if self.inner_key_off == self.outer_end.len() {
+            return GLOBAL_SHARD_END_KEY;
+        }
+        &self.outer_end[self.inner_key_off..]
+    }
+}
 
-    pub(crate) has_overlap: bool,
-
-    this_range: KeyRange,
-    next_range: KeyRange,
-
-    top_size: u64,
-    top_left_idx: usize,
-    top_right_idx: usize,
-    bot_size: u64,
-    bot_left_idx: usize,
-    bot_right_idx: usize,
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct MajorCompaction {
+    l0_tables: Vec<u64>,
+    // L1 plus sstables of all cfs, map from cf id to sstables that are organized by level.
+    ln_tables: HashMap<usize, Vec<(usize, Vec<u64>)>>,
+    blob_tables: Vec<u64>,
+    max_sst_size: usize,
+    max_blob_table_size: usize,
+    min_blob_size: u32,
+    blob_prefetch_size: usize,
 }
 
 const MAX_COMPACTION_EXPAND_SIZE: u64 = 256 * 1024 * 1024;
-
-impl CompactDef {
-    pub(crate) fn new(cf: usize, level: usize) -> Self {
-        Self {
-            cf,
-            level,
-            top: vec![],
-            bot: vec![],
-            has_overlap: false,
-            this_range: KeyRange::default(),
-            next_range: KeyRange::default(),
-            top_size: 0,
-            top_left_idx: 0,
-            top_right_idx: 0,
-            bot_size: 0,
-            bot_left_idx: 0,
-            bot_right_idx: 0,
-        }
-    }
-
-    pub(crate) fn fill_table(
-        &mut self,
-        shard: &Shard,
-        this_level: &LevelHandler,
-        next_level: &LevelHandler,
-    ) -> bool {
-        if this_level.tables.len() == 0 {
-            return false;
-        }
-        let this = if this_level.has_over_bound_data(&shard.start, &shard.end) {
-            if this_level.tables.first().unwrap().smallest() < &shard.start {
-                Arc::new(vec![this_level.tables.first().unwrap().clone()])
-            } else {
-                Arc::new(vec![this_level.tables.last().unwrap().clone()])
-            }
-        } else {
-            this_level.tables.clone()
-        };
-        let next = next_level.tables.clone();
-
-        // First pick one table has max topSize/bottomSize ratio.
-        let mut candidate_ratio = 0f64;
-        for (i, tbl) in this.iter().enumerate() {
-            let (left, right) = get_tables_in_range(&next, tbl.smallest(), tbl.biggest());
-            let bot_size: u64 = Self::sume_tbl_size(&next[left..right]);
-            let ratio = Self::calc_ratio(tbl.size(), bot_size);
-            if candidate_ratio < ratio {
-                candidate_ratio = ratio;
-                self.top_left_idx = i;
-                self.top_right_idx = i + 1;
-                self.top_size = tbl.size();
-                self.bot_left_idx = left;
-                self.bot_right_idx = right;
-                self.bot_size = bot_size;
-            }
-        }
-        if self.top_left_idx == self.top_right_idx {
-            return false;
-        }
-        // Expand to left to include more tops as long as the ratio doesn't decrease and the total size
-        // do not exceed maxCompactionExpandSize.
-        for i in (0..self.top_left_idx).rev() {
-            let t = &this[i];
-            let (left, right) = get_tables_in_range(&next, t.smallest(), t.biggest());
-            if right < self.bot_left_idx {
-                // A bottom table is skipped, we can compact in another run.
-                break;
-            }
-            let new_top_size = t.size() + self.top_size;
-            let new_bot_size = Self::sume_tbl_size(&next[left..self.bot_left_idx]) + self.bot_size;
-            let new_ratio = Self::calc_ratio(new_top_size, new_bot_size);
-            if new_ratio > candidate_ratio {
-                self.top_left_idx -= 1;
-                self.bot_left_idx = left;
-                self.top_size = new_top_size;
-                self.bot_size = new_bot_size;
-            } else {
-                break;
-            }
-        }
-        // Expand to right to include more tops as long as the ratio doesn't decrease and the total size
-        // do not exceeds maxCompactionExpandSize.
-        for i in self.top_right_idx..this.len() {
-            let t = &this[i];
-            let (left, right) = get_tables_in_range(&next, t.smallest(), t.biggest());
-            if left > self.bot_right_idx {
-                // A bottom table is skipped, we can compact in another run.
-                break;
-            }
-            let new_top_size = t.size() + self.top_size;
-            let new_bot_size =
-                Self::sume_tbl_size(&next[self.bot_right_idx..right]) + self.bot_size;
-            let new_ratio = Self::calc_ratio(new_top_size, new_bot_size);
-            if new_ratio > candidate_ratio
-                && (new_top_size + new_bot_size) < MAX_COMPACTION_EXPAND_SIZE
-            {
-                self.top_right_idx += 1;
-                self.bot_right_idx = right;
-                self.top_size = new_top_size;
-                self.bot_size = new_bot_size;
-            } else {
-                break;
-            }
-        }
-        self.top = this[self.top_left_idx..self.top_right_idx].to_vec();
-        self.bot = next[self.bot_left_idx..self.bot_right_idx].to_vec();
-        self.this_range = KeyRange {
-            left: Bytes::copy_from_slice(self.top[0].smallest()),
-            right: Bytes::copy_from_slice(self.top.last().unwrap().biggest()),
-        };
-        if !self.bot.is_empty() {
-            self.next_range = KeyRange {
-                left: Bytes::copy_from_slice(self.bot[0].smallest()),
-                right: Bytes::copy_from_slice(self.bot.last().unwrap().biggest()),
-            };
-        } else {
-            self.next_range = self.this_range.clone();
-        }
-        true
-    }
-
-    fn sume_tbl_size(tbls: &[sstable::SSTable]) -> u64 {
-        tbls.iter().map(|tbl| tbl.size()).sum()
-    }
-
-    fn calc_ratio(top_size: u64, bot_size: u64) -> f64 {
-        if bot_size == 0 {
-            return top_size as f64;
-        }
-        top_size as f64 / bot_size as f64
-    }
-
-    pub(crate) fn move_down(&self) -> bool {
-        self.level > 0 && self.bot.is_empty()
-    }
-}
 
 impl Engine {
     pub fn update_managed_safe_ts(&self, ts: u64) {
@@ -484,28 +365,7 @@ impl Engine {
         runner.run();
     }
 
-    fn build_compact_request(
-        &self,
-        shard: &Shard,
-        pri: CompactionPriority,
-    ) -> Option<(CompactionRequest, Option<CompactDef>)> {
-        if pri.cf == -1 {
-            return self.build_compact_l0_request(shard).map(|req| (req, None));
-        }
-        let data = shard.get_data();
-        let scf = data.get_cf(pri.cf as usize);
-        let this_level = &scf.levels[pri.level - 1];
-        let next_level = &scf.levels[pri.level];
-        let mut cd = CompactDef::new(pri.cf as usize, pri.level);
-        let filled = cd.fill_table(shard, this_level, next_level);
-        if !filled {
-            return None;
-        }
-        scf.set_has_overlapping(&mut cd);
-        Some((self.build_compact_ln_request(shard, &cd), Some(cd)))
-    }
-
-    pub(crate) fn compact(&self, id_ver: IDVer) -> Option<Result<pb::ChangeSet>> {
+    pub(crate) fn compact(&self, id_ver: IdVer) -> Option<Result<pb::ChangeSet>> {
         let shard = self.get_shard_with_ver(id_ver.id, id_ver.ver).ok()?;
         let tag = shard.tag();
         if !shard.ready_to_compact() {
@@ -520,128 +380,98 @@ impl Engine {
             return self.truncate_ts(&shard).transpose();
         }
         if shard.get_data().ready_to_trim_over_bound() {
-            return Some(self.trim_over_bound(&shard));
+            return self.trim_over_bound(&shard).transpose();
         }
-        let pri = shard.get_compaction_priority()?;
-        let (req, cd) = self.build_compact_request(&shard, pri)?;
         store_bool(&shard.compacting, true);
-        if req.level == 0 {
-            info!("start compact L0 for {}", tag);
-        } else {
-            let cd = cd.unwrap();
-            info!(
-                "start compact L{} CF{} for {}, num_ids: {}, input_size: {}",
-                req.level,
-                req.cf,
-                tag,
-                req.file_ids.len(),
-                cd.top_size + cd.bot_size,
-            );
-            if req.bottoms.is_empty() && req.cf as usize == WRITE_CF {
-                info!("move down L{} CF{} for {}", req.level, req.cf, tag);
-                // Move down. only write CF benefits from this optimization.
-                let mut comp = pb::Compaction::new();
-                comp.set_cf(req.cf as i32);
-                comp.set_level(req.level as u32);
-                comp.set_top_deletes(req.tops.clone());
-                let tbl_creates = cd
-                    .top
-                    .into_iter()
-                    .map(|top_tbl| {
-                        let mut tbl_create = pb::TableCreate::new();
-                        tbl_create.set_id(top_tbl.id());
-                        tbl_create.set_cf(req.cf as i32);
-                        tbl_create.set_level(req.level as u32 + 1);
-                        tbl_create.set_smallest(top_tbl.smallest().to_vec());
-                        tbl_create.set_biggest(top_tbl.biggest().to_vec());
-                        tbl_create
-                    })
-                    .collect::<Vec<_>>();
-                comp.set_table_creates(tbl_creates.into());
-                let mut cs = new_change_set(id_ver.id, id_ver.ver);
-                cs.set_compaction(comp);
-                return Some(Ok(cs));
+        let pri = shard.get_compaction_priority()?;
+        match pri {
+            CompactionPriority::L0 { .. } => self.trigger_l0_compaction(&shard),
+            CompactionPriority::L1Plus { cf, level, .. } => {
+                self.trigger_l1_plus_compaction(&shard, cf, level, id_ver)
             }
+            CompactionPriority::Major => self.trigger_major_compacton(&shard),
         }
-        Some(self.comp_client.compact(req))
-    }
-
-    pub(crate) fn build_compact_l0_request(&self, shard: &Shard) -> Option<CompactionRequest> {
-        let tag = shard.tag();
-        let data = shard.get_data();
-        if data.l0_tbls.is_empty() {
-            info!("{} zero L0 tables", tag);
-            return None;
-        }
-        let mut req = self.new_compact_request(shard, -1, 0);
-        let mut total_size = 0;
-        let mut smallest = data.l0_tbls[0].smallest();
-        let mut biggest = data.l0_tbls[0].biggest();
-        for l0 in &data.l0_tbls {
-            if smallest > l0.smallest() {
-                smallest = l0.smallest();
-            }
-            if biggest < l0.biggest() {
-                biggest = l0.biggest();
-            }
-            req.tops.push(l0.id());
-            total_size += l0.size();
-        }
-        for cf in 0..NUM_CFS {
-            let lh = data.get_cf(cf).get_level(1);
-            let mut bottoms = vec![];
-            for tbl in lh.tables.as_slice() {
-                if tbl.biggest() < smallest || tbl.smallest() > biggest {
-                    info!(
-                        "{} skip L1 table {} for L0 compaction, tbl smallest {:?}, tbl biggest {:?}, L0 smallest {:?}, L0 biggest {:?}",
-                        tag,
-                        tbl.id(),
-                        tbl.smallest(),
-                        tbl.biggest(),
-                        smallest,
-                        biggest,
-                    );
-                    continue;
-                }
-                bottoms.push(tbl.id());
-                total_size += tbl.size();
-            }
-            req.multi_cf_bottoms.push(bottoms);
-        }
-        self.set_alloc_ids_for_request(&mut req, total_size);
-        Some(req)
     }
 
     pub(crate) fn set_alloc_ids_for_request(&self, req: &mut CompactionRequest, total_size: u64) {
         let tag = ShardTag::from_comp_req(req);
-        // We must ensure there are enough ids for remote compactor to use, so we need to allocate
-        // more ids than needed.
-        let mut old_ids_num = 0usize;
-        for bot_ids in req.multi_cf_bottoms.iter() {
-            old_ids_num += bot_ids.len();
-        }
-        old_ids_num += req.tops.len() + req.bottoms.len();
-        let id_cnt = (total_size as usize / req.max_table_size) * 2 + 16 + old_ids_num;
+        let id_cnt = if let Some(major) = &req.major_compaction {
+            let mut old_ids_num = 0usize;
+            for cf in major.ln_tables.values() {
+                for (_, ssts) in cf {
+                    old_ids_num += ssts.len();
+                }
+            }
+            old_ids_num += major.l0_tables.len() + major.blob_tables.len();
+            (total_size as usize / std::cmp::min(major.max_blob_table_size, major.max_sst_size)) * 2
+                + 16
+                + old_ids_num
+        } else {
+            // We must ensure there are enough ids for remote compactor to use, so we need
+            // to allocate more ids than needed.
+            let mut old_ids_num = 0usize;
+            for bot_ids in req.multi_cf_bottoms.iter() {
+                old_ids_num += bot_ids.len();
+            }
+            old_ids_num += req.tops.len() + req.bottoms.len();
+            (total_size as usize / req.max_table_size) * 2 + 16 + old_ids_num
+        };
         info!(
             "{} alloc id count {} for total size {}",
             tag, id_cnt, total_size
         );
-        let ids = self.id_allocator.alloc_id(id_cnt);
+        let ids = self.id_allocator.alloc_id(id_cnt).unwrap();
         req.file_ids = ids;
     }
 
-    pub(crate) fn new_compact_request(
+    pub(crate) fn new_compact_request_with_shard(
         &self,
         shard: &Shard,
         cf: isize,
         level: usize,
     ) -> CompactionRequest {
+        self.new_compact_request(
+            shard.engine_id,
+            shard.id,
+            shard.ver,
+            shard.range.clone(),
+            cf,
+            level,
+        )
+    }
+
+    pub(crate) fn new_compact_request_with_meta(
+        &self,
+        meta: &ShardMeta,
+        cf: isize,
+        level: usize,
+    ) -> CompactionRequest {
+        self.new_compact_request(
+            meta.engine_id,
+            meta.id,
+            meta.ver,
+            meta.range.clone(),
+            cf,
+            level,
+        )
+    }
+
+    fn new_compact_request(
+        &self,
+        engine_id: u64,
+        shard_id: u64,
+        shard_ver: u64,
+        range: ShardRange,
+        cf: isize,
+        level: usize,
+    ) -> CompactionRequest {
         CompactionRequest {
-            engine_id: shard.engine_id,
-            shard_id: shard.id,
-            shard_ver: shard.ver,
-            start: shard.start.to_vec(),
-            end: shard.end.to_vec(),
+            engine_id,
+            shard_id,
+            shard_ver,
+            outer_start: range.outer_start.to_vec(),
+            outer_end: range.outer_end.to_vec(),
+            inner_key_off: range.inner_key_off,
             destroy_range: false,
             del_prefixes: vec![],
             in_place_compact_files: vec![],
@@ -658,25 +488,9 @@ impl Engine {
             bottoms: vec![],
             multi_cf_bottoms: vec![],
             file_ids: vec![],
+            major_compaction: None,
             compactor_version: CURRENT_COMPACTOR_VERSION,
         }
-    }
-
-    pub(crate) fn build_compact_ln_request(
-        &self,
-        shard: &Shard,
-        cd: &CompactDef,
-    ) -> CompactionRequest {
-        let mut req = self.new_compact_request(shard, cd.cf as isize, cd.level);
-        req.overlap = cd.has_overlap;
-        for top in &cd.top {
-            req.tops.push(top.id());
-        }
-        for bot in &cd.bot {
-            req.bottoms.push(bot.id());
-        }
-        self.set_alloc_ids_for_request(&mut req, cd.top_size + cd.bot_size);
-        req
     }
 
     fn destroy_range(&self, shard: &Shard) -> Result<pb::ChangeSet> {
@@ -695,7 +509,7 @@ impl Engine {
                 deletes.push(delete);
             } else if data
                 .del_prefixes
-                .delete_ranges()
+                .inner_delete_ranges()
                 .any(|(start, end)| t.has_data_in_range(start, end))
             {
                 overlaps.push((t.id(), 0, -1));
@@ -711,7 +525,7 @@ impl Engine {
                     deletes.push(delete);
                 } else if data
                     .del_prefixes
-                    .delete_ranges()
+                    .inner_delete_ranges()
                     .any(|(start, end)| t.has_overlap(start, end, false))
                 {
                     overlaps.push((t.id(), lh.level as u32, cf as i32));
@@ -733,11 +547,14 @@ impl Engine {
             cs.mut_destroy_range().set_table_deletes(deletes.into());
             cs
         } else {
-            let mut req = self.new_compact_request(shard, 0, 0);
+            let mut req = self.new_compact_request_with_shard(shard, 0, 0);
             req.destroy_range = true;
             req.in_place_compact_files = overlaps;
             req.del_prefixes = data.del_prefixes.marshal();
-            req.file_ids = self.id_allocator.alloc_id(req.in_place_compact_files.len());
+            req.file_ids = self
+                .id_allocator
+                .alloc_id(req.in_place_compact_files.len())
+                .unwrap();
             let mut cs = self.comp_client.compact(req)?;
             let dr = cs.mut_destroy_range();
             deletes.extend(dr.take_table_deletes().into_iter());
@@ -752,9 +569,16 @@ impl Engine {
     }
 
     pub(crate) fn truncate_ts(&self, shard: &Shard) -> Result<Option<pb::ChangeSet>> {
-        let data = shard.get_data();
-        let truncate_ts = data.truncate_ts.unwrap();
+        self.truncate_with_ts(shard, shard.get_data().truncate_ts.unwrap())
+    }
 
+    // Also used by keyspace restore
+    pub fn truncate_with_ts(
+        &self,
+        shard: &Shard,
+        truncate_ts: TruncateTs,
+    ) -> Result<Option<pb::ChangeSet>> {
+        let data = shard.get_data();
         // TODO: record min_ts to directly delete a SSTable.
 
         let mut overlaps = vec![];
@@ -784,10 +608,13 @@ impl Engine {
             cs.set_truncate_ts(pb::TableChange::default());
             cs
         } else {
-            let mut req = self.new_compact_request(shard, 0, 0);
+            let mut req = self.new_compact_request_with_shard(shard, 0, 0);
             req.truncate_ts = Some(truncate_ts.inner());
             req.in_place_compact_files = overlaps;
-            req.file_ids = self.id_allocator.alloc_id(req.in_place_compact_files.len());
+            req.file_ids = self
+                .id_allocator
+                .alloc_id(req.in_place_compact_files.len())
+                .unwrap();
             self.comp_client.compact(req)?
         };
         cs.set_shard_id(shard.id);
@@ -797,15 +624,24 @@ impl Engine {
         Ok(Some(cs))
     }
 
-    fn trim_over_bound(&self, shard: &Shard) -> Result<pb::ChangeSet> {
+    fn trim_over_bound(&self, shard: &Shard) -> Result<Option<pb::ChangeSet>> {
         let data = shard.get_data();
-        assert!(data.trim_over_bound);
+        if !data.trim_over_bound {
+            // `data.trim_over_bound is possible to be false.
+            // See https://github.com/tidbcloud/cloud-storage-engine/issues/663.
+            info!(
+                "{} shard.data.trim_over_bound is false, skip trim_over_bound",
+                shard.tag()
+            );
+            return Ok(None);
+        }
+
         // Tables that are entirely over bound.
         let mut deletes = vec![];
         // Tables that are partially over bound.
         let mut overlaps = vec![];
         for t in &data.l0_tbls {
-            if t.biggest() < data.start || t.smallest() >= data.end {
+            if t.biggest() < data.inner_start() || t.smallest() >= data.inner_end() {
                 // -----smallest-----biggest-----[start----------end)
                 // [start----------end)-----smallest-----biggest-----
                 let mut delete = pb::TableDelete::default();
@@ -813,14 +649,14 @@ impl Engine {
                 delete.set_level(0);
                 delete.set_cf(-1);
                 deletes.push(delete);
-            } else if t.smallest() < data.start || t.biggest() >= data.end {
+            } else if t.smallest() < data.inner_start() || t.biggest() >= data.inner_end() {
                 // -----smallest-----[start----------end)-----biggest-----
                 overlaps.push((t.id(), 0, -1));
             }
         }
         data.for_each_level(|cf, lh| {
             for t in lh.tables.iter() {
-                if t.biggest() < data.start || t.smallest() >= data.end {
+                if t.biggest() < data.inner_start() || t.smallest() >= data.inner_end() {
                     // -----smallest-----biggest-----[start----------end)
                     // [start----------end)-----smallest-----biggest-----
                     let mut delete = pb::TableDelete::default();
@@ -828,7 +664,7 @@ impl Engine {
                     delete.set_level(lh.level as u32);
                     delete.set_cf(cf as i32);
                     deletes.push(delete);
-                } else if t.smallest() < data.start || t.biggest() >= data.end {
+                } else if t.smallest() < data.inner_start() || t.biggest() >= data.inner_end() {
                     // -----smallest-----[start----------end)-----biggest-----
                     overlaps.push((t.id(), lh.level as u32, cf as i32));
                 }
@@ -848,10 +684,13 @@ impl Engine {
             cs.mut_trim_over_bound().set_table_deletes(deletes.into());
             cs
         } else {
-            let mut req = self.new_compact_request(shard, 0, 0);
+            let mut req = self.new_compact_request_with_shard(shard, 0, 0);
             req.trim_over_bound = true;
             req.in_place_compact_files = overlaps;
-            req.file_ids = self.id_allocator.alloc_id(req.in_place_compact_files.len());
+            req.file_ids = self
+                .id_allocator
+                .alloc_id(req.in_place_compact_files.len())
+                .unwrap();
             let mut cs = self.comp_client.compact(req)?;
             let tc = cs.mut_trim_over_bound();
             deletes.extend(tc.take_table_deletes().into_iter());
@@ -862,7 +701,321 @@ impl Engine {
         cs.set_shard_ver(shard.ver);
         cs.set_property_key(TRIM_OVER_BOUND.to_string());
         cs.set_property_value(TRIM_OVER_BOUND_DISABLE.to_vec());
-        Ok(cs)
+        Ok(Some(cs))
+    }
+
+    pub fn trim_over_bound_by_meta(&self, meta: &ShardMeta) -> Result<pb::ChangeSet> {
+        // Tables that are entirely over bound.
+        let mut deletes = vec![];
+        // Tables that are partially over bound.
+        let mut overlaps = vec![];
+        for (&id, f) in &meta.files {
+            if meta.entirely_over_bound_table(&f.smallest, &f.biggest) {
+                let mut delete = pb::TableDelete::default();
+                delete.set_id(id);
+                delete.set_level(f.level as u32);
+                delete.set_cf(f.cf as i32);
+                deletes.push(delete);
+            } else if meta.partially_over_bound_table(&f.smallest, &f.biggest) {
+                overlaps.push((id, f.level as u32, f.cf as i32));
+            }
+        }
+
+        debug!(
+            "start trim_over_bound_by_meta for {}:{}, destroyed: {}, overlapping: {}",
+            meta.id,
+            meta.ver,
+            deletes.len(),
+            overlaps.len()
+        );
+
+        let mut res_cs = if overlaps.is_empty() {
+            let mut cs = pb::ChangeSet::default();
+            if !deletes.is_empty() {
+                cs.mut_trim_over_bound().set_table_deletes(deletes.into());
+            }
+            cs
+        } else {
+            let mut req = self.new_compact_request_with_meta(meta, 0, 0);
+            req.trim_over_bound = true;
+            req.in_place_compact_files = overlaps;
+            req.file_ids = self
+                .id_allocator
+                .alloc_id(req.in_place_compact_files.len())
+                .unwrap();
+            let mut cs = self.comp_client.compact(req)?;
+            let tc = cs.mut_trim_over_bound();
+            deletes.extend(tc.take_table_deletes().into_iter());
+            tc.set_table_deletes(deletes.into());
+            cs
+        };
+        res_cs.set_shard_id(meta.id);
+        res_cs.set_shard_ver(meta.ver);
+        res_cs.set_property_key(TRIM_OVER_BOUND.to_string());
+        res_cs.set_property_value(TRIM_OVER_BOUND_DISABLE.to_vec());
+        Ok(res_cs)
+    }
+
+    pub(crate) fn trigger_l0_compaction(&self, shard: &Shard) -> Option<Result<pb::ChangeSet>> {
+        let tag = shard.tag();
+        let data = shard.get_data();
+        if data.l0_tbls.is_empty() {
+            info!("{} zero L0 tables", tag);
+            store_bool(&shard.compacting, false);
+            return None;
+        }
+        let mut req = self.new_compact_request_with_shard(shard, -1, 0);
+        let mut l0_tbls = vec![];
+        let mut multi_cfs_l1_tbls = vec![];
+        let mut total_size = 0;
+        let mut smallest = data.l0_tbls[0].smallest();
+        let mut biggest = data.l0_tbls[0].biggest();
+        for l0 in &data.l0_tbls {
+            if smallest > l0.smallest() {
+                smallest = l0.smallest();
+            }
+            if biggest < l0.biggest() {
+                biggest = l0.biggest();
+            }
+            l0_tbls.push(l0.id());
+            total_size += l0.size();
+        }
+        req.tops.extend(l0_tbls);
+        for cf in 0..NUM_CFS {
+            let lh = data.get_cf(cf).get_level(1);
+            let mut l1_tbls = vec![];
+            for tbl in lh.tables.as_slice() {
+                if tbl.biggest() < smallest || tbl.smallest() > biggest {
+                    info!(
+                        "{} skip L1 table {} for L0 compaction, tbl smallest {:?}, tbl biggest {:?}, L0 smallest {:?}, L0 biggest {:?}",
+                        tag,
+                        tbl.id(),
+                        tbl.smallest(),
+                        tbl.biggest(),
+                        smallest,
+                        biggest,
+                    );
+                    continue;
+                }
+                l1_tbls.push(tbl.id());
+                total_size += tbl.size();
+            }
+            req.multi_cf_bottoms.push(l1_tbls.clone());
+            multi_cfs_l1_tbls.push(l1_tbls);
+        }
+        self.set_alloc_ids_for_request(&mut req, total_size);
+        info!("start compact L0 for {}", tag);
+        Some(self.comp_client.compact(req))
+    }
+
+    fn trigger_l1_plus_compaction(
+        &self,
+        shard: &Shard,
+        cf: isize,
+        level: usize,
+        id_ver: IdVer,
+    ) -> Option<Result<pb::ChangeSet>> {
+        let tag = shard.tag();
+        let data = shard.get_data();
+        let scf = data.get_cf(cf as usize);
+        let upper_level = &scf.levels[level - 1];
+        let lower_level = &scf.levels[level];
+        if upper_level.tables.len() == 0 {
+            store_bool(&shard.compacting, false);
+            return None;
+        }
+        let upper_level_candidates =
+            if upper_level.has_over_bound_data(shard.inner_start(), shard.inner_end()) {
+                if upper_level.tables.first().unwrap().smallest() < shard.inner_start() {
+                    Arc::new(vec![upper_level.tables.first().unwrap().clone()])
+                } else {
+                    Arc::new(vec![upper_level.tables.last().unwrap().clone()])
+                }
+            } else {
+                upper_level.tables.clone()
+            };
+
+        let sum_tbl_size = |tbls: &[sstable::SsTable]| tbls.iter().map(|tbl| tbl.size()).sum();
+
+        let calc_ratio = |upper_size: u64, lower_size: u64| {
+            if lower_size == 0 {
+                return upper_size as f64;
+            }
+            upper_size as f64 / lower_size as f64
+        };
+        // First pick one table has max topSize/bottomSize ratio.
+        let mut candidate_ratio = 0f64;
+        let mut upper_left_idx = 0;
+        let mut upper_right_idx = 0;
+        let mut upper_size = 0;
+        let mut lower_left_idx = 0;
+        let mut lower_right_idx = 0;
+        let mut lower_size = 0;
+        for (i, tbl) in upper_level_candidates.iter().enumerate() {
+            let (left, right) =
+                get_tables_in_range(&lower_level.tables, tbl.smallest(), tbl.biggest());
+            let new_lower_size: u64 = sum_tbl_size(&lower_level.tables[left..right]);
+            let ratio = calc_ratio(tbl.size(), new_lower_size);
+            if candidate_ratio < ratio {
+                candidate_ratio = ratio;
+                upper_left_idx = i;
+                upper_right_idx = i + 1;
+                upper_size = tbl.size();
+                lower_left_idx = left;
+                lower_right_idx = right;
+                lower_size = new_lower_size;
+            }
+        }
+        if upper_left_idx == upper_right_idx {
+            store_bool(&shard.compacting, false);
+            return None;
+        }
+        // Expand to left to include more tops as long as the ratio doesn't decrease and
+        // the total size do not exceed maxCompactionExpandSize.
+        let cur_upper_left_idx = upper_left_idx;
+        for i in (0..cur_upper_left_idx).rev() {
+            let t = &upper_level_candidates[i];
+            let (left, right) = get_tables_in_range(&lower_level.tables, t.smallest(), t.biggest());
+            if right < lower_left_idx {
+                // A bottom table is skipped, we can compact in another run.
+                break;
+            }
+            let new_upper_size = t.size() + upper_size;
+            let new_lower_size =
+                sum_tbl_size(&lower_level.tables[left..lower_left_idx]) + lower_size;
+            let new_ratio = calc_ratio(new_upper_size, new_lower_size);
+            if new_ratio > candidate_ratio {
+                upper_left_idx -= 1;
+                lower_left_idx = left;
+                upper_size = new_upper_size;
+                lower_size = new_lower_size;
+            } else {
+                break;
+            }
+        }
+        // Expand to right to include more tops as long as the ratio doesn't decrease
+        // and the total size do not exceeds maxCompactionExpandSize.
+        let cur_upper_right_idx = upper_right_idx;
+        for i in cur_upper_right_idx..upper_level_candidates.len() {
+            let t = &upper_level_candidates[i];
+            let (left, right) = get_tables_in_range(&lower_level.tables, t.smallest(), t.biggest());
+            if left > lower_right_idx {
+                // A bottom table is skipped, we can compact in another run.
+                break;
+            }
+            let new_upper_size = t.size() + upper_size;
+            let new_lower_size =
+                sum_tbl_size(&lower_level.tables[lower_right_idx..right]) + lower_size;
+            let new_ratio = calc_ratio(new_upper_size, new_lower_size);
+            if new_ratio > candidate_ratio
+                && (new_upper_size + new_lower_size) < MAX_COMPACTION_EXPAND_SIZE
+            {
+                upper_right_idx += 1;
+                lower_right_idx = right;
+                upper_size = new_upper_size;
+                lower_size = new_lower_size;
+            } else {
+                break;
+            }
+        }
+        let upper_level_table_ids: Vec<_> = upper_level_candidates[upper_left_idx..upper_right_idx]
+            .iter()
+            .map(|t| t.id())
+            .collect();
+        let lower_level_table_ids: Vec<_> = lower_level.tables[lower_left_idx..lower_right_idx]
+            .iter()
+            .map(|t| t.id())
+            .collect();
+        if lower_level_table_ids.is_empty() && cf as usize == WRITE_CF {
+            info!("move down L{} CF{} for {}", level, cf, tag);
+            // Move down. only write CF benefits from this optimization.
+            let mut comp = pb::Compaction::new();
+            comp.set_cf(cf as i32);
+            comp.set_level(level as u32);
+            comp.set_top_deletes(upper_level_table_ids);
+            let tbl_creates = upper_level_candidates[upper_left_idx..upper_right_idx]
+                .iter()
+                .map(|top_tbl| {
+                    let mut tbl_create = pb::TableCreate::new();
+                    tbl_create.set_id(top_tbl.id());
+                    tbl_create.set_cf(cf as i32);
+                    tbl_create.set_level(level as u32 + 1);
+                    tbl_create.set_smallest(top_tbl.smallest().to_vec());
+                    tbl_create.set_biggest(top_tbl.biggest().to_vec());
+                    tbl_create
+                })
+                .collect::<Vec<_>>();
+            comp.set_table_creates(tbl_creates.into());
+            let mut cs = new_change_set(id_ver.id, id_ver.ver);
+            cs.set_compaction(comp);
+            return Some(Ok(cs));
+        }
+        let mut has_overlap = false;
+        let mut kr = KeyRange::default();
+        // The range for overlapping check should include both upper level and lower
+        // level.
+        kr.update(&upper_level_candidates[upper_left_idx..upper_right_idx]);
+        kr.update(&lower_level.tables[lower_left_idx..lower_right_idx]);
+        for lvl_idx in (level + 1)..scf.levels.len() {
+            let lh = &scf.levels[lvl_idx];
+            let (left, right) = lh.overlapping_tables(&kr);
+            if left < right {
+                has_overlap = true;
+            }
+        }
+        let mut req = self.new_compact_request_with_shard(shard, cf, level);
+        req.overlap = has_overlap;
+        req.tops = upper_level_table_ids;
+        req.bottoms = lower_level_table_ids;
+        self.set_alloc_ids_for_request(&mut req, upper_size + lower_size);
+        req.cf = cf;
+        req.level = level;
+        info!(
+            "start compact L{} CF{} for {}, num_ids: {}, input_size: {}",
+            level,
+            cf,
+            tag,
+            req.file_ids.len(),
+            upper_size + lower_size,
+        );
+        Some(self.comp_client.compact(req))
+    }
+
+    pub(crate) fn trigger_major_compacton(&self, shard: &Shard) -> Option<Result<pb::ChangeSet>> {
+        let mut req = self.new_compact_request_with_shard(shard, 0, 0);
+        let mut ln_tables: HashMap<usize, Vec<(usize, Vec<u64>)>> = HashMap::new();
+        let mut total_size = 0;
+        let data = shard.get_data();
+        for (cf, shard_cf) in data.cfs.iter().enumerate() {
+            let mut ssts_for_cf = vec![];
+            for lh in &shard_cf.levels {
+                if lh.tables.is_empty() {
+                    continue;
+                }
+                ssts_for_cf.push((lh.level, lh.tables.iter().map(|t| t.id()).collect()));
+                total_size += lh.tables.iter().map(|t| t.size()).sum::<u64>();
+            }
+            ln_tables.insert(cf, ssts_for_cf);
+        }
+        total_size += data.l0_tbls.iter().map(|t| t.size()).sum::<u64>();
+        total_size += data.blob_tbl_map.values().map(|t| t.size()).sum::<u64>();
+        req.major_compaction = Some(MajorCompaction {
+            l0_tables: data.l0_tbls.iter().map(|t| t.id()).collect(),
+            ln_tables,
+            blob_tables: data.blob_tbl_map.keys().copied().collect(),
+            max_sst_size: self.opts.table_builder_options.max_table_size,
+            max_blob_table_size: self.opts.max_blob_table_size,
+            min_blob_size: self.opts.min_blob_size,
+            blob_prefetch_size: self.opts.blob_prefetch_size,
+        });
+        self.set_alloc_ids_for_request(&mut req, total_size);
+        info!(
+            "start major compact for {}, num_ids: {}, input_size: {}",
+            shard.tag(),
+            req.file_ids.len(),
+            total_size,
+        );
+        Some(self.comp_client.compact(req))
     }
 
     pub(crate) fn handle_compact_response(&self, cs: pb::ChangeSet) {
@@ -870,26 +1023,50 @@ impl Engine {
     }
 }
 
-#[derive(Clone, Default, Debug)]
-pub(crate) struct CompactionPriority {
-    pub cf: isize,
-    pub level: usize,
-    pub score: f64,
-    pub shard_id: u64,
-    pub shard_ver: u64,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) enum CompactionPriority {
+    L0 { score: f64 },
+    L1Plus { cf: isize, score: f64, level: usize },
+    Major,
+}
+
+impl CompactionPriority {
+    pub(crate) fn score(&self) -> f64 {
+        match self {
+            CompactionPriority::L0 { score } => *score,
+            CompactionPriority::L1Plus { score, .. } => *score,
+            CompactionPriority::Major => f64::MAX,
+        }
+    }
+
+    pub(crate) fn level(&self) -> isize {
+        match self {
+            CompactionPriority::L0 { .. } => 0,
+            CompactionPriority::L1Plus { level, .. } => *level as isize,
+            CompactionPriority::Major => -1,
+        }
+    }
+
+    pub(crate) fn cf(&self) -> isize {
+        match self {
+            CompactionPriority::L0 { .. } => -1,
+            CompactionPriority::L1Plus { cf, .. } => *cf,
+            CompactionPriority::Major => -1,
+        }
+    }
 }
 
 impl Ord for CompactionPriority {
     fn cmp(&self, other: &Self) -> CmpOrdering {
-        self.score
-            .partial_cmp(&other.score)
+        self.score()
+            .partial_cmp(&other.score())
             .unwrap_or(CmpOrdering::Equal)
     }
 }
 
 impl PartialOrd for CompactionPriority {
     fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
-        self.score.partial_cmp(&other.score)
+        self.score().partial_cmp(&other.score())
     }
 }
 
@@ -907,25 +1084,23 @@ pub(crate) struct KeyRange {
     pub right: Bytes,
 }
 
-pub(crate) fn get_key_range(tables: &[SSTable]) -> KeyRange {
-    let mut smallest = tables[0].smallest();
-    let mut biggest = tables[0].biggest();
-    for i in 1..tables.len() {
-        let tbl = &tables[i];
-        if tbl.smallest() < smallest {
-            smallest = tbl.smallest();
+impl KeyRange {
+    pub(crate) fn update(&mut self, tables: &[SsTable]) {
+        if tables.is_empty() {
+            return;
         }
-        if tbl.biggest() > tbl.biggest() {
-            biggest = tbl.biggest();
+        let lower_smallest = tables.first().unwrap().smallest();
+        if self.left.is_empty() || lower_smallest < self.left.chunk() {
+            self.left = Bytes::copy_from_slice(lower_smallest);
         }
-    }
-    KeyRange {
-        left: Bytes::copy_from_slice(smallest),
-        right: Bytes::copy_from_slice(biggest),
+        let lower_biggest = tables.last().unwrap().biggest();
+        if lower_biggest > self.right.chunk() {
+            self.right = Bytes::copy_from_slice(lower_biggest);
+        }
     }
 }
 
-pub(crate) fn get_tables_in_range(tables: &[SSTable], start: &[u8], end: &[u8]) -> (usize, usize) {
+pub(crate) fn get_tables_in_range(tables: &[SsTable], start: &[u8], end: &[u8]) -> (usize, usize) {
     let left = search(tables.len(), |i| start <= tables[i].biggest());
     let right = search(tables.len(), |i| end < tables[i].smallest());
     (left, right)
@@ -933,7 +1108,7 @@ pub(crate) fn get_tables_in_range(tables: &[SSTable], start: &[u8], end: &[u8]) 
 
 pub(crate) fn compact_l0(
     req: &CompactionRequest,
-    fs: Arc<dyn dfs::DFS>,
+    fs: Arc<dyn dfs::Dfs>,
     compression_lvl: i32,
 ) -> Result<Vec<pb::TableCreate>> {
     let opts = dfs::Options::new(req.shard_id, req.shard_ver);
@@ -950,14 +1125,14 @@ pub(crate) fn compact_l0(
     }
 
     let channel_cap = req.file_ids.len();
-    let (tx, rx) = tikv_util::mpsc::bounded(channel_cap as usize);
+    let (tx, rx) = tikv_util::mpsc::bounded(channel_cap);
     let mut id_idx = 0;
     for cf in 0..NUM_CFS {
         let mut iter = build_compact_l0_iterator(
             cf,
             l0_tbls.clone(),
             std::mem::take(&mut mult_cf_bot_tbls[cf]),
-            &req.start,
+            req.inner_start(),
         );
         let mut helper = CompactL0Helper::new(cf, req, compression_lvl);
         loop {
@@ -1004,7 +1179,7 @@ pub(crate) fn compact_l0(
 
 pub(crate) fn load_table_files(
     tbl_ids: &[u64],
-    fs: Arc<dyn dfs::DFS>,
+    fs: Arc<dyn dfs::Dfs>,
     opts: dfs::Options,
 ) -> Result<Vec<InMemFile>> {
     let mut files = vec![];
@@ -1018,7 +1193,7 @@ pub(crate) fn load_table_files(
                 .read_file(aid, opts)
                 .await
                 .map(|data| (aid, data))
-                .map_err(|e| Error::DFSError(e));
+                .map_err(|e| Error::DfsError(e));
             atx.send(res).unwrap();
         });
     }
@@ -1045,17 +1220,17 @@ fn in_mem_files_to_l0_tables(files: Vec<InMemFile>) -> Vec<sstable::L0Table> {
         .collect()
 }
 
-fn in_mem_files_to_tables(files: Vec<InMemFile>) -> Vec<sstable::SSTable> {
+fn in_mem_files_to_tables(files: Vec<InMemFile>) -> Vec<sstable::SsTable> {
     files
         .into_iter()
-        .map(|f| sstable::SSTable::new(Arc::new(f), None, false).unwrap())
+        .map(|f| sstable::SsTable::new(Arc::new(f), None, false).unwrap())
         .collect()
 }
 
 fn build_compact_l0_iterator(
     cf: usize,
     top_tbls: Vec<sstable::L0Table>,
-    bot_tbls: Vec<sstable::SSTable>,
+    bot_tbls: Vec<sstable::SsTable>,
     start: &[u8],
 ) -> Box<dyn table::Iterator> {
     let mut iters: Vec<Box<dyn table::Iterator>> = vec![];
@@ -1093,7 +1268,7 @@ impl CompactL0Helper {
             skip_key: BytesMut::new(),
             safe_ts: req.safe_ts,
             max_table_size: req.max_table_size,
-            end: req.end.clone(),
+            end: req.inner_end().to_vec(),
         }
     }
 
@@ -1129,11 +1304,13 @@ impl CompactL0Helper {
                 self.last_key.extend_from_slice(key);
             }
 
-            // Only consider the versions which are below the safeTS, otherwise, we might end up discarding the
-            // only valid version for a running transaction.
+            // Only consider the versions which are below the safeTS, otherwise, we might
+            // end up discarding the only valid version for a running
+            // transaction.
             let val = iter.value();
             if val.version <= self.safe_ts {
-                // key is the latest readable version of this key, so we simply discard all the rest of the versions.
+                // key is the latest readable version of this key, so we simply discard all the
+                // rest of the versions.
                 self.skip_key.clear();
                 self.skip_key.extend_from_slice(key);
                 if !val.is_deleted() {
@@ -1144,16 +1321,17 @@ impl CompactL0Helper {
                             continue;
                         }
                         Decision::MarkTombStone => {
-                            // There may have old versions for this key, so convert to delete tombstone.
+                            // There may have old versions for this key, so convert to delete
+                            // tombstone.
                             self.builder
-                                .add(key, table::Value::new_tombstone(val.version));
+                                .add(key, &table::Value::new_tombstone(val.version), None);
                             iter.next_all_version();
                             continue;
                         }
                     }
                 }
             }
-            self.builder.add(key, val);
+            self.builder.add(key, &val, None);
             iter.next_all_version();
         }
         if self.builder.is_empty() {
@@ -1173,7 +1351,7 @@ impl CompactL0Helper {
 
 pub(crate) fn compact_tables(
     req: &CompactionRequest,
-    fs: Arc<dyn dfs::DFS>,
+    fs: Arc<dyn dfs::Dfs>,
     compression_lvl: i32,
 ) -> Result<Vec<pb::TableCreate>> {
     let tag = ShardTag::from_comp_req(req);
@@ -1191,7 +1369,7 @@ pub(crate) fn compact_tables(
     let top_iter = Box::new(ConcatIterator::new_with_tables(top_tables, false, false));
     let bot_iter = Box::new(ConcatIterator::new_with_tables(bot_tables, false, false));
     let mut iter = table::new_merge_iterator(vec![top_iter, bot_iter], false);
-    iter.seek(&req.start);
+    iter.seek(req.inner_start());
 
     let mut last_key = BytesMut::new();
     let mut skip_key = BytesMut::new();
@@ -1228,7 +1406,7 @@ pub(crate) fn compact_tables(
                 if !last_key.is_empty() && builder.estimated_size() + kv_size > req.max_table_size {
                     break;
                 }
-                if key >= req.end.as_slice() {
+                if key >= req.inner_end() {
                     reach_end = true;
                     break;
                 }
@@ -1236,17 +1414,20 @@ pub(crate) fn compact_tables(
                 last_key.extend_from_slice(key);
             }
 
-            // Only consider the versions which are below the minReadTs, otherwise, we might end up discarding the
-            // only valid version for a running transaction.
+            // Only consider the versions which are below the minReadTs, otherwise, we might
+            // end up discarding the only valid version for a running
+            // transaction.
             if req.cf as usize == LOCK_CF || val.version <= req.safe_ts {
-                // key is the latest readable version of this key, so we simply discard all the rest of the versions.
+                // key is the latest readable version of this key, so we simply discard all the
+                // rest of the versions.
                 skip_key.clear();
                 skip_key.extend_from_slice(key);
 
                 if val.is_deleted() {
                     // If this key range has overlap with lower levels, then keep the deletion
                     // marker with the latest version, discarding the rest. We have set skipKey,
-                    // so the following key versions would be skipped. Otherwise discard the deletion marker.
+                    // so the following key versions would be skipped. Otherwise discard the
+                    // deletion marker.
                     if !req.overlap {
                         iter.next_all_version();
                         continue;
@@ -1260,8 +1441,9 @@ pub(crate) fn compact_tables(
                         }
                         Decision::MarkTombStone => {
                             if req.overlap {
-                                // There may have old versions for this key, so convert to delete tombstone.
-                                builder.add(key, table::Value::new_tombstone(val.version));
+                                // There may be old versions for this key, so convert to delete
+                                // tombstone.
+                                builder.add(key, &table::Value::new_tombstone(val.version), None);
                             }
                             iter.next_all_version();
                             continue;
@@ -1269,7 +1451,7 @@ pub(crate) fn compact_tables(
                     }
                 }
             }
-            builder.add(key, val);
+            builder.add(key, &val, None);
             iter.next_all_version();
         }
         if builder.is_empty() {
@@ -1317,14 +1499,15 @@ enum Decision {
 }
 
 // filter implements the badger.CompactionFilter interface.
-// Since we use txn ts as badger version, we only need to filter Delete, Rollback and Op_Lock.
-// It is called for the first valid version before safe point, older versions are discarded automatically.
+// Since we use txn ts as badger version, we only need to filter Delete,
+// Rollback and Op_Lock. It is called for the first valid version before safe
+// point, older versions are discarded automatically.
 fn filter(safe_ts: u64, cf: usize, val: table::Value) -> Decision {
     let user_meta = val.user_meta();
     if cf == WRITE_CF {
         if user_meta.len() == USER_META_SIZE {
             let um = UserMeta::from_slice(user_meta);
-            if um.commit_ts < safe_ts && val.get_value().is_empty() {
+            if um.commit_ts < safe_ts && val.is_value_empty() {
                 return Decision::MarkTombStone;
             }
         }
@@ -1339,12 +1522,13 @@ fn filter(safe_ts: u64, cf: usize, val: table::Value) -> Decision {
             }
         }
     }
-    // Older version are discarded automatically, we need to keep the first valid version.
+    // Older version are discarded automatically, we need to keep the first valid
+    // version.
     Decision::Keep
 }
 
 pub async fn handle_remote_compaction(
-    dfs: Arc<dyn dfs::DFS>,
+    dfs: Arc<dyn dfs::Dfs>,
     req: hyper::Request<hyper::Body>,
     compression_lvl: i32,
 ) -> hyper::Result<hyper::Response<hyper::Body>> {
@@ -1373,6 +1557,7 @@ pub async fn handle_remote_compaction(
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
+        tikv_util::set_current_region(comp_req.shard_id);
         let result = local_compact(dfs, &comp_req, compression_lvl);
         tx.send(result).unwrap();
     });
@@ -1394,7 +1579,7 @@ pub async fn handle_remote_compaction(
 }
 
 fn local_compact(
-    dfs: Arc<dyn dfs::DFS>,
+    dfs: Arc<dyn dfs::Dfs>,
     req: &CompactionRequest,
     compression_lvl: i32,
 ) -> Result<pb::ChangeSet> {
@@ -1432,6 +1617,16 @@ fn local_compact(
         return Ok(cs);
     }
 
+    if let Some(major_compaction) = &req.major_compaction {
+        cs.set_major_compaction(major_compact(
+            req,
+            major_compaction,
+            dfs.clone(),
+            compression_lvl,
+        )?);
+        return Ok(cs);
+    }
+
     let mut comp = pb::Compaction::new();
     comp.set_top_deletes(req.tops.clone());
     comp.set_cf(req.cf as i32);
@@ -1457,7 +1652,7 @@ fn local_compact(
 /// Compact files in place to remove data covered by delete prefixes.
 fn compact_destroy_range(
     req: &CompactionRequest,
-    dfs: Arc<dyn dfs::DFS>,
+    dfs: Arc<dyn dfs::Dfs>,
     compression_lvl: i32,
 ) -> Result<pb::TableChange> {
     assert!(
@@ -1480,7 +1675,7 @@ fn compact_destroy_range(
 
     let mut deletes = vec![];
     let mut creates = vec![];
-    let del_prefixes = DeletePrefixes::unmarshal(&req.del_prefixes);
+    let del_prefixes = DeletePrefixes::unmarshal(&req.del_prefixes, req.inner_key_off);
     let (tx, rx) = tikv_util::mpsc::bounded(req.file_ids.len());
     for (&(id, level, cf), &new_id) in req.in_place_compact_files.iter().zip(req.file_ids.iter()) {
         let file = files.remove(&id).unwrap();
@@ -1494,7 +1689,7 @@ fn compact_destroy_range(
                     while iter.valid() {
                         let key = iter.key();
                         if !del_prefixes.cover_prefix(key) {
-                            builder.add(cf, key, iter.value());
+                            builder.add(cf, key, &iter.value(), None);
                         }
                         iter.next_all_version();
                     }
@@ -1507,7 +1702,7 @@ fn compact_destroy_range(
             let (smallest, biggest) = builder.smallest_biggest();
             (data, smallest.to_vec(), biggest.to_vec())
         } else {
-            let t = sstable::SSTable::new(Arc::new(file), None, false).unwrap();
+            let t = sstable::SsTable::new(Arc::new(file), None, false).unwrap();
             let mut builder = sstable::Builder::new(
                 new_id,
                 req.block_size,
@@ -1519,7 +1714,7 @@ fn compact_destroy_range(
             while iter.valid() {
                 let key = iter.key();
                 if !del_prefixes.cover_prefix(key) {
-                    builder.add(key, iter.value());
+                    builder.add(key, &iter.value(), None);
                 }
                 iter.next_all_version();
             }
@@ -1566,7 +1761,7 @@ fn compact_destroy_range(
 
 fn compact_truncate_ts(
     req: &CompactionRequest,
-    dfs: Arc<dyn dfs::DFS>,
+    dfs: Arc<dyn dfs::Dfs>,
     compression_lvl: i32,
 ) -> Result<pb::TableChange> {
     let truncate_ts = req.truncate_ts.unwrap();
@@ -1610,7 +1805,7 @@ fn compact_truncate_ts(
                         // Keep data in LOCK_CF. Locks would be resolved by TiDB.
                         // TODO: handle async commit
                         if cf == LOCK_CF || value.version <= truncate_ts {
-                            builder.add(cf, key, value);
+                            builder.add(cf, key, &value, None);
                         }
                         iter.next_all_version();
                     }
@@ -1623,7 +1818,7 @@ fn compact_truncate_ts(
             let (smallest, biggest) = builder.smallest_biggest();
             (data, smallest.to_vec(), biggest.to_vec())
         } else {
-            let t = sstable::SSTable::new(Arc::new(file), None, false).unwrap();
+            let t = sstable::SsTable::new(Arc::new(file), None, false).unwrap();
             let mut builder = sstable::Builder::new(
                 new_id,
                 req.block_size,
@@ -1638,7 +1833,7 @@ fn compact_truncate_ts(
                 // Keep data in LOCK_CF. Locks would be resolved by TiDB.
                 // TODO: handle async commit
                 if cf as usize == LOCK_CF || value.version <= truncate_ts {
-                    builder.add(key, value);
+                    builder.add(key, &value, None);
                 }
                 iter.next_all_version();
             }
@@ -1684,7 +1879,7 @@ fn compact_truncate_ts(
 /// Compact files in place to remove data out of shard bound.
 fn compact_trim_over_bound(
     req: &CompactionRequest,
-    dfs: Arc<dyn dfs::DFS>,
+    dfs: Arc<dyn dfs::Dfs>,
     compression_lvl: i32,
 ) -> Result<pb::TableChange> {
     assert!(req.trim_over_bound && !req.in_place_compact_files.is_empty());
@@ -1721,13 +1916,13 @@ fn compact_trim_over_bound(
             for cf in 0..NUM_CFS {
                 if let Some(cf_t) = t.get_cf(cf) {
                     let mut iter = cf_t.new_iterator(false, false);
-                    iter.seek(&req.start);
+                    iter.seek(req.inner_start());
                     while iter.valid() {
                         let key = iter.key();
-                        if key >= req.end.as_slice() {
+                        if key >= req.inner_end() {
                             break;
                         }
-                        builder.add(cf, key, iter.value());
+                        builder.add(cf, key, &iter.value(), None);
                         iter.next_all_version();
                     }
                 }
@@ -1739,7 +1934,7 @@ fn compact_trim_over_bound(
             let (smallest, biggest) = builder.smallest_biggest();
             (data, smallest.to_vec(), biggest.to_vec())
         } else {
-            let t = sstable::SSTable::new(Arc::new(file), None, false).unwrap();
+            let t = sstable::SsTable::new(Arc::new(file), None, false).unwrap();
             let mut builder = sstable::Builder::new(
                 new_id,
                 req.block_size,
@@ -1747,13 +1942,13 @@ fn compact_trim_over_bound(
                 compression_lvl,
             );
             let mut iter = t.new_iterator(false, false);
-            iter.seek(&req.start);
+            iter.seek(req.inner_start());
             while iter.valid() {
                 let key = iter.key();
-                if key >= req.end.as_slice() {
+                if key >= req.inner_end() {
                     break;
                 }
-                builder.add(key, iter.value());
+                builder.add(key, &iter.value(), None);
                 iter.next_all_version();
             }
             if builder.is_empty() {
@@ -1794,26 +1989,402 @@ fn compact_trim_over_bound(
     Ok(table_change)
 }
 
+fn finish_up_sst(
+    id: u64,
+    cf: usize,
+    builder: &mut sstable::Builder,
+    tx: mpsc::Sender<dfs::Result<FilePersistResult>>,
+    fs: Arc<dyn dfs::Dfs>,
+    opts: dfs::Options,
+) {
+    let mut buf = BytesMut::with_capacity(builder.estimated_size());
+    let res = builder.finish(0, &mut buf);
+    let mut tbl_create = pb::TableCreate::new();
+    tbl_create.set_id(id);
+    tbl_create.set_cf(cf as i32);
+    tbl_create.set_level(CF_LEVELS[cf] as u32);
+    tbl_create.set_smallest(res.smallest);
+    tbl_create.set_biggest(res.biggest);
+
+    let fs_clone = fs.clone();
+    fs.get_runtime().spawn(async move {
+        tx.send(
+            fs_clone
+                .create(id, buf.freeze(), opts)
+                .await
+                .map(|_| FilePersistResult::SsTableCreate(tbl_create)),
+        )
+        .unwrap();
+    });
+}
+
+fn finish_up_blob_table(
+    id: u64,
+    builder: &mut BlobTableBuilder,
+    tx: mpsc::Sender<dfs::Result<FilePersistResult>>,
+    fs: Arc<dyn dfs::Dfs>,
+    opts: dfs::Options,
+) {
+    let buf = builder.finish();
+    let mut blob_table_create = pb::BlobCreate::new();
+    blob_table_create.set_id(id);
+    let (smallest, biggest) = builder.smallest_biggest_key();
+    blob_table_create.set_smallest(smallest.to_vec());
+    blob_table_create.set_biggest(biggest.to_vec());
+    let fs_clone = fs.clone();
+    fs.get_runtime().spawn(async move {
+        tx.send(
+            fs_clone
+                .create(id, buf, opts)
+                .await
+                .map(|_| FilePersistResult::BlobTableCreate(blob_table_create)),
+        )
+        .unwrap();
+    });
+}
+
+enum FilePersistResult {
+    SsTableCreate(pb::TableCreate),
+    BlobTableCreate(pb::BlobCreate),
+}
+
+fn major_compact_for_cf(
+    req: &CompactionRequest,
+    major_compaction: &MajorCompaction,
+    fs: Arc<dyn dfs::Dfs>,
+    compression_lvl: i32,
+    opts: dfs::Options,
+    cf: usize,
+    iter: &mut Box<dyn Iterator>,
+    blob_tables: &HashMap<u64, BlobTable>,
+    id_idx: usize,
+    ret: &mut pb::MajorCompaction,
+) -> Result<usize> {
+    iter.seek(req.inner_start());
+    let mut last_key = BytesMut::new();
+    let mut skip_key = BytesMut::new();
+    if id_idx + 2 >= req.file_ids.len() {
+        panic!(
+            "require at least 2 file ids: the len is {} but the index is {}, req {:?}",
+            req.file_ids.len(),
+            id_idx,
+            req
+        );
+    }
+    let mut cur_sst_id = req.file_ids[id_idx];
+    let mut cur_blob_table_id = req.file_ids[id_idx + 1];
+    let mut next_availabl_id_idx = id_idx + 2;
+
+    // Owns the decompressed blob value while reading from the orginal blob
+    // table, to reduce the memory re-allocation.
+    let mut decompressed_blob_buf = vec![];
+    let mut builder = sstable::Builder::new(
+        cur_sst_id,
+        req.block_size,
+        req.compression_tp,
+        compression_lvl,
+    );
+    let mut blob_builder = BlobTableBuilder::new(
+        cur_blob_table_id,
+        0,
+        NO_COMPRESSION,
+        compression_lvl,
+        major_compaction.min_blob_size,
+    );
+    let (tx, rx) = tikv_util::mpsc::bounded(req.file_ids.len());
+    let mut cnt = 0;
+    while iter.valid() && iter.key() < req.inner_end() {
+        let mut val = iter.value();
+        let key = iter.key();
+        // See if we need to skip this key.
+        if !skip_key.is_empty() {
+            if key == skip_key {
+                iter.next_all_version();
+                continue;
+            } else {
+                skip_key.clear();
+            }
+        }
+        if key != last_key {
+            if !last_key.is_empty() {
+                // This is a new key but not the first key.
+                if builder.estimated_size() > req.max_table_size {
+                    cnt += 1;
+                    finish_up_sst(cur_sst_id, cf, &mut builder, tx.clone(), fs.clone(), opts);
+
+                    if next_availabl_id_idx >= req.file_ids.len() {
+                        panic!(
+                            "index out of bounds: the len is {} but the index is {}, req {:?}",
+                            req.file_ids.len(),
+                            id_idx,
+                            req
+                        );
+                    }
+                    cur_sst_id = req.file_ids[next_availabl_id_idx];
+                    builder.reset(cur_sst_id);
+                    next_availabl_id_idx += 1;
+                }
+                if blob_builder.total_blob_size() as usize > major_compaction.max_blob_table_size {
+                    cnt += 1;
+                    finish_up_blob_table(
+                        cur_blob_table_id,
+                        &mut blob_builder,
+                        tx.clone(),
+                        fs.clone(),
+                        opts,
+                    );
+                    if next_availabl_id_idx >= req.file_ids.len() {
+                        panic!(
+                            "index out of bounds: the len is {} but the index is {}, req {:?}",
+                            req.file_ids.len(),
+                            id_idx,
+                            req
+                        );
+                    }
+                    cur_blob_table_id = req.file_ids[next_availabl_id_idx];
+                    blob_builder.reset(cur_blob_table_id);
+                    next_availabl_id_idx += 1;
+                }
+            }
+            last_key.clear();
+            last_key.extend_from_slice(key);
+        }
+
+        // Only consider the versions which are below the minReadTs, otherwise, we might
+        // end up discarding the only valid version for a running transaction.
+        if cf == LOCK_CF || val.version <= req.safe_ts {
+            // key is the latest readable version of this key, so we simply discard all the
+            // rest of the versions.
+            skip_key.clear();
+            skip_key.extend_from_slice(key);
+
+            if val.is_deleted() {
+                iter.next_all_version();
+                continue;
+            }
+            match filter(req.safe_ts, cf, val) {
+                Decision::Keep => {}
+                Decision::Drop | Decision::MarkTombStone => {
+                    iter.next_all_version();
+                    continue;
+                }
+            }
+        }
+
+        let mut need_recompress_blob = false;
+        if val.is_external_link() {
+            let link = val.get_external_link();
+            let blob_table = blob_tables.get(&link.fid).unwrap_or_else(|| {
+                panic!(
+                    "[{}] blob table {} not found for key {:?}",
+                    req.shard_id, link.fid, key,
+                )
+            });
+            // TODO: we can avoid decompressing the blob in some cases even if the
+            // min_blob_size that we use to build the blob table is different
+            // from the min_blob_size that is requested by the major compaction.
+            // This requires the compression library to support getting the
+            // uncompressed size of a compressed blob.
+            if blob_table.compression_tp() != req.compression_tp
+                || blob_table.compression_lvl() != compression_lvl
+                || blob_table.min_blob_size() < major_compaction.min_blob_size
+            {
+                need_recompress_blob = true;
+            }
+            let blob = blob_table
+                .get_from_preloaded(
+                    link.offset,
+                    link.len,
+                    need_recompress_blob,
+                    &mut decompressed_blob_buf,
+                )
+                .unwrap();
+            // If need_recompress_blob is false, we can write the blob directly to the new
+            // blob table, and it is guaranteed that the blob size is larger
+            // than min_blob_size, so we don't need to check the blob size.
+            // If need_recompress_blob is true, we need to check the blob size.
+            if !need_recompress_blob || blob.len() >= major_compaction.min_blob_size as usize {
+                let (offset, len) = blob_builder.add_blob(key, blob, need_recompress_blob);
+                let mut external_link = ExternalLink::new();
+                external_link.fid = blob_builder.get_fid();
+                external_link.len = len;
+                external_link.offset = offset;
+                builder.add(key, &val, Some(external_link));
+            } else {
+                val.fill_in_blob(blob);
+                builder.add(key, &val, None);
+            }
+        } else {
+            assert!(!val.is_external_link());
+            if val.value_len() >= major_compaction.min_blob_size as usize {
+                let (offset, len) = blob_builder.add(key, &val);
+                let mut external_link = ExternalLink::new();
+                external_link.fid = blob_builder.get_fid();
+                external_link.len = len;
+                external_link.offset = offset;
+                builder.add(key, &val, Some(external_link));
+            } else {
+                builder.add(key, &val, None);
+            }
+        }
+        iter.next_all_version();
+    }
+    if !builder.is_empty() {
+        cnt += 1;
+        finish_up_sst(cur_sst_id, cf, &mut builder, tx.clone(), fs.clone(), opts);
+    }
+    if !blob_builder.is_empty() {
+        cnt += 1;
+        finish_up_blob_table(cur_blob_table_id, &mut blob_builder, tx, fs.clone(), opts);
+    }
+    let mut errors = vec![];
+    for _ in 0..cnt {
+        match rx.recv().unwrap() {
+            Err(err) => errors.push(err),
+            Ok(FilePersistResult::SsTableCreate(tbl_create)) => {
+                ret.mut_sstable_change()
+                    .mut_table_creates()
+                    .push(tbl_create);
+            }
+            Ok(FilePersistResult::BlobTableCreate(blob_table_create)) => {
+                ret.mut_new_blob_tables().push(blob_table_create);
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.pop().unwrap().into());
+    }
+    Ok(next_availabl_id_idx)
+}
+
+fn load_blob_tables(
+    fs: Arc<dyn dfs::Dfs>,
+    blob_table_ids: &[u64],
+    opts: dfs::Options,
+) -> Result<HashMap<u64, BlobTable>> {
+    let mut blob_tables = HashMap::new();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<(u64, Bytes)>>(blob_table_ids.len());
+    for id in blob_table_ids {
+        let aid = *id;
+        let atx = tx.clone();
+        let afs = fs.clone();
+        fs.get_runtime().spawn(async move {
+            let res = afs
+                .read_file(aid, opts)
+                .await
+                .map(|data| (aid, data))
+                .map_err(|e| Error::DfsError(e));
+            atx.send(res).unwrap();
+        });
+    }
+    let mut errors = vec![];
+    for _ in blob_table_ids {
+        match rx.recv().unwrap() {
+            Err(err) => errors.push(err),
+            Ok((id, data)) => {
+                blob_tables.insert(id, BlobTable::from_bytes(data)?);
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.pop().unwrap());
+    }
+    Ok(blob_tables)
+}
+
+fn major_compact(
+    req: &CompactionRequest,
+    major_compaction: &MajorCompaction,
+    fs: Arc<dyn dfs::Dfs>,
+    compression_lvl: i32,
+) -> Result<pb::MajorCompaction> {
+    debug!("[{}] major compaction starts req {:?}", req.shard_id, req);
+    let opts = dfs::Options::new(req.shard_id, req.shard_ver);
+    let mut ret = pb::MajorCompaction::new();
+    ret.mut_old_blob_tables()
+        .extend_from_slice(&major_compaction.blob_tables);
+    let mut id_idx = 0;
+    let blob_tables = load_blob_tables(fs.clone(), &major_compaction.blob_tables, opts)?;
+    let l0_files = load_table_files(&major_compaction.l0_tables, fs.clone(), opts)?;
+    let mut l0_tbls = in_mem_files_to_l0_tables(l0_files);
+    l0_tbls.sort_by(|a, b| b.version().cmp(&a.version()));
+    l0_tbls.iter().for_each(|tbl| {
+        let mut tbl_delete = pb::TableDelete::new();
+        tbl_delete.set_id(tbl.id());
+        ret.mut_sstable_change()
+            .mut_table_deletes()
+            .push(tbl_delete);
+    });
+    for cf in 0..NUM_CFS {
+        let mut iters: Vec<Box<dyn table::Iterator>> = vec![];
+        for l0_tbl in &l0_tbls {
+            if let Some(tbl) = l0_tbl.get_cf(cf) {
+                let iter = tbl.new_iterator(false, false);
+                iters.push(iter);
+            }
+        }
+        if let Some(sstables) = major_compaction.ln_tables.get(&cf) {
+            for (level, table_ids) in sstables.iter() {
+                table_ids.iter().for_each(|t| {
+                    let mut tbl_delete = pb::TableDelete::new();
+                    tbl_delete.set_cf(cf as i32);
+                    tbl_delete.set_level(*level as u32);
+                    tbl_delete.set_id(*t);
+                    ret.mut_sstable_change()
+                        .mut_table_deletes()
+                        .push(tbl_delete);
+                });
+                let files = load_table_files(table_ids, fs.clone(), opts)?;
+                let mut tables = in_mem_files_to_tables(files);
+                tables.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+                let level_concat_iter =
+                    Box::new(ConcatIterator::new_with_tables(tables, false, false));
+                iters.push(level_concat_iter);
+            }
+        }
+        if iters.is_empty() {
+            continue;
+        }
+        let mut iter = table::new_merge_iterator(iters, false);
+        id_idx = major_compact_for_cf(
+            req,
+            major_compaction,
+            fs.clone(),
+            compression_lvl,
+            opts,
+            cf,
+            &mut iter,
+            &blob_tables,
+            id_idx,
+            &mut ret,
+        )?;
+    }
+    Ok(ret)
+}
+
 pub(crate) enum CompactMsg {
     /// The shard is ready to be compacted / destroyed range / truncated ts.
-    Compact(IDVer),
+    Compact(IdVer),
 
     /// Compaction finished.
     Finish {
         task_id: u64,
-        id_ver: IDVer,
+        id_ver: IdVer,
         // This variant is too large(256 bytes). Box it to reduce size.
         result: Box<Option<Result<pb::ChangeSet>>>,
     },
 
-    /// The compaction change set is applied to the engine, so the shard is ready
-    /// for next compaction.
-    Applied(IDVer),
+    /// The compaction change set is applied to the engine, so the shard is
+    /// ready for next compaction.
+    Applied(IdVer),
 
-    /// Clear message is sent when a shard changed its version or set to inactive.
-    /// Then all the previous tasks will be discarded.
+    /// Clear message is sent when a shard changed its version or set to
+    /// inactive. Then all the previous tasks will be discarded.
     /// This simplifies the logic, avoid race condition.
-    Clear(IDVer),
+    Clear(IdVer),
+
+    /// Stop background compact thread.
+    Stop,
 }
 
 pub(crate) struct CompactRunner {
@@ -1821,16 +2392,19 @@ pub(crate) struct CompactRunner {
     rx: mpsc::Receiver<CompactMsg>,
     /// task_id is the identity of each compaction job.
     ///
-    /// When a shard is set to inactive, all the compaction jobs of this shard should be discarded, then when
-    /// it is set to active again, old result may arrive and conflict with the new tasks.
-    /// So we use task_id to detect and discard obsolete tasks.
+    /// When a shard is set to inactive, all the compaction jobs of this shard
+    /// should be discarded, then when it is set to active again, old result
+    /// may arrive and conflict with the new tasks. So we use task_id to
+    /// detect and discard obsolete tasks.
     task_id: u64,
     /// `running` contains shards' running compaction `task_id`s.
-    running: HashMap<IDVer, u64 /* task_id */>,
-    /// `notified` contains shards that have finished a compaction job and been notified to apply it.
-    notified: HashSet<IDVer>,
-    /// `pending` contains shards that want to do compaction but the job queue is full now.
-    pending: HashSet<IDVer>,
+    running: HashMap<IdVer, u64 /* task_id */>,
+    /// `notified` contains shards that have finished a compaction job and been
+    /// notified to apply it.
+    notified: HashSet<IdVer>,
+    /// `pending` contains shards that want to do compaction but the job queue
+    /// is full now.
+    pending: HashSet<IdVer>,
 }
 
 impl CompactRunner {
@@ -1859,12 +2433,21 @@ impl CompactRunner {
                 CompactMsg::Applied(id_ver) => self.compaction_applied(id_ver),
 
                 CompactMsg::Clear(id_ver) => self.clear(id_ver),
+
+                CompactMsg::Stop => {
+                    info!(
+                        "Engine {} compaction worker receive stop msg and stop now",
+                        self.engine.get_engine_id()
+                    );
+                    break;
+                }
             }
         }
     }
 
-    fn compact(&mut self, id_ver: IDVer) {
-        // The shard is compacting, and following compaction will be trigger after apply.
+    fn compact(&mut self, id_ver: IdVer) {
+        // The shard is compacting, and following compaction will be trigger after
+        // apply.
         if self.is_compacting(id_ver) {
             return;
         }
@@ -1877,21 +2460,19 @@ impl CompactRunner {
         self.running.insert(id_ver, task_id);
         let engine = self.engine.clone();
         std::thread::spawn(move || {
+            tikv_util::set_current_region(id_ver.id);
             let result = Box::new(engine.compact(id_ver));
-            engine
-                .compact_tx
-                .send(CompactMsg::Finish {
-                    task_id,
-                    id_ver,
-                    result,
-                })
-                .unwrap();
+            engine.send_compact_msg(CompactMsg::Finish {
+                task_id,
+                id_ver,
+                result,
+            });
         });
     }
 
     fn compaction_finished(
         &mut self,
-        id_ver: IDVer,
+        id_ver: IdVer,
         task_id: u64,
         result: Option<Result<pb::ChangeSet>>,
     ) {
@@ -1924,8 +2505,8 @@ impl CompactRunner {
             }
             None => {
                 info!("shard {} got empty compaction result", tag);
-                // The compaction result can be none under complex situations. To avoid compaction
-                // not making progress, we trigger it actively.
+                // The compaction result can be none under complex situations. To avoid
+                // compaction not making progress, we trigger it actively.
                 if let Ok(shard) = self.engine.get_shard_with_ver(id_ver.id, id_ver.ver) {
                     self.engine.refresh_shard_states(&shard);
                 }
@@ -1934,18 +2515,19 @@ impl CompactRunner {
         }
     }
 
-    fn compaction_applied(&mut self, id_ver: IDVer) {
-        // It's possible the shard is not being pending applied, because it may apply a compaction
-        // from the former leader, so we use both `running` and `notified` to detect whether
-        // it's compacting. It can avoid spawning more compaction jobs, e.g., a new leader spawns
-        // one but not yet finished, and it applies the compaction from the former leader, then the
-        // new leader spawns another one. However, it's possible the new compaction is finished and
-        // not yet applied, it can result in duplicated compaction but no exceeding compaction
-        // jobs.
+    fn compaction_applied(&mut self, id_ver: IdVer) {
+        // It's possible the shard is not being pending applied, because it may apply a
+        // compaction from the former leader, so we use both `running` and
+        // `notified` to detect whether it's compacting. It can avoid spawning
+        // more compaction jobs, e.g., a new leader spawns one but not yet
+        // finished, and it applies the compaction from the former leader, then the
+        // new leader spawns another one. However, it's possible the new compaction is
+        // finished and not yet applied, it can result in duplicated compaction
+        // but no exceeding compaction jobs.
         self.notified.remove(&id_ver);
     }
 
-    fn clear(&mut self, id_ver: IDVer) {
+    fn clear(&mut self, id_ver: IdVer) {
         self.running.remove(&id_ver);
         self.notified.remove(&id_ver);
         self.pending.remove(&id_ver);
@@ -1962,7 +2544,7 @@ impl CompactRunner {
         }
     }
 
-    fn pick_highest_pri_pending_shard(&mut self) -> Option<IDVer> {
+    fn pick_highest_pri_pending_shard(&mut self) -> Option<IdVer> {
         let engine = self.engine.clone();
         self.pending
             .retain(|id_ver| engine.get_shard_with_ver(id_ver.id, id_ver.ver).is_ok());
@@ -1997,7 +2579,7 @@ impl CompactRunner {
         self.running.len() >= self.engine.opts.num_compactors
     }
 
-    fn is_compacting(&self, id_ver: IDVer) -> bool {
+    fn is_compacting(&self, id_ver: IdVer) -> bool {
         self.running.contains_key(&id_ver) || self.notified.contains(&id_ver)
     }
 }

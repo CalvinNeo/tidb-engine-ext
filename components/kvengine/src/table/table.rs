@@ -1,11 +1,14 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{io, ptr, result, slice};
+use std::{convert::TryInto, io, mem::size_of, ptr, result, slice};
 
 use byteorder::{ByteOrder, LittleEndian};
 use thiserror::Error;
 
-use crate::dfs;
+use crate::{
+    dfs,
+    table::blobtable::builder::{BlobOffset, ValueLength},
+};
 
 pub trait Iterator: Send {
     // next returns the next entry with different key on the latest version.
@@ -14,8 +17,8 @@ pub trait Iterator: Send {
 
     // next_version set the current entry to an older version.
     // The iterator must be valid to call this method.
-    // It returns true if there is an older version, returns false if there is no older version.
-    // The iterator is still valid and on the same key.
+    // It returns true if there is an older version, returns false if there is no
+    // older version. The iterator is still valid and on the same key.
     fn next_version(&mut self) -> bool;
 
     fn rewind(&mut self);
@@ -48,84 +51,174 @@ pub trait Iterator: Send {
 }
 
 pub const BIT_DELETE: u8 = 1;
+pub const BIT_HAS_OLD_VERSION: u8 = 2;
+pub const BIT_EXTERNAL_LINK: u8 = 4;
 
 pub fn is_deleted(meta: u8) -> bool {
     meta & BIT_DELETE > 0
 }
 
-const VALUE_PTR_OFF: usize = 10;
+pub fn is_external_link(meta: u8) -> bool {
+    meta & BIT_EXTERNAL_LINK > 0
+}
+
+pub fn is_old_version(meta: u8) -> bool {
+    meta & BIT_HAS_OLD_VERSION > 0
+}
+
+/// [ meta: u8, user_meta_len: u8]
+pub const VALUE_VERSION_OFF: usize = 2;
+
+// Size in bytes of the version field.
+pub const VALUE_VERSION_LEN: usize = std::mem::size_of::<u64>();
+
+/// Disk format is: [VAR_PTR_OFF + version: u64 + user_meta_len + data]
+/// Only data is stored in the blob file, eveything else goes in the SST.
+///
+/// Where data is:
+/// If extrernal link is set in meta:
+///     [serialized ExternalLink in little endian format]
+/// else
+///     [data as is]
+/// Link to data when the value is stored externally.
+#[derive(Default, Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct ExternalLink {
+    /// ID of file where the data is stored.
+    pub(crate) fid: u64,
+    /// Absolute offset within the file. Apparently SST max size is <= 4GB.
+    pub(crate) offset: BlobOffset,
+    /// Original value length.
+    pub(crate) len: ValueLength,
+}
+
+pub struct Version(pub u64);
+
+impl Version {
+    pub fn serialize(buf: &mut [u8], version: u64) -> usize {
+        LittleEndian::write_u64(buf, version);
+        size_of::<u64>()
+    }
+
+    pub fn deserialize(buf: &[u8]) -> u64 {
+        LittleEndian::read_u64(buf)
+    }
+}
+
+impl ExternalLink {
+    pub(crate) fn new() -> Self {
+        Default::default()
+    }
+
+    fn deserialize(&mut self, buf: &[u8]) -> u8 {
+        let mut offset: usize = 0;
+        self.fid = LittleEndian::read_u64(&buf[offset..]);
+        offset += size_of::<u64>();
+        self.offset = LittleEndian::read_u32(&buf[offset..]);
+        offset += size_of::<u32>();
+        self.len = LittleEndian::read_u32(&buf[offset..]);
+        size_of::<Self>().try_into().unwrap()
+    }
+
+    fn serialize(&self, buf: &mut [u8]) -> u8 {
+        let mut offset: usize = 0;
+        LittleEndian::write_u64(&mut buf[offset..], self.fid);
+        offset += size_of::<u64>();
+        LittleEndian::write_u32(&mut buf[offset..], self.offset);
+        offset += size_of::<u32>();
+        LittleEndian::write_u32(&mut buf[offset..], self.len);
+        size_of::<Self>().try_into().unwrap()
+    }
+
+    fn size_of() -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+unsafe impl Send for Value {}
 
 // Value is a short life struct used to pass value across iterators.
 // It is valid until iterator call next or next_version.
 // As long as the value is never escaped, there will be no dangling pointer.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Copy, Clone)]
 pub struct Value {
+    /// Points to start of user_meta_len at offset VALUE_VERSION_OFF +
+    /// serialized(version).
     ptr: *const u8,
+    /// Bit flags
     pub meta: u8,
+    /// User defined opaque meta data,
     user_meta_len: u8,
-    val_len: u32,
+    /// Length of the data.
+    len: u32,
+    /// The row version
     pub version: u64,
-}
 
-unsafe impl Send for Value {}
+    blob_ptr: *const u8,
+}
 
 impl Value {
     pub(crate) fn new() -> Self {
         Self {
             ptr: ptr::null(),
-            meta: 0,
-            user_meta_len: 0,
-            val_len: 0,
-            version: 0,
+            meta: Default::default(),
+            user_meta_len: Default::default(),
+            len: Default::default(),
+            version: Default::default(),
+            blob_ptr: ptr::null(),
         }
     }
 
-    pub(crate) fn encode(&self, buf: &mut [u8]) {
-        buf[0] = self.meta;
-        buf[1] = self.user_meta_len;
-        LittleEndian::write_u64(&mut buf[2..10], self.version);
-        unsafe {
-            if self.user_meta_len > 0 {
-                ptr::copy(
-                    self.ptr,
-                    buf[VALUE_PTR_OFF..].as_mut_ptr(),
-                    self.user_meta_len as usize,
-                )
-            }
-            let off = VALUE_PTR_OFF + self.user_meta_len as usize;
-            ptr::copy(
-                self.ptr.add(self.user_meta_len as usize),
-                buf[off..].as_mut_ptr(),
-                self.val_len as usize,
-            )
+    fn encode_preamble(buf: &mut [u8], meta: u8, version: u64, user_meta: &[u8]) -> usize {
+        buf[0] = meta;
+        buf[1] = user_meta.len() as u8;
+        let mut offset = VALUE_VERSION_OFF;
+        offset += Version::serialize(&mut buf[offset..], version);
+        if !user_meta.is_empty() {
+            buf[offset..offset + user_meta.len()].copy_from_slice(user_meta);
         }
+        offset + user_meta.len()
     }
 
     pub fn encode_buf(meta: u8, user_meta: &[u8], version: u64, val: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(VALUE_PTR_OFF + user_meta.len() + val.len());
-        buf.resize(buf.capacity(), 0);
-        let m_buf = buf.as_mut_slice();
-        m_buf[0] = meta;
-        m_buf[1] = user_meta.len() as u8;
-        LittleEndian::write_u64(&mut m_buf[2..], version);
-        let off = 10usize;
-        m_buf[off..off + user_meta.len()].copy_from_slice(user_meta);
-        let off = 10 + user_meta.len();
-        m_buf[off..off + val.len()].copy_from_slice(val);
+        assert!(!is_external_link(meta));
+        let mut buf = vec![0; VALUE_VERSION_OFF + VALUE_VERSION_LEN + user_meta.len() + val.len()];
+        let offset = Self::encode_preamble(&mut buf, meta, version, user_meta);
+        let buf_slice = buf.as_mut_slice();
+        buf_slice[offset..offset + val.len()].copy_from_slice(val);
         buf
     }
 
-    pub fn decode(bin: &[u8]) -> Self {
-        let meta = bin[0];
-        let user_meta_len = bin[1];
-        let version = LittleEndian::read_u64(&bin[2..10]);
-        let val_len = (bin.len() - VALUE_PTR_OFF - user_meta_len as usize) as u32;
+    /// Encode the contents in buf.
+    pub(crate) fn encode(&self, buf: &mut [u8]) {
+        let offset = Self::encode_preamble(buf, self.meta, self.version, self.user_meta());
+        unsafe {
+            ptr::copy(
+                self.ptr.add(self.user_meta_len()),
+                buf[offset..].as_mut_ptr(),
+                self.value_len(),
+            );
+        }
+    }
+
+    pub fn encode_with_external_link(&self, buf: &mut [u8], external_link: ExternalLink) {
+        assert!(self.is_external_link());
+        let offset = Self::encode_preamble(buf, self.meta, self.version, self.user_meta());
+        external_link.serialize(&mut buf[offset..offset + ExternalLink::size_of()]);
+    }
+
+    pub fn decode(buf: &[u8]) -> Self {
+        let meta = buf[0];
+        let user_meta_len = buf[1];
+        let mut offset = VALUE_VERSION_OFF;
+        let version = Version::deserialize(&buf[offset..]);
+        offset += VALUE_VERSION_LEN;
         Self {
-            ptr: bin[VALUE_PTR_OFF..].as_ptr(),
+            ptr: buf[offset..].as_ptr(),
             meta,
             user_meta_len,
-            val_len,
+            len: (buf.len() - offset - user_meta_len as usize) as u32,
             version,
+            blob_ptr: ptr::null(),
         }
     }
 
@@ -133,14 +226,16 @@ impl Value {
         meta: u8,
         version: u64,
         user_meta_len: u8,
-        bin: &[u8],
+        buf: &[u8],
     ) -> Self {
+        assert!(buf.len() >= user_meta_len as usize);
         Self {
-            ptr: bin.as_ptr(),
+            ptr: buf.as_ptr(),
             meta,
             user_meta_len,
-            val_len: bin.len() as u32 - user_meta_len as u32,
+            len: buf.len() as u32 - user_meta_len as u32,
             version,
+            blob_ptr: ptr::null(),
         }
     }
 
@@ -149,15 +244,24 @@ impl Value {
             ptr: ptr::null(),
             meta: BIT_DELETE,
             user_meta_len: 0,
-            val_len: 0,
+            len: 0,
             version,
+            blob_ptr: ptr::null(),
         }
     }
 
+    #[inline(always)]
+    pub(crate) fn set_external_link(&mut self) {
+        assert!(!self.is_external_link());
+        self.meta |= BIT_EXTERNAL_LINK;
+    }
+
+    #[inline(always)]
     pub(crate) fn is_empty(&self) -> bool {
         self.meta == 0 && self.ptr.is_null()
     }
 
+    #[inline(always)]
     pub(crate) fn is_valid(&self) -> bool {
         !self.is_empty()
     }
@@ -167,33 +271,76 @@ impl Value {
         is_deleted(self.meta)
     }
 
-    pub fn value_len(&self) -> usize {
-        self.val_len as usize
+    #[inline(always)]
+    pub(crate) fn is_external_link(&self) -> bool {
+        is_external_link(self.meta)
     }
 
+    #[inline(always)]
+    pub fn value_len(&self) -> usize {
+        self.len as usize
+    }
+
+    #[inline(always)]
     pub fn user_meta_len(&self) -> usize {
         self.user_meta_len as usize
     }
 
     #[inline(always)]
     pub fn user_meta(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts::<u8>(self.ptr, self.user_meta_len as usize) }
+        unsafe { slice::from_raw_parts::<u8>(self.ptr, self.user_meta_len()) }
+    }
+
+    #[inline(always)]
+    pub fn is_value_empty(&self) -> bool {
+        self.value_len() == 0
     }
 
     #[inline(always)]
     pub fn get_value(&self) -> &[u8] {
         unsafe {
-            slice::from_raw_parts::<u8>(
-                self.ptr.add(self.user_meta_len as usize),
-                self.val_len as usize,
-            )
+            if self.blob_ptr.is_null() {
+                slice::from_raw_parts::<u8>(self.ptr.add(self.user_meta_len()), self.value_len())
+            } else {
+                slice::from_raw_parts::<u8>(self.blob_ptr, self.value_len())
+            }
         }
     }
 
+    #[inline(always)]
+    fn encoded_size_of_preamble(&self) -> usize {
+        VALUE_VERSION_OFF + size_of::<u64>() + self.user_meta_len()
+    }
+
+    #[inline(always)]
     pub fn encoded_size(&self) -> usize {
-        self.user_meta_len as usize + self.val_len as usize + VALUE_PTR_OFF
+        self.encoded_size_of_preamble() + self.value_len()
+    }
+
+    #[inline(always)]
+    pub fn encoded_size_with_external_link(&self) -> usize {
+        self.encoded_size_of_preamble() + ExternalLink::size_of()
+    }
+
+    pub fn get_external_link(&self) -> ExternalLink {
+        assert!(self.is_external_link());
+        let mut external_link: ExternalLink = Default::default();
+        external_link.deserialize(self.get_value());
+        external_link
+    }
+
+    #[inline(always)]
+    pub fn get_version(buf: &[u8]) -> u64 {
+        Version::deserialize(buf)
+    }
+
+    pub fn fill_in_blob(&mut self, blob: &[u8]) {
+        assert!(self.is_external_link());
+        self.blob_ptr = blob.as_ptr();
+        self.len = blob.len() as u32;
     }
 }
+
 pub struct EmptyIterator;
 
 impl Iterator for EmptyIterator {
@@ -235,7 +382,7 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(String),
     #[error("EOF")]
-    EOF,
+    Eof,
     #[error("{0}")]
     Other(String),
 }
@@ -290,7 +437,7 @@ impl LocalAddr {
     }
 
     pub fn len(self) -> usize {
-        (self.end - self.start) as usize
+        self.end - self.start
     }
 
     pub fn is_empty(self) -> bool {

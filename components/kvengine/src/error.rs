@@ -15,13 +15,13 @@ pub enum Error {
     #[error("already splitting")]
     AlreadySplitting,
     #[error("alloc id error {0}")]
-    ErrAllocID(String),
+    ErrAllocId(String),
     #[error("open error {0}")]
     ErrOpen(String),
     #[error("table error {0}")]
     TableError(table::Error),
     #[error("dfs error {0}")]
-    DFSError(dfs::Error),
+    DfsError(dfs::Error),
     #[error("IO error {0}")]
     Io(std::io::Error),
     #[error("remote compaction {0}")]
@@ -46,7 +46,7 @@ impl From<table::Error> for Error {
 
 impl From<dfs::Error> for Error {
     fn from(e: dfs::Error) -> Self {
-        Error::DFSError(e)
+        Error::DfsError(e)
     }
 }
 

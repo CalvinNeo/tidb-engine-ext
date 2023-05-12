@@ -36,6 +36,8 @@ message ChangeSet {
   TableChange destroy_range = 18;
   TableChange truncate_ts = 19;
   TableChange trim_over_bound = 20;
+  Snapshot restore_shard = 21;
+  MajorCompaction major_compaction = 22;
 }
 
 message Compaction {
@@ -47,23 +49,41 @@ message Compaction {
   bool conflicted = 6;
 }
 
+message MajorCompaction {
+  TableChange sstableChange = 1;
+  repeated BlobCreate newBlobTables = 2;
+  repeated uint64 oldBlobTables = 3;
+  bool conflicted = 4;
+}
+
 message Flush {
   L0Create l0Create = 1;
   Properties properties = 2;
   uint64 version = 3;
+  uint64 max_ts = 5;
+  BlobCreate BlobCreate = 4;
 }
 
 message Snapshot {
-  bytes start = 1;
-  bytes end = 2;
+  bytes outer_start = 1;
+  bytes outer_end = 2;
   Properties properties = 3;
   repeated L0Create l0Creates = 5;
   repeated TableCreate tableCreates = 6;
   uint64 baseVersion = 7;
   uint64 data_sequence = 8;
+  repeated BlobCreate BlobCreates = 9;
+  uint64 max_ts = 10;
+  uint32 inner_key_off = 11;
 }
 
 message L0Create {
+  uint64 ID = 1;
+  bytes smallest = 2;
+  bytes biggest = 3;
+}
+
+message BlobCreate {
   uint64 ID = 1;
   bytes smallest = 2;
   bytes biggest = 3;
@@ -92,6 +112,7 @@ message IngestFiles {
   repeated L0Create l0Creates = 1;
   repeated TableCreate tableCreates = 2;
   Properties properties = 3;
+  repeated BlobCreate BlobCreates = 4;
 }
 
 message Properties {

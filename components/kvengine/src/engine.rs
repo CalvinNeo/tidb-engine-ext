@@ -2,13 +2,15 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    env,
     fmt::{Debug, Display, Formatter},
     iter::{FromIterator, Iterator},
     ops::Deref,
     path::PathBuf,
+    str::FromStr,
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
     },
     thread,
     time::Duration,
@@ -20,13 +22,13 @@ use file_system::IoRateLimiter;
 use fslock;
 use moka::sync::SegmentedCache;
 use slog_global::info;
-use tikv_util::mpsc;
+use tikv_util::{mpsc, sys::thread::StdThreadBuildWrapper};
 
 use crate::{
     apply::ChangeSet,
     meta::ShardMeta,
     table::{
-        memtable::CFTable,
+        memtable::CfTable,
         sstable::{BlockCacheKey, MAGIC_NUMBER, ZSTD_COMPRESSION},
     },
     *,
@@ -55,13 +57,15 @@ impl Debug for Engine {
     }
 }
 
+const FILE_LOCK_SLOTS: usize = 1024;
+
 impl Engine {
     pub fn open(
-        fs: Arc<dyn dfs::DFS>,
+        fs: Arc<dyn dfs::Dfs>,
         opts: Arc<Options>,
-        meta_iter: impl MetaIterator,
+        meta_iter: &mut impl MetaIterator,
         recoverer: impl RecoverHandler + 'static,
-        id_allocator: Arc<dyn IDAllocator>,
+        id_allocator: Arc<dyn IdAllocator>,
         meta_change_listener: Box<dyn MetaChangeListener>,
         rate_limiter: Arc<IoRateLimiter>,
     ) -> Result<Engine> {
@@ -75,18 +79,20 @@ impl Engine {
         let lock_path = opts.local_dir.join("LOCK");
         let mut x = fslock::LockFile::open(&lock_path)?;
         x.lock()?;
-        let mut max_capacity =
-            opts.max_block_cache_size as usize / opts.table_builder_options.block_size;
-        if max_capacity < 512 {
-            max_capacity = 512
+        let mut max_capacity = opts.max_block_cache_size as usize;
+        if max_capacity < 512 * opts.table_builder_options.block_size {
+            max_capacity = 512 * opts.table_builder_options.block_size;
         }
-        let cache: SegmentedCache<BlockCacheKey, Bytes> =
-            SegmentedCache::new(max_capacity as u64, 256);
+        let cache: SegmentedCache<BlockCacheKey, Bytes> = SegmentedCache::builder(256)
+            .weigher(|_k: &BlockCacheKey, v: &Bytes| (12 + v.len()) as u32)
+            .max_capacity(max_capacity as u64)
+            .build();
         let (flush_tx, flush_rx) = mpsc::unbounded();
         let (compact_tx, compact_rx) = mpsc::unbounded();
         let (free_tx, free_rx) = mpsc::unbounded();
         let compression_lvl = opts.table_builder_options.compression_lvl;
         let allow_fallback_local = opts.allow_fallback_local;
+        let file_locks = (0..FILE_LOCK_SLOTS).map(|_| Mutex::new(())).collect();
         let core = EngineCore {
             engine_id: AtomicU64::new(meta_iter.engine_id()),
             shards: DashMap::new(),
@@ -106,6 +112,9 @@ impl Engine {
             tmp_file_id: AtomicU64::new(0),
             rate_limiter,
             free_tx,
+            loaded: AtomicBool::new(false),
+            file_locks,
+            shutting_down: AtomicBool::new(false),
         };
         let en = Engine {
             core: Arc::new(core),
@@ -114,30 +123,32 @@ impl Engine {
         let metas = en.read_meta(meta_iter)?;
         info!("engine load {} shards", metas.len());
         en.load_shards(metas, recoverer)?;
+        en.loaded.store(true, Ordering::Relaxed);
         let flush_en = en.clone();
         thread::Builder::new()
             .name("flush".to_string())
-            .spawn(move || {
+            .spawn_wrapper(move || {
                 flush_en.run_flush_worker(flush_rx);
             })
             .unwrap();
         let compact_en = en.clone();
         thread::Builder::new()
             .name("compaction".to_string())
-            .spawn(move || {
+            .spawn_wrapper(move || {
                 compact_en.run_compaction(compact_rx);
             })
             .unwrap();
         thread::Builder::new()
             .name("free_mem".to_string())
-            .spawn(move || {
+            .spawn_wrapper(move || {
                 free_mem(free_rx);
             })
             .unwrap();
         Ok(en)
     }
 
-    fn load_shards(
+    // This method is also used by native-br for cluster restore.
+    pub fn load_shards(
         &self,
         metas: HashMap<u64, ShardMeta>,
         recoverer: impl RecoverHandler + 'static,
@@ -145,24 +156,36 @@ impl Engine {
         let mut parents = HashMap::new();
         for meta in metas.values() {
             if let Some(parent) = &meta.parent {
-                let id_ver = IDVer::new(parent.id, parent.ver);
+                let id_ver = IdVer::new(parent.id, parent.ver);
                 if !parents.contains_key(&id_ver) {
                     info!("load parent of {}", meta.tag());
-                    let parent_shard = self.load_shard(parent)?;
+                    tikv_util::set_current_region(id_ver.id);
+                    let parent_shard = Arc::new(self.load_parent_shard(parent)?);
+
+                    // Ingest the parent shard before recovery, as recoverer depends on the shard
+                    // existing in kvengine.
+                    let normal_shard = self.shards.insert(parent.id, parent_shard.clone());
                     recoverer.recover(self, &parent_shard, parent)?;
-                    parents.insert(IDVer::new(parent.id, parent.ver), parent_shard);
+                    parents.insert(IdVer::new(parent.id, parent.ver), parent_shard);
                     // Do not keep the parent in the engine as we only use the parent's mem-table
                     // for children.
-                    self.shards.remove(&parent.id);
+                    if let Some(normal_shard) = normal_shard {
+                        self.shards.insert(parent.id, normal_shard);
+                    } else {
+                        self.shards.remove(&parent.id);
+                    }
                 }
             }
         }
-        let concurrency = num_cpus::get();
+        let concurrency = usize::from_str(&env::var("RECOVERY_CONCURRENCY").unwrap_or_default())
+            .unwrap_or_else(|_| std::cmp::min(num_cpus::get() * 8, 64));
+        info!("recovery concurrency {}", concurrency);
         let (token_tx, token_rx) = tikv_util::mpsc::bounded(concurrency);
         for _ in 0..concurrency {
             token_tx.send(true).unwrap();
         }
         for meta in metas.values() {
+            tikv_util::set_current_region(meta.id);
             let meta = meta.clone();
             let engine = self.clone();
             let recoverer = recoverer.clone();
@@ -170,12 +193,13 @@ impl Engine {
             token_rx.recv().unwrap();
             let parent_shard = meta.parent.as_ref().map(|parent_meta| {
                 parents
-                    .get(&IDVer::new(parent_meta.id, parent_meta.ver))
+                    .get(&IdVer::new(parent_meta.id, parent_meta.ver))
                     .cloned()
                     .unwrap()
             });
             std::thread::spawn(move || {
-                let shard = engine.load_shard(&meta).unwrap();
+                tikv_util::set_current_region(meta.id);
+                let shard = engine.load_and_ingest_shard(&meta).unwrap();
                 if let Some(parent) = parent_shard {
                     shard.add_parent_mem_tbls(parent)
                 }
@@ -189,12 +213,18 @@ impl Engine {
         Ok(())
     }
 
-    pub fn set_engine_id(&self, engine_id: u64) {
-        self.engine_id.store(engine_id, Ordering::Release);
-    }
-
-    pub fn get_engine_id(&self) -> u64 {
-        self.engine_id.load(Ordering::Acquire)
+    /// Should close engine explicitly if engine is not useful anymore but
+    /// process is still running.
+    pub fn close(&self) {
+        info!(
+            "Close kvengine {} and stop the background worker, core ref count {}",
+            self.get_engine_id(),
+            Arc::strong_count(&self.core)
+        );
+        self.shutting_down.store(true, Ordering::Release);
+        self.compact_tx.send(CompactMsg::Stop).unwrap();
+        self.flush_tx.send(FlushMsg::Stop).unwrap();
+        self.free_tx.send(FreeMemMsg::Stop).unwrap();
     }
 }
 
@@ -204,18 +234,36 @@ pub struct EngineCore {
     pub opts: Arc<Options>,
     pub(crate) flush_tx: mpsc::Sender<FlushMsg>,
     pub(crate) compact_tx: mpsc::Sender<CompactMsg>,
-    pub(crate) fs: Arc<dyn dfs::DFS>,
+    pub(crate) fs: Arc<dyn dfs::Dfs>,
     pub(crate) cache: SegmentedCache<BlockCacheKey, Bytes>,
     pub comp_client: CompactionClient,
-    pub(crate) id_allocator: Arc<dyn IDAllocator>,
+    pub(crate) id_allocator: Arc<dyn IdAllocator>,
     pub(crate) managed_safe_ts: AtomicU64,
     pub(crate) tmp_file_id: AtomicU64,
     pub(crate) rate_limiter: Arc<IoRateLimiter>,
-    pub(crate) free_tx: mpsc::Sender<CFTable>,
+    pub(crate) free_tx: mpsc::Sender<FreeMemMsg>,
+    pub(crate) loaded: AtomicBool,
+    pub(crate) file_locks: Vec<Mutex<()>>,
+    pub(crate) shutting_down: AtomicBool,
+}
+
+impl Drop for EngineCore {
+    fn drop(&mut self) {
+        info!("Drop kvengine {:?} core ", self.get_engine_id());
+    }
 }
 
 impl EngineCore {
-    fn read_meta(&self, meta_iter: impl MetaIterator) -> Result<HashMap<u64, ShardMeta>> {
+    pub fn set_engine_id(&self, engine_id: u64) {
+        self.engine_id.store(engine_id, Ordering::Release);
+    }
+
+    pub fn get_engine_id(&self) -> u64 {
+        self.engine_id.load(Ordering::Acquire)
+    }
+
+    // This method is also used by native-br for cluster restore.
+    pub fn read_meta(&self, meta_iter: &mut impl MetaIterator) -> Result<HashMap<u64, ShardMeta>> {
         let mut metas = HashMap::new();
         let engine_id = meta_iter.engine_id();
         meta_iter.iterate(|cs| {
@@ -225,36 +273,52 @@ impl EngineCore {
         Ok(metas)
     }
 
-    fn load_shard(&self, meta: &ShardMeta) -> Result<Arc<Shard>> {
+    /// Load shard from meta and ingest to the engine.
+    fn load_and_ingest_shard(&self, meta: &ShardMeta) -> Result<Arc<Shard>> {
         if let Some(shard) = self.get_shard(meta.id) {
             if shard.ver == meta.ver {
                 return Ok(shard);
             }
         }
-        info!("load shard {}", meta.tag());
+        info!("load and ingest shard {}", meta.tag());
         let change_set = self.prepare_change_set(meta.to_change_set(), false)?;
         self.ingest(change_set, false)?;
         let shard = self.get_shard(meta.id);
         Ok(shard.unwrap())
     }
 
-    pub fn ingest(&self, cs: ChangeSet, active: bool) -> Result<()> {
+    /// Load parent shard for recovery.
+    /// The shard is not ingested to the engine.
+    fn load_parent_shard(&self, meta: &ShardMeta) -> Result<Shard> {
+        info!("load parent shard {}", meta.tag());
+        let change_set = self.prepare_change_set(meta.to_change_set(), false)?;
+        let shard = self.new_shard_from_change_set(change_set);
+        shard.refresh_states();
+        Ok(shard)
+    }
+
+    fn new_shard_from_change_set(&self, cs: ChangeSet) -> Shard {
         let engine_id = self.engine_id.load(Ordering::Acquire);
         let shard = Shard::new_for_ingest(engine_id, &cs, self.opts.clone());
-        shard.set_active(active);
-        let (l0s, scfs) = create_snapshot_tables(cs.get_snapshot(), &cs);
+        let (l0s, blob_tbls, scfs) = create_snapshot_tables(cs.get_snapshot(), &cs);
         let old_data = shard.get_data();
         let data = ShardData::new(
-            shard.start.clone(),
-            shard.end.clone(),
+            shard.range.clone(),
             old_data.del_prefixes.clone(),
             old_data.truncate_ts,
             old_data.trim_over_bound,
-            vec![CFTable::new()],
+            vec![CfTable::new()],
             l0s,
+            Arc::new(blob_tbls),
             scfs,
         );
         shard.set_data(data);
+        shard
+    }
+
+    pub fn ingest(&self, cs: ChangeSet, active: bool) -> Result<()> {
+        let shard = self.new_shard_from_change_set(cs);
+        shard.set_active(active);
         self.refresh_shard_states(&shard);
         match self.shards.entry(shard.id) {
             Entry::Occupied(entry) => {
@@ -267,7 +331,7 @@ impl EngineCore {
                 if shard.ver > old.ver || new_total_seq > old_total_seq {
                     entry.replace_entry(Arc::new(shard));
                     for mem_tbl in old_mem_tbls.drain(..) {
-                        self.free_tx.send(mem_tbl).unwrap();
+                        self.send_free_mem_msg(FreeMemMsg::FreeMem(mem_tbl));
                     }
                 } else {
                     info!(
@@ -344,9 +408,9 @@ impl EngineCore {
         while let Some(mem_tbl) = mem_tbls.pop() {
             // writable mem-table's version is 0.
             if mem_tbl.get_version() != 0 {
-                self.flush_tx
-                    .send(FlushMsg::Task(FlushTask::new_normal(shard, mem_tbl)))
-                    .unwrap();
+                self.send_flush_msg(FlushMsg::Task(Box::new(FlushTask::new_normal(
+                    shard, mem_tbl,
+                ))));
             }
         }
     }
@@ -367,23 +431,21 @@ impl EngineCore {
                 parent_snap.data_sequence,
             );
             if mem_tbl.get_version() > parent_snap.base_version + parent_snap.data_sequence
-                && mem_tbl.get_version() <= shard.base_version + data_sequence
-                && mem_tbl.has_data_in_range(&shard.start, &shard.end)
+                && mem_tbl.get_version() <= shard.get_base_version() + data_sequence
+                && mem_tbl.has_data_in_range(shard.inner_start(), shard.inner_end())
             {
                 mem_tbls.push(mem_tbl.clone());
             }
         }
-        self.flush_tx
-            .send(FlushMsg::Task(FlushTask::new_initial(
-                shard,
-                InitialFlush {
-                    parent_snap,
-                    mem_tbls,
-                    base_version: shard.base_version,
-                    data_sequence,
-                },
-            )))
-            .unwrap();
+        self.send_flush_msg(FlushMsg::Task(Box::new(FlushTask::new_initial(
+            shard,
+            InitialFlush {
+                parent_snap,
+                mem_tbls,
+                base_version: shard.get_base_version(),
+                data_sequence,
+            },
+        ))));
     }
 
     pub fn build_ingest_files(
@@ -412,21 +474,32 @@ impl EngineCore {
         let mut builder =
             table::sstable::Builder::new(0, block_size, ZSTD_COMPRESSION, zstd_compression_lvl);
         let mut fids = vec![];
+
+        for (id, smallest, biggest) in meta.get_blob_files() {
+            let mut blob_create = kvenginepb::BlobCreate::new();
+            warn!("ingest blob file: {}, {:?}, {:?}", id, smallest, biggest);
+            blob_create.set_id(id);
+            blob_create.set_smallest(smallest);
+            blob_create.set_biggest(biggest);
+            ingest_files.mut_blob_creates().push(blob_create);
+        }
+
         iter.rewind();
         while iter.valid() {
             if fids.is_empty() {
-                fids = self.id_allocator.alloc_id(10);
+                fids = self.id_allocator.alloc_id(10).unwrap();
             }
             let id = fids.pop().unwrap();
             builder.reset(id);
             while iter.valid() {
-                builder.add(iter.key(), iter.value());
+                builder.add(iter.key(), &iter.value(), None);
                 iter.next();
                 if builder.estimated_size() > max_table_size || !iter.valid() {
                     info!("builder estimated_size {}", builder.estimated_size());
                     let mut buf = BytesMut::with_capacity(builder.estimated_size());
                     let res = builder.finish(0, &mut buf);
                     let level = meta.get_ingest_level(&res.smallest, &res.biggest);
+                    assert!(!is_blob_file(level));
                     if level == 0 {
                         let mut offsets = vec![buf.len() as u32; NUM_CFS];
                         offsets[0] = 0;
@@ -477,10 +550,10 @@ impl EngineCore {
     }
 
     // get_all_shard_id_vers collects all the id and vers of the engine.
-    // To prevent the shard change during the iteration, we iterate twice and make sure there is
-    // no change during the iteration.
+    // To prevent the shard change during the iteration, we iterate twice and make
+    // sure there is no change during the iteration.
     // Use this method first, then get each shard by id to reduce lock contention.
-    pub fn get_all_shard_id_vers(&self) -> Vec<IDVer> {
+    pub fn get_all_shard_id_vers(&self) -> Vec<IdVer> {
         loop {
             let id_vers = self.collect_shard_id_vers();
             let id_vers_set = HashSet::<_>::from_iter(id_vers.iter());
@@ -493,35 +566,34 @@ impl EngineCore {
         }
     }
 
-    fn collect_shard_id_vers(&self) -> Vec<IDVer> {
+    fn collect_shard_id_vers(&self) -> Vec<IdVer> {
         self.shards
             .iter()
-            .map(|x| IDVer::new(x.id, x.ver))
+            .map(|x| IdVer::new(x.id, x.ver))
             .collect()
     }
 
-    // meta_committed should be called when a change set is committed in the raft group.
+    // meta_committed should be called when a change set is committed in the raft
+    // group.
     pub fn meta_committed(&self, cs: &kvenginepb::ChangeSet, rejected: bool) {
         if cs.has_flush() || cs.has_initial_flush() {
             let table_version = change_set_table_version(cs);
-            let id_ver = IDVer::new(cs.shard_id, cs.shard_ver);
-            self.flush_tx
-                .send(FlushMsg::Committed((id_ver, table_version)))
-                .unwrap();
+            let id_ver = IdVer::new(cs.shard_id, cs.shard_ver);
+            self.send_flush_msg(FlushMsg::Committed((id_ver, table_version)));
         }
         if rejected
             && (cs.has_compaction()
                 || cs.has_destroy_range()
                 || cs.has_truncate_ts()
-                || cs.has_trim_over_bound())
+                || cs.has_trim_over_bound()
+                || cs.has_major_compaction())
         {
-            // Notify the compaction runner otherwise the shard can't be compacted any more.
-            self.compact_tx
-                .send(CompactMsg::Applied(IDVer::new(cs.shard_id, cs.shard_ver)))
-                .unwrap();
-            // This compaction may be conflicted with initial flush, so we have to trigger next
-            // compaction if needed.
+            // This compaction may be conflicted with initial flush, so we have to trigger
+            // next compaction if needed.
             let shard = self.get_shard(cs.shard_id).unwrap();
+            store_bool(&shard.compacting, false);
+            // Notify the compaction runner otherwise the shard can't be compacted any more.
+            self.send_compact_msg(CompactMsg::Applied(IdVer::new(cs.shard_id, cs.shard_ver)));
             self.refresh_shard_states(&shard);
         }
     }
@@ -535,10 +607,8 @@ impl EngineCore {
                 self.trigger_flush(&shard);
             } else {
                 store_bool(&shard.compacting, false);
-                self.flush_tx.send(FlushMsg::Clear(shard_id)).unwrap();
-                self.compact_tx
-                    .send(CompactMsg::Clear(IDVer::new(shard.id, shard.ver)))
-                    .unwrap();
+                self.send_flush_msg(FlushMsg::Clear(shard_id));
+                self.send_compact_msg(CompactMsg::Clear(IdVer::new(shard.id, shard.ver)));
             }
         }
     }
@@ -548,32 +618,74 @@ impl EngineCore {
 
         fail::fail_point!("before_engine_trigger_compact", |_| ());
         if shard.ready_to_compact() {
-            self.compact_tx
-                .send(CompactMsg::Compact(IDVer::new(shard.id, shard.ver)))
-                .unwrap();
+            self.trigger_compact(shard.id_ver());
         }
+    }
+
+    pub fn trigger_compact(&self, id_ver: IdVer) {
+        self.send_compact_msg(CompactMsg::Compact(id_ver));
     }
 
     pub fn get_cache_size(&self) -> u64 {
         self.cache.weighted_size()
+    }
+
+    // lock_file is used to prevent race between local file gc and
+    // prepare_change_set.
+    pub fn lock_file(&self, file_id: u64) -> MutexGuard<'_, ()> {
+        let idx = file_id as usize % FILE_LOCK_SLOTS;
+        self.file_locks[idx].lock().unwrap()
+    }
+
+    pub(crate) fn send_compact_msg(&self, msg: CompactMsg) {
+        if let Err(e) = self.compact_tx.send(msg) {
+            assert!(self.shutting_down.load(Ordering::Acquire));
+            info!(
+                "Engine {} is shutting down, cannot send compact msg {:?}",
+                self.get_engine_id(),
+                e
+            );
+        }
+    }
+
+    pub(crate) fn send_flush_msg(&self, msg: FlushMsg) {
+        if let Err(e) = self.flush_tx.send(msg) {
+            assert!(self.shutting_down.load(Ordering::Acquire));
+            info!(
+                "Engine {} is shutting down, cannot send flush msg {:?}",
+                self.get_engine_id(),
+                e
+            );
+        }
+    }
+
+    pub(crate) fn send_free_mem_msg(&self, msg: FreeMemMsg) {
+        if let Err(e) = self.free_tx.send(msg) {
+            assert!(self.shutting_down.load(Ordering::Acquire));
+            info!(
+                "Engine {} is shutting down, cannot send free mem msg {:?}",
+                self.get_engine_id(),
+                e
+            );
+        }
     }
 }
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ShardTag {
     pub engine_id: u64,
-    pub id_ver: IDVer,
+    pub id_ver: IdVer,
 }
 
 impl ShardTag {
-    pub fn new(engine_id: u64, id_ver: IDVer) -> Self {
+    pub fn new(engine_id: u64, id_ver: IdVer) -> Self {
         Self { engine_id, id_ver }
     }
 
     pub fn from_comp_req(req: &CompactionRequest) -> Self {
         Self {
             engine_id: req.engine_id,
-            id_ver: IDVer::new(req.shard_id, req.shard_ver),
+            id_ver: IdVer::new(req.shard_id, req.shard_ver),
         }
     }
 }
@@ -588,13 +700,13 @@ impl Display for ShardTag {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct IDVer {
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct IdVer {
     pub id: u64,
     pub ver: u64,
 }
 
-impl IDVer {
+impl IdVer {
     pub fn new(id: u64, ver: u64) -> Self {
         Self { id, ver }
     }
@@ -604,7 +716,7 @@ impl IDVer {
     }
 }
 
-pub fn new_filename(file_id: u64) -> PathBuf {
+pub fn new_sst_filename(file_id: u64) -> PathBuf {
     PathBuf::from(format!("{:016x}.sst", file_id))
 }
 
@@ -612,16 +724,34 @@ pub fn new_tmp_filename(file_id: u64, tmp_id: u64) -> PathBuf {
     PathBuf::from(format!("{:016x}.{}.tmp", file_id, tmp_id))
 }
 
-fn free_mem(free_rx: mpsc::Receiver<CFTable>) {
+pub fn new_blob_filename(file_id: u64) -> PathBuf {
+    PathBuf::from(format!("{:016x}.sst", file_id))
+}
+
+pub(crate) enum FreeMemMsg {
+    /// Free CfTable
+    FreeMem(CfTable),
+    /// Stop the free mem background worker
+    Stop,
+}
+
+fn free_mem(free_rx: mpsc::Receiver<FreeMemMsg>) {
     loop {
-        let mut tables = vec![];
-        let tbl = free_rx.recv().unwrap();
-        tables.push(tbl);
         let cnt = free_rx.len();
+        let mut tables = Vec::with_capacity(cnt);
         for _ in 0..cnt {
-            tables.push(free_rx.recv().unwrap());
+            match free_rx.recv().unwrap() {
+                FreeMemMsg::FreeMem(tbl) => {
+                    tables.push(tbl);
+                }
+                FreeMemMsg::Stop => {
+                    drop(tables);
+                    info!("Engine free mem worker receive stop msg and stop now");
+                    return;
+                }
+            }
         }
-        thread::sleep(Duration::from_secs(5));
         drop(tables);
+        thread::sleep(Duration::from_secs(5));
     }
 }

@@ -317,11 +317,23 @@ fn decode_raw_key_timestamp(encoded_key: &Key, with_ts: bool) -> Result<Option<T
     Ok(ts)
 }
 
+#[inline]
+pub fn is_whole_keyspace_range(mut start: &[u8], mut end: &[u8]) -> bool {
+    start.len() == KEYSPACE_PREFIX_LEN
+        && end.len() == KEYSPACE_PREFIX_LEN
+        && start[0] == TXN_KEY_PREFIX
+        && end[0] == TXN_KEY_PREFIX
+        && start.get_u32() + 1 == end.get_u32()
+}
+
 #[cfg(test)]
 mod tests {
     use txn_types::{Key, TimeStamp};
 
-    use crate::{ApiV2, KvFormat, RawValue};
+    use crate::{
+        api_v2::{is_whole_keyspace_range, TXN_KEY_PREFIX},
+        ApiV2, KvFormat, RawValue,
+    };
 
     #[test]
     fn test_key_decode_err() {
@@ -467,6 +479,29 @@ mod tests {
             assert_eq!(key, decoded_key, "case {}", idx);
             assert_eq!(ts, decoded_ts1.unwrap(), "case {}", idx);
             assert_eq!(ts, decoded_ts2, "case {}", idx);
+        }
+    }
+
+    #[test]
+    fn test_is_whole_keyspace_range() {
+        let test_cases = vec![
+            (vec![b'x', 0, 0, 0x0A], vec![b'x', 0, 0, 0x0B], true),
+            (vec![b'x', 0, 0, 0x0A], vec![b'x', 0, 0, 0x0C], false),
+            (vec![b'x', 0, 0, 0x0A], vec![b'x', 0, 0, 0x0A], false),
+            (vec![b'x', 0, 0, 0x0A], vec![b'x', 0, 0, 0x09], false),
+            (vec![b'x', 0, 0, 0x0A, 0], vec![b'x', 0, 0, 0x0B], false),
+            (vec![b'x', 0, 0, 0x0A], vec![b'x', 0, 0, 0x0B, 0], false),
+            (vec![b'x', 0, 0, 0x0A, 0], vec![b'x', 0, 0, 0x0B, 0], false),
+            (vec![b'r', 0, 0, 0x0A], vec![b'r', 0, 0, 0x0A], false),
+        ];
+
+        for (i, (start, end, is_whole)) in test_cases.into_iter().enumerate() {
+            assert_eq!(
+                is_whole_keyspace_range(&start, &end),
+                is_whole,
+                "case {}",
+                i
+            );
         }
     }
 }

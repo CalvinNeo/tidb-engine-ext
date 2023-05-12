@@ -1,19 +1,16 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{collections::BTreeMap, ops::Deref, path::Path, ptr, sync::Arc};
+use std::{collections::BTreeMap, ops::Deref, path::Path};
 
-use engine_rocks::{RocksCfOptions, RocksTitanDbOptions};
 use engine_traits::{
     CfNamesExt, CfOptionsExt, Checkpointable, Checkpointer, CompactExt, CompactedEvent, DbOptions,
-    DbOptionsExt, DbVector, DeleteStrategy, Error, FlowControlFactorsExt, ImportExt,
+    DbOptionsExt, DbVector, DeleteStrategy, FlowControlFactorsExt, ImportExt,
     IngestExternalFileOptions, IterOptions, Iterable, KvEngine, MiscExt, Mutable, MvccProperties,
     MvccPropertiesExt, Peekable, PerfContext, PerfContextExt, PerfContextKind, PerfLevel, Range,
     RangePropertiesExt, ReadOptions, Snapshot, SstCompressionType, SstExt, SstWriterBuilder,
-    StatisticsReporter, SyncMutable, TablePropertiesExt, TtlProperties, TtlPropertiesExt,
-    WriteBatchExt, WriteOptions,
+    StatisticsReporter, SyncMutable, TablePropertiesExt, TitanCfOptions, TtlProperties,
+    TtlPropertiesExt, WriteBatchExt, WriteOptions,
 };
-use rocksdb::ColumnFamilyOptions as RawCfOptions;
-use tracker::TrackerToken;
 
 use crate::*;
 
@@ -26,10 +23,12 @@ impl CfNamesExt for Engine {
 }
 
 impl CfOptionsExt for Engine {
-    type CfOptions = RocksCfOptions;
+    type CfOptions = engine_rocks::RocksCfOptions;
 
     fn get_options_cf(&self, _cf: &str) -> TraitsResult<Self::CfOptions> {
-        Ok(Self::CfOptions::from_raw(RawCfOptions::default()))
+        Ok(engine_rocks::RocksCfOptions::from_raw(
+            rocksdb::ColumnFamilyOptions::default(),
+        ))
     }
     fn set_options_cf(&self, _cf: &str, _options: &[(&str, &str)]) -> TraitsResult<()> {
         Ok(())
@@ -124,23 +123,23 @@ impl CompactedEvent for EngineCompactedEvent {
 }
 
 impl DbOptionsExt for Engine {
-    type DbOptions = EngineDBOptions;
+    type DbOptions = EngineDbOptions;
 
     fn get_db_options(&self) -> Self::DbOptions {
-        EngineDBOptions::new()
+        EngineDbOptions::new()
     }
     fn set_db_options(&self, _options: &[(&str, &str)]) -> TraitsResult<()> {
         Ok(())
     }
 }
 
-pub struct EngineDBOptions;
+pub struct EngineDbOptions;
 
-impl DbOptions for EngineDBOptions {
-    type TitanDbOptions = RocksTitanDbOptions;
+impl DbOptions for EngineDbOptions {
+    type TitanDbOptions = EngineTitanDbOptions;
 
     fn new() -> Self {
-        EngineDBOptions {}
+        EngineDbOptions {}
     }
 
     fn get_max_background_jobs(&self) -> i32 {
@@ -168,12 +167,23 @@ impl DbOptions for EngineDBOptions {
     }
 }
 
+pub struct EngineTitanDbOptions;
+
+impl TitanCfOptions for EngineTitanDbOptions {
+    fn new() -> Self {
+        panic!()
+    }
+    fn set_min_blob_size(&mut self, _size: u64) {
+        panic!()
+    }
+}
+
 #[derive(Debug)]
-pub struct EngineDBVector;
+pub struct EngineDbVector;
 
-impl DbVector for EngineDBVector {}
+impl DbVector for EngineDbVector {}
 
-impl Deref for EngineDBVector {
+impl Deref for EngineDbVector {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
@@ -181,35 +191,32 @@ impl Deref for EngineDBVector {
     }
 }
 
-impl<'a> PartialEq<&'a [u8]> for EngineDBVector {
+impl<'a> PartialEq<&'a [u8]> for EngineDbVector {
     fn eq(&self, rhs: &&[u8]) -> bool {
         **rhs == **self
     }
 }
 
-pub struct EngineCheckpointer {}
-
 impl Checkpointable for Engine {
     type Checkpointer = EngineCheckpointer;
 
-    fn new_checkpointer(&self) -> TraitsResult<Self::Checkpointer> {
-        Err(Error::Other("KvEngine don't support Checkpointable".into()))
+    fn new_checkpointer(&self) -> engine_traits::Result<Self::Checkpointer> {
+        panic!()
     }
 }
+
+pub struct EngineCheckpointer;
 
 impl Checkpointer for EngineCheckpointer {
     fn create_at(
         &mut self,
-        db_out_dir: &Path,
-        titan_out_dir: Option<&Path>,
-        log_size_for_flush: u64,
-    ) -> TraitsResult<()> {
-        Err(Error::Other(
-            "KvEngine don't support Checkpointer::create_at".into(),
-        ))
+        _db_out_dir: &Path,
+        _titan_out_dir: Option<&Path>,
+        _log_size_for_flush: u64,
+    ) -> engine_traits::Result<()> {
+        panic!()
     }
 }
-
 
 impl KvEngine for Engine {
     type Snapshot = EngineSnapshot;
@@ -229,7 +236,7 @@ impl KvEngine for Engine {
 }
 
 impl Peekable for Engine {
-    type DbVector = EngineDBVector;
+    type DbVector = EngineDbVector;
 
     fn get_value_opt(
         &self,
@@ -274,10 +281,7 @@ impl SyncMutable for Engine {
 impl Iterable for Engine {
     type Iterator = EngineIterator;
 
-    fn iterator(&self, _cf: &str) -> TraitsResult<Self::Iterator> {
-        panic!()
-    }
-    fn iterator_opt(&self, _cf: &str, _opts: IterOptions) -> TraitsResult<Self::Iterator> {
+    fn iterator_opt(&self, _cf: &str, _opts: IterOptions) -> engine_traits::Result<Self::Iterator> {
         panic!()
     }
 }
@@ -285,18 +289,18 @@ impl Iterable for Engine {
 pub struct EngineIterator;
 
 impl engine_traits::Iterator for EngineIterator {
-    fn seek(&mut self, key: &[u8]) -> TraitsResult<bool> {
+    fn seek(&mut self, _key: &[u8]) -> TraitsResult<bool> {
         panic!()
     }
     fn seek_for_prev(&mut self, _key: &[u8]) -> TraitsResult<bool> {
         panic!()
     }
 
-    fn seek_to_first(&mut self) -> TraitsResult<bool> {
+    fn seek_to_first(&mut self) -> engine_traits::Result<bool> {
         panic!()
     }
 
-    fn seek_to_last(&mut self) -> TraitsResult<bool> {
+    fn seek_to_last(&mut self) -> engine_traits::Result<bool> {
         panic!()
     }
 
@@ -366,6 +370,7 @@ impl FlowControlFactorsExt for Engine {
         Ok(Some(0))
     }
 }
+
 pub struct EngineReporter;
 
 impl StatisticsReporter<Engine> for EngineReporter {
@@ -393,7 +398,11 @@ impl MiscExt for Engine {
         panic!()
     }
 
-    fn get_sst_key_ranges(&self, _cf: &str, _level: usize) -> TraitsResult<Vec<(Vec<u8>, Vec<u8>)>> {
+    fn get_sst_key_ranges(
+        &self,
+        _cf: &str,
+        _level: usize,
+    ) -> TraitsResult<Vec<(Vec<u8>, Vec<u8>)>> {
         panic!()
     }
 
@@ -504,11 +513,11 @@ pub struct EnginePerfContext;
 
 impl PerfContext for EnginePerfContext {
     fn start_observe(&mut self) {
-        panic!()
+        // noop
     }
 
-    fn report_metrics(&mut self, _tracker: &[TrackerToken]) {
-        panic!()
+    fn report_metrics(&mut self, _trackers: &[tracker::TrackerToken]) {
+        // noop
     }
 }
 
@@ -577,7 +586,7 @@ impl CfNamesExt for EngineSnapshot {
 }
 
 impl Peekable for EngineSnapshot {
-    type DbVector = EngineDBVector;
+    type DbVector = EngineDbVector;
 
     fn get_value_opt(
         &self,
@@ -599,10 +608,7 @@ impl Peekable for EngineSnapshot {
 impl Iterable for EngineSnapshot {
     type Iterator = PanicSnapshotIterator;
 
-    fn iterator(&self, _cf: &str) -> TraitsResult<Self::Iterator> {
-        panic!()
-    }
-    fn iterator_opt(&self, _cf: &str, _opts: IterOptions) -> TraitsResult<Self::Iterator> {
+    fn iterator_opt(&self, _cf: &str, _opts: IterOptions) -> engine_traits::Result<Self::Iterator> {
         panic!()
     }
 }
@@ -617,18 +623,18 @@ impl engine_traits::Iterator for PanicSnapshotIterator {
         panic!()
     }
 
+    fn seek_to_first(&mut self) -> engine_traits::Result<bool> {
+        panic!()
+    }
+
+    fn seek_to_last(&mut self) -> engine_traits::Result<bool> {
+        panic!()
+    }
+
     fn prev(&mut self) -> TraitsResult<bool> {
         panic!()
     }
     fn next(&mut self) -> TraitsResult<bool> {
-        panic!()
-    }
-
-    fn seek_to_first(&mut self) -> TraitsResult<bool> {
-        panic!()
-    }
-
-    fn seek_to_last(&mut self) -> TraitsResult<bool> {
         panic!()
     }
 

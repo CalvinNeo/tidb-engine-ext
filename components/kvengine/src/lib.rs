@@ -38,6 +38,8 @@ mod tests;
 pub use apply::*;
 pub use compaction::*;
 pub use concat_iterator::ConcatIterator;
+#[cfg(test)]
+pub use dfs::Tagging;
 pub use engine::*;
 pub use error::*;
 use flush::*;
@@ -54,4 +56,4 @@ pub use write::*;
 
 pub const NUM_CFS: usize = 3;
 pub const CF_LEVELS: [usize; NUM_CFS] = [3, 2, 1];
-const CF_MANAGED: [bool; NUM_CFS] = [true, false, true];
+pub const CF_MANAGED: [bool; NUM_CFS] = [true, false, true];

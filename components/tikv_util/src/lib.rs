@@ -16,7 +16,7 @@ use std::{
         vec_deque::{Iter, VecDeque},
     },
     convert::AsRef,
-    env,
+    env, fs,
     fs::File,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
@@ -105,6 +105,44 @@ fn file_exists<P: AsRef<Path>>(file: P) -> bool {
 pub fn panic_mark_file_exists<P: AsRef<Path>>(data_dir: P) -> bool {
     let path = panic_mark_file_path(data_dir);
     file_exists(path)
+}
+
+thread_local! {
+    static CURRENT_REGION: std::cell::Cell<u64> = std::cell::Cell::new(0);
+}
+
+pub fn set_current_region(region_id: u64) {
+    CURRENT_REGION.with(|c| c.set(region_id))
+}
+
+pub fn get_current_region() -> u64 {
+    CURRENT_REGION.with(|c| c.get())
+}
+
+pub const PANIC_REGION_FILE_PREFIX: &str = "panic_region_";
+
+pub fn panic_region_file_path<P: AsRef<Path>>(data_dir: P, region_id: u64) -> PathBuf {
+    let file_name = format!("{}{}", PANIC_REGION_FILE_PREFIX, region_id);
+    data_dir.as_ref().join(file_name)
+}
+
+pub fn create_panic_region_file<P: AsRef<Path>>(data_dir: P, region_id: u64) {
+    let file = panic_region_file_path(data_dir, region_id);
+    let count = get_panic_region_count(&file) + 1;
+    // Ignore write panic_region_file error for keyspace restore, as the data path
+    // of which is removed before panic is captured.
+    fs::write(file.as_path(), count.to_string()).unwrap_or_else(|e| {
+        warn!(
+            "write panic_region_file failed: {:?}, path {:?}, region {}, count {}",
+            e, file, region_id, count
+        )
+    });
+}
+
+pub fn get_panic_region_count<P: AsRef<Path>>(file_path: P) -> u64 {
+    let data = fs::read(file_path).unwrap_or_default();
+    let str = String::from_utf8_lossy(&data);
+    str.parse::<u64>().unwrap_or_default()
 }
 
 pub const NO_LIMIT: u64 = u64::MAX;
