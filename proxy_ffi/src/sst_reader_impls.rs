@@ -13,6 +13,7 @@ use super::{
     },
     CloudLockSstReader, CloudSstReader,
 };
+use crate::interfaces_ffi::{EngineIteratorSeekType, SSTFormatKind};
 
 #[allow(clippy::clone_on_copy)]
 impl Clone for SSTReaderInterfaces {
@@ -24,6 +25,8 @@ impl Clone for SSTReaderInterfaces {
             fn_value: self.fn_value.clone(),
             fn_next: self.fn_next.clone(),
             fn_gc: self.fn_gc.clone(),
+            fn_kind: self.fn_kind.clone(),
+            fn_seek: self.fn_seek.clone(),
         }
     }
 }
@@ -127,6 +130,23 @@ pub unsafe extern "C" fn ffi_gc_sst_reader(reader: SSTReaderPtr, type_: ColumnFa
             drop(Box::from_raw(reader.inner as *mut CloudSstReader));
         }
     }
+}
+
+pub unsafe extern "C" fn ffi_sst_reader_format_kind(
+    _reader: SSTReaderPtr,
+    _: ColumnFamilyType,
+) -> SSTFormatKind {
+    // Only support KIND_SST
+    SSTFormatKind::KIND_SST
+}
+
+pub unsafe extern "C" fn ffi_sst_reader_seek(
+    mut reader: SSTReaderPtr,
+    type_: ColumnFamilyType,
+    seek_type: EngineIteratorSeekType,
+    key: BaseBuffView,
+) {
+    // do nothing
 }
 
 pub struct SSTFileReader<'a> {

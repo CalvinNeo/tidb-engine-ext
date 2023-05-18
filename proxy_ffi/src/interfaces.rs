@@ -86,6 +86,12 @@ pub mod root {
             pub cmd_cf: *const root::DB::ColumnFamilyType,
             pub len: u64,
         }
+        #[repr(u16)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub enum SSTFormatKind {
+            KIND_SST = 0,
+            KIND_TABLET = 1,
+        }
         #[repr(C)]
         #[derive(Debug)]
         pub struct FsStats {
@@ -245,6 +251,20 @@ pub mod root {
                     arg2: root::DB::ColumnFamilyType,
                 ),
             >,
+            pub fn_kind: ::std::option::Option<
+                unsafe extern "C" fn(
+                    arg1: root::DB::SSTReaderPtr,
+                    arg2: root::DB::ColumnFamilyType,
+                ) -> root::DB::SSTFormatKind,
+            >,
+            pub fn_seek: ::std::option::Option<
+                unsafe extern "C" fn(
+                    arg1: root::DB::SSTReaderPtr,
+                    arg2: root::DB::ColumnFamilyType,
+                    arg3: root::DB::EngineIteratorSeekType,
+                    arg4: root::DB::BaseBuffView,
+                ),
+            >,
         }
         #[repr(u32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -259,6 +279,13 @@ pub mod root {
             Ok = 0,
             Error = 1,
             NotFound = 2,
+        }
+        #[repr(u16)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub enum EngineIteratorSeekType {
+            Key = 0,
+            First = 1,
+            Last = 2,
         }
         #[repr(u32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -580,11 +607,11 @@ pub mod root {
                 ) -> root::DB::FastAddPeerRes,
             >,
             pub fn_get_lock_by_key: ::std::option::Option<
-            unsafe extern "C" fn(
-                arg1: *const root::DB::EngineStoreServerWrap,
-                arg2: u64,
-                arg3: root::DB::BaseBuffView,
-            ) -> root::DB::BaseBuffView,
+                unsafe extern "C" fn(
+                    arg1: *const root::DB::EngineStoreServerWrap,
+                    arg2: u64,
+                    arg3: root::DB::BaseBuffView,
+                ) -> root::DB::BaseBuffView,
             >,
         }
         pub const RAFT_STORE_PROXY_VERSION: u64 = 4990756589462826693;
