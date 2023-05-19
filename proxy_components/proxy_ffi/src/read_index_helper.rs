@@ -151,12 +151,13 @@ impl<ER: RaftEngine, EK: KvEngine> ReadIndex for ReadIndexClient<ER, EK> {
                             Ok(e) => Some(e),
                         },
                     };
+                    let ans = into_read_index_response(res);
                     tikv_util::info!(
                         "!!!! batch_read_index result1 {} {}",
                         region_id,
                         ans.get_read_index()
                     );
-                    read_index_res.push((into_read_index_response(res), *region_id));
+                    read_index_res.push((ans, *region_id));
                     router_cbs.pop_front();
                 }
             };
@@ -188,12 +189,13 @@ impl<ER: RaftEngine, EK: KvEngine> ReadIndex for ReadIndexClient<ER, EK> {
                         }
                     }
                 };
+                let ans = into_read_index_response(res);
                 tikv_util::info!(
                     "!!!! batch_read_index result1 {} {}",
                     region_id,
                     ans.get_read_index()
                 );
-                read_index_res.push((into_read_index_response(res), *region_id));
+                read_index_res.push((ans, *region_id));
                 router_cbs.pop_front();
             }
         }
