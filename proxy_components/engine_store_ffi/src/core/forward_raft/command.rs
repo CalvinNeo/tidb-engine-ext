@@ -296,12 +296,28 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                     let put = req.get_put();
                     let cf = name_to_cf(put.get_cf());
                     let (key, value) = (put.get_key(), put.get_value());
+                    if cf == ColumnFamilyType::Write {
+                        tikv_util::info!(
+                            "!!!! write put {} {} {}",
+                            put.get_cf(),
+                            cmd.index,
+                            log_wrappers::Value::key(key)
+                        );
+                    }
                     cmds.push(key, value, WriteCmdType::Put, cf);
                 }
                 CmdType::Delete => {
                     let del = req.get_delete();
                     let cf = name_to_cf(del.get_cf());
                     let key = del.get_key();
+                    if cf == ColumnFamilyType::Write {
+                        tikv_util::info!(
+                            "!!!! write delete {} {} {}",
+                            del.get_cf(),
+                            cmd.index,
+                            log_wrappers::Value::key(key)
+                        );
+                    }
                     cmds.push(key, NONE_STR.as_ref(), WriteCmdType::Del, cf);
                 }
                 CmdType::IngestSst => {

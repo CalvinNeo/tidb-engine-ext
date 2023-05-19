@@ -151,6 +151,11 @@ impl<ER: RaftEngine, EK: KvEngine> ReadIndex for ReadIndexClient<ER, EK> {
                             Ok(e) => Some(e),
                         },
                     };
+                    tikv_util::info!(
+                        "!!!! batch_read_index result1 {} {}",
+                        region_id,
+                        ans.get_read_index()
+                    );
                     read_index_res.push((into_read_index_response(res), *region_id));
                     router_cbs.pop_front();
                 }
@@ -183,6 +188,11 @@ impl<ER: RaftEngine, EK: KvEngine> ReadIndex for ReadIndexClient<ER, EK> {
                         }
                     }
                 };
+                tikv_util::info!(
+                    "!!!! batch_read_index result1 {} {}",
+                    region_id,
+                    ans.get_read_index()
+                );
                 read_index_res.push((into_read_index_response(res), *region_id));
                 router_cbs.pop_front();
             }
@@ -194,8 +204,10 @@ impl<ER: RaftEngine, EK: KvEngine> ReadIndex for ReadIndexClient<ER, EK> {
 
     #[allow(clippy::needless_return)]
     fn make_read_index_task(&self, mut req: ReadIndexRequest) -> Option<ReadIndexTask> {
-        let fut = {
+        let region_id = req.get_context().get_region_id();
+        let (fut, start_ts) = {
             let region_id = req.get_context().get_region_id();
+            let start_ts = req.get_start_ts();
             let cmd = gen_read_index_raft_cmd_req(&mut req);
 
             let (cb, f) = paired_future_callback();
@@ -211,13 +223,20 @@ impl<ER: RaftEngine, EK: KvEngine> ReadIndex for ReadIndexClient<ER, EK> {
                 )
                 .is_err()
             {
+                tikv_util::info!(
+                    "!!!! batch_read_index result2 error {} {}",
+                    region_id,
+                    start_ts
+                );
                 return None;
             } else {
-                Some(f)
+                (Some(f), start_ts)
             }
         };
 
-        let async_task = async {
+        let async_task = async move {
+            let region_id = region_id;
+            let start_ts = start_ts;
             let res = match fut {
                 None => None,
                 Some(fut) => match fut.await {
@@ -225,7 +244,14 @@ impl<ER: RaftEngine, EK: KvEngine> ReadIndex for ReadIndexClient<ER, EK> {
                     Ok(e) => Some(e),
                 },
             };
-            return into_read_index_response(res);
+            let ans = into_read_index_response(res);
+            tikv_util::info!(
+                "!!!! batch_read_index result2 {} {} {}",
+                region_id,
+                start_ts,
+                ans.get_read_index()
+            );
+            return ans;
         };
 
         Some(ReadIndexTask {
