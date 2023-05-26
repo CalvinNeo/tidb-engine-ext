@@ -133,6 +133,10 @@ impl CloudSstReader {
         } else {
             (vec![], vec![], 0)
         };
+        info!(
+            "new sst reader start: {:?} end: {:?} inner_key_off: {}",
+            outer_start, outer_end, inner_key_off
+        );
         let mut raw_key = BytesMut::new();
         raw_key.extend_from_slice(&outer_start[..inner_key_off]);
         let mut reader = Self {
@@ -180,7 +184,7 @@ impl CloudSstReader {
         self.key_buf.truncate(0);
         self.raw_key.truncate(self.inner_key_off);
         while self.iter.valid() {
-            if !self.outer_end.is_empty() && self.iter.key() >= self.outer_end.as_slice() {
+            if !self.inner_end().is_empty() && self.iter.key() >= self.inner_end() {
                 return;
             }
             if table::is_deleted(self.iter.value().meta) {
@@ -239,6 +243,10 @@ impl CloudLockSstReader {
         } else {
             (vec![], vec![], 0)
         };
+        info!(
+            "new sst reader start: {:?} end: {:?} inner_key_off: {}",
+            outer_start, outer_end, inner_key_off
+        );
         let key_buf = vec![];
         let val_buf = vec![];
         let mut raw_key = BytesMut::new();
