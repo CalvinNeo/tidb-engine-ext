@@ -1,19 +1,24 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    convert::TryInto,
+    sync::{Arc, RwLock},
+};
 
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BytesMut};
+use engine_traits::CF_RAFT;
 use kvengine::{dfs::Dfs, meta::GLOBAL_SHARD_END_KEY, table, table::sstable::InMemFile, ChangeSet};
-use kvproto::metapb;
+use kvproto::raft_serverpb::RegionLocalState;
 use protobuf::Message;
 use tikv_util::{
     codec::{bytes::BytesEncoder, number::NumberEncoder},
     error, info,
 };
-use txn_types::WriteType;
+use txn_types::{Key, WriteType};
 
-use crate::interfaces_ffi::BaseBuffView;
+use crate::{interfaces_ffi::BaseBuffView, RaftStoreProxyEngineTrait};
 
 #[derive(Clone)]
 pub struct CloudHelper {
@@ -99,14 +104,22 @@ impl CloudHelper {
         Ok(())
     }
 
-    pub fn make_sst_reader(&self, cs_pb: kvenginepb::ChangeSet) -> CloudSstReader {
+    pub fn make_sst_reader(
+        &self,
+        cs_pb: kvenginepb::ChangeSet,
+        kv_engine: &RwLock<Option<Box<dyn RaftStoreProxyEngineTrait + Sync + Send>>>,
+    ) -> CloudSstReader {
         let cs = self.prepare_change_set(cs_pb, 0).unwrap();
-        CloudSstReader::new(&cs)
+        CloudSstReader::new(&cs, kv_engine)
     }
 
-    pub fn make_lock_sst_reader(&self, cs_pb: kvenginepb::ChangeSet) -> CloudLockSstReader {
+    pub fn make_lock_sst_reader(
+        &self,
+        cs_pb: kvenginepb::ChangeSet,
+        kv_engine: &RwLock<Option<Box<dyn RaftStoreProxyEngineTrait + Sync + Send>>>,
+    ) -> CloudLockSstReader {
         let cs = self.prepare_change_set(cs_pb, 1).unwrap();
-        CloudLockSstReader::new(&cs)
+        CloudLockSstReader::new(&cs, kv_engine)
     }
 }
 
@@ -121,7 +134,10 @@ pub struct CloudSstReader {
 }
 
 impl CloudSstReader {
-    pub fn new(cs: &kvengine::ChangeSet) -> Self {
+    pub fn new(
+        cs: &kvengine::ChangeSet,
+        kv_engine: &RwLock<Option<Box<dyn RaftStoreProxyEngineTrait + Sync + Send>>>,
+    ) -> Self {
         let iter = new_table_iterator(&cs, 0);
         let (outer_start, outer_end, inner_key_off) = if cs.has_snapshot() {
             let snap = cs.get_snapshot();
@@ -131,7 +147,56 @@ impl CloudSstReader {
                 snap.inner_key_off as usize,
             )
         } else {
-            (vec![], vec![], 0)
+            assert!(cs.has_ingest_files());
+            let region_id = cs.get_shard_id();
+            let guard = kv_engine.read().unwrap();
+            let engine = guard.as_ref().unwrap();
+            let region_state_key = keys::region_state_key(region_id);
+            let region_inner_key = keys::region_inner_key_off_key(region_id);
+            let mut state = RegionLocalState::default();
+            engine.get_value_cf(CF_RAFT, &region_state_key, &mut |value: Result<
+                Option<&[u8]>,
+                String,
+            >| {
+                match value {
+                    Ok(Some(s)) => {
+                        state.merge_from_bytes(s).unwrap();
+                    }
+                    e => panic!("failed to get regions state of {:?}: {:?}", region_id, e),
+                }
+            });
+            let enc_outer_start = state.get_region().get_start_key().to_vec();
+            let enc_outer_end = state.get_region().get_end_key().to_vec();
+            let mut inner_key_off = 0;
+            engine.get_value_cf(CF_RAFT, &region_inner_key, &mut |value: Result<
+                Option<&[u8]>,
+                String,
+            >| {
+                match value {
+                    Ok(Some(v)) => {
+                        inner_key_off = u32::from_be_bytes(v[0..4].try_into().unwrap()) as usize
+                    }
+                    Ok(None) => inner_key_off = 0,
+                    e => panic!(
+                        "failed to get regions inner_key_off of {:?}: {:?}",
+                        region_id, e
+                    ),
+                }
+            });
+
+            // If `inner_key_off` is not enabled or the `region_inner_key_off_key` not
+            // exists, pass the key from sst files to TiFlash, TiFlash can
+            // handle this case properly. The `region_inner_key_off_key` will be
+            // written to kv engine when the region scheduled next time.
+            let (outer_start, outer_end) = if inner_key_off == 0 {
+                (vec![], vec![])
+            } else {
+                (
+                    Key::from_encoded_slice(&enc_outer_start).to_raw().unwrap(),
+                    Key::from_encoded_slice(&enc_outer_end).to_raw().unwrap(),
+                )
+            };
+            (outer_start, outer_end, inner_key_off)
         };
         info!(
             "new sst reader start: {:?} end: {:?} inner_key_off: {}",
@@ -231,7 +296,10 @@ pub struct CloudLockSstReader {
 }
 
 impl CloudLockSstReader {
-    pub fn new(cs: &kvengine::ChangeSet) -> Self {
+    pub fn new(
+        cs: &kvengine::ChangeSet,
+        kv_engine: &RwLock<Option<Box<dyn RaftStoreProxyEngineTrait + Sync + Send>>>,
+    ) -> Self {
         let iter = new_table_iterator(&cs, 1);
         let (outer_start, outer_end, inner_key_off) = if cs.has_snapshot() {
             let snap = cs.get_snapshot();
@@ -241,7 +309,56 @@ impl CloudLockSstReader {
                 snap.inner_key_off as usize,
             )
         } else {
-            (vec![], vec![], 0)
+            assert!(cs.has_ingest_files());
+            let region_id = cs.get_ingest_files().get_properties().get_shard_id();
+            let guard = kv_engine.read().unwrap();
+            let engine = guard.as_ref().unwrap();
+            let region_state_key = keys::region_state_key(region_id);
+            let region_inner_key = keys::region_inner_key_off_key(region_id);
+            let mut state = RegionLocalState::default();
+            engine.get_value_cf(CF_RAFT, &region_state_key, &mut |value: Result<
+                Option<&[u8]>,
+                String,
+            >| {
+                match value {
+                    Ok(Some(s)) => {
+                        state.merge_from_bytes(s).unwrap();
+                    }
+                    e => panic!("failed to get regions state of {:?}: {:?}", region_id, e),
+                }
+            });
+            let enc_outer_start = state.get_region().get_start_key().to_vec();
+            let enc_outer_end = state.get_region().get_end_key().to_vec();
+            let mut inner_key_off = 0;
+            engine.get_value_cf(CF_RAFT, &region_inner_key, &mut |value: Result<
+                Option<&[u8]>,
+                String,
+            >| {
+                match value {
+                    Ok(Some(v)) => {
+                        inner_key_off = u32::from_be_bytes(v[0..4].try_into().unwrap()) as usize
+                    }
+                    Ok(None) => inner_key_off = 0,
+                    e => panic!(
+                        "failed to get regions inner_key_off of {:?}: {:?}",
+                        region_id, e
+                    ),
+                }
+            });
+
+            // If `inner_key_off` is not enabled or the `region_inner_key_off_key` not
+            // exists, pass the key from sst files to TiFlash, TiFlash can
+            // handle this case properly. The `region_inner_key_off_key` will be
+            // written to kv engine when the region scheduled next time.
+            let (outer_start, outer_end) = if inner_key_off == 0 {
+                (vec![], vec![])
+            } else {
+                (
+                    Key::from_encoded_slice(&enc_outer_start).to_raw().unwrap(),
+                    Key::from_encoded_slice(&enc_outer_end).to_raw().unwrap(),
+                )
+            };
+            (outer_start, outer_end, inner_key_off)
         };
         info!(
             "new sst reader start: {:?} end: {:?} inner_key_off: {}",

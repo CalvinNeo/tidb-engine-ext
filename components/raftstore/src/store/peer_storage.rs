@@ -657,6 +657,9 @@ where
             ));
         }
 
+        assert!(change_set.has_snapshot());
+        let inner_key_off = change_set.get_snapshot().get_inner_key_off();
+
         if task.raft_wb.is_none() {
             task.raft_wb = Some(self.engines.raft.log_batch(64));
         }
@@ -687,6 +690,17 @@ where
 
         let cs_bin = change_set.write_to_bytes().unwrap();
         kv_wb.put_cf(CF_RAFT, &keys::snapshot_change_set_key(region_id), &cs_bin)?;
+
+        // Write inner_key_off to region local state, after the region snapshot is
+        // applied. This is used by tiflash proxy learner to ingest files.
+        // Because snapshot always applied before ingest files, so it's safe to
+        // write inner_key_off after applying. This will be cleared when peer
+        // destroy.
+        kv_wb.put_cf(
+            CF_RAFT,
+            &keys::region_inner_key_off_key(region_id),
+            &inner_key_off.to_be_bytes(),
+        )?;
 
         let snap_index = snap.get_metadata().get_index();
         let snap_term = snap.get_metadata().get_term();
@@ -1060,6 +1074,7 @@ where
     let t = Instant::now();
     box_try!(kv_wb.delete_cf(CF_RAFT, &keys::region_state_key(region_id)));
     box_try!(kv_wb.delete_cf(CF_RAFT, &keys::apply_state_key(region_id)));
+    box_try!(kv_wb.delete_cf(CF_RAFT, &keys::region_inner_key_off_key(region_id)));
     box_try!(
         engines
             .raft
