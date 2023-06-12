@@ -361,7 +361,7 @@ impl CloudLockSstReader {
             (outer_start, outer_end, inner_key_off)
         };
         info!(
-            "new sst reader start: {:?} end: {:?} inner_key_off: {}",
+            "new lock sst reader start: {:?} end: {:?} inner_key_off: {}",
             outer_start, outer_end, inner_key_off
         );
         let key_buf = vec![];

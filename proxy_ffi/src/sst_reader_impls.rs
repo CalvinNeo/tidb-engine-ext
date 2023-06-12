@@ -5,6 +5,7 @@ use encryption::DataKeyManager;
 use engine_rocks::{get_env, RocksSstIterator, RocksSstReader};
 use engine_traits::{IterOptions, Iterator, RefIterable, SstReader};
 use protobuf::Message;
+use tikv_util::debug;
 
 use super::{
     interfaces_ffi::{
@@ -76,12 +77,24 @@ pub unsafe extern "C" fn ffi_make_sst_reader(
     let cloud_helper = &proxy_ptr.as_ref().cloud_helper;
     let kv_engine = proxy_ptr.as_ref().kv_engine();
     let ptr = if view.type_ == ColumnFamilyType::Lock {
+        debug!(
+            "cloud_sst_reader ffi_make_sst_reader lock, type: {:?}",
+            view.type_
+        );
         let lock_sst_reader = cloud_helper.make_lock_sst_reader(cs_pb, kv_engine);
         Box::into_raw(Box::new(lock_sst_reader)) as RawVoidPtr
     } else {
+        debug!(
+            "cloud_sst_reader ffi_make_sst_reader, type: {:?}",
+            view.type_
+        );
         let sst_reader = cloud_helper.make_sst_reader(cs_pb, kv_engine);
         Box::into_raw(Box::new(sst_reader)) as RawVoidPtr
     };
+    debug!(
+        "cloud_sst_reader ffi_make_sst_reader, reader: {:?}, type: {:?}",
+        ptr, view.type_
+    );
     ptr.into()
 }
 
@@ -89,9 +102,19 @@ pub unsafe extern "C" fn ffi_sst_reader_remained(
     mut reader: SSTReaderPtr,
     type_: ColumnFamilyType,
 ) -> u8 {
+    debug!(
+        "cloud_sst_reader ffi_sst_reader_remained, reader: {:?}, type: {:?}",
+        reader.inner, type_
+    );
     match type_ {
-        ColumnFamilyType::Lock => reader.as_mut_lock().ffi_remained(),
-        _ => reader.as_mut().ffi_remained(),
+        ColumnFamilyType::Lock => {
+            debug!("cloud_sst_reader ffi_sst_reader_remained, type: lock");
+            reader.as_mut_lock().ffi_remained()
+        }
+        _ => {
+            debug!("cloud_sst_reader ffi_sst_reader_remained, type: write");
+            reader.as_mut().ffi_remained()
+        }
     }
 }
 
@@ -99,9 +122,19 @@ pub unsafe extern "C" fn ffi_sst_reader_key(
     mut reader: SSTReaderPtr,
     type_: ColumnFamilyType,
 ) -> BaseBuffView {
+    debug!(
+        "cloud_sst_reader ffi_sst_reader_key, reader: {:?}, type: {:?}",
+        reader.inner, type_
+    );
     match type_ {
-        ColumnFamilyType::Lock => reader.as_mut_lock().ffi_key(),
-        _ => reader.as_mut().ffi_key(),
+        ColumnFamilyType::Lock => {
+            debug!("cloud_sst_reader ffi_sst_reader_key, type: lock");
+            reader.as_mut_lock().ffi_key()
+        }
+        _ => {
+            debug!("cloud_sst_reader ffi_sst_reader_key, type: write");
+            reader.as_mut().ffi_key()
+        }
     }
 }
 
@@ -116,9 +149,19 @@ pub unsafe extern "C" fn ffi_sst_reader_val(
 }
 
 pub unsafe extern "C" fn ffi_sst_reader_next(mut reader: SSTReaderPtr, type_: ColumnFamilyType) {
+    debug!(
+        "cloud_sst_reader ffi_sst_reader_next, reader: {:?}, type: {:?}",
+        reader.inner, type_
+    );
     match type_ {
-        ColumnFamilyType::Lock => reader.as_mut_lock().ffi_next(),
-        _ => reader.as_mut().ffi_next(),
+        ColumnFamilyType::Lock => {
+            debug!("cloud_sst_reader ffi_sst_reader_next, type: lock");
+            reader.as_mut_lock().ffi_next()
+        }
+        _ => {
+            debug!("cloud_sst_reader ffi_sst_reader_next, type: write");
+            reader.as_mut().ffi_next()
+        }
     }
 }
 
