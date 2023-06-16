@@ -12,7 +12,13 @@ pub mod root {
         }
         pub type RawCppStringPtr = *mut root::DB::RawCppString;
         pub use raftstore::coprocessor::ColumnFamilyType;
-
+        // #[repr(u8)]
+        // #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        // pub enum ColumnFamilyType {
+        //     Lock = 0,
+        //     Write = 1,
+        //     Default = 2,
+        // }
         #[repr(u8)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
         pub enum FileEncryptionRes {
@@ -86,12 +92,6 @@ pub mod root {
             pub cmd_cf: *const root::DB::ColumnFamilyType,
             pub len: u64,
         }
-        #[repr(u16)]
-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-        pub enum SSTFormatKind {
-            KIND_SST = 0,
-            KIND_TABLET = 1,
-        }
         #[repr(C)]
         #[derive(Debug)]
         pub struct FsStats {
@@ -108,6 +108,19 @@ pub mod root {
             pub engine_keys_written: u64,
             pub engine_bytes_read: u64,
             pub engine_keys_read: u64,
+        }
+        #[repr(u16)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub enum SSTFormatKind {
+            KIND_SST = 0,
+            KIND_TABLET = 1,
+        }
+        #[repr(u16)]
+        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+        pub enum EngineIteratorSeekType {
+            Key = 0,
+            First = 1,
+            Last = 2,
         }
         #[repr(u8)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -211,6 +224,7 @@ pub mod root {
         #[derive(Debug)]
         pub struct SSTReaderPtr {
             pub inner: root::DB::RawVoidPtr,
+            pub kind: root::DB::SSTFormatKind,
         }
         #[repr(C)]
         #[derive(Debug)]
@@ -279,13 +293,6 @@ pub mod root {
             Ok = 0,
             Error = 1,
             NotFound = 2,
-        }
-        #[repr(u16)]
-        #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
-        pub enum EngineIteratorSeekType {
-            Key = 0,
-            First = 1,
-            Last = 2,
         }
         #[repr(u32)]
         #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -614,7 +621,7 @@ pub mod root {
                 ) -> root::DB::BaseBuffView,
             >,
         }
-        pub const RAFT_STORE_PROXY_VERSION: u64 = 4990756589462826693;
+        pub const RAFT_STORE_PROXY_VERSION: u64 = 17683519757677544108;
         pub const RAFT_STORE_PROXY_MAGIC_NUMBER: u32 = 324508639;
     }
 }
