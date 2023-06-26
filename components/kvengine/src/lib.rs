@@ -1,5 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
+#![feature(hash_drain_filter)]
 #![cfg_attr(test, feature(test))]
 #[cfg(test)]
 extern crate test;
@@ -7,6 +8,8 @@ extern crate test;
 pub mod apply;
 pub mod compaction;
 mod concat_iterator;
+mod config;
+pub use config::Config as KvEngineConfig;
 pub mod dfs;
 pub mod engine;
 pub mod engine_trait;
@@ -37,7 +40,7 @@ mod tests;
 
 pub use apply::*;
 pub use compaction::*;
-pub use concat_iterator::ConcatIterator;
+use concat_iterator::ConcatIterator;
 #[cfg(test)]
 pub use dfs::Tagging;
 pub use engine::*;
@@ -54,6 +57,6 @@ pub use stats::*;
 pub use table::table::Iterator;
 pub use write::*;
 
-pub const NUM_CFS: usize = 3;
-pub const CF_LEVELS: [usize; NUM_CFS] = [3, 2, 1];
-pub const CF_MANAGED: [bool; NUM_CFS] = [true, false, true];
+const NUM_CFS: usize = 3;
+const CF_LEVELS: [usize; NUM_CFS] = [3, 2, 1];
+const CF_MANAGED: [bool; NUM_CFS] = [true, false, true];

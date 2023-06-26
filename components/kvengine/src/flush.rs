@@ -13,10 +13,7 @@ use tikv_util::{
 };
 
 use crate::{
-    table::{
-        blobtable::builder::BlobTableBuilder, memtable, memtable::CfTable, sstable,
-        sstable::L0Builder, table::ExternalLink, Iterator,
-    },
+    table::{memtable, memtable::CfTable, sstable, sstable::L0Builder, Iterator},
     *,
 };
 
@@ -91,28 +88,6 @@ impl InitialFlush {
     }
 }
 
-macro_rules! process_persisted_tables {
-    ($r:ident, $e:ident, $l0:expr, $blob:expr) => {
-        for _ in 0..2 {
-            match $r.recv().unwrap() {
-                Ok(persisted) => match persisted {
-                    Persisted::L0 { table } => {
-                        $l0(table);
-                    }
-                    Persisted::Blob { table } => match table {
-                        Some(table) => $blob(table),
-                        None => {}
-                    },
-                },
-                Err(err) => {
-                    $e.push(err);
-                    break;
-                }
-            }
-        }
-    };
-}
-
 impl Engine {
     pub(crate) fn run_flush_worker(&self, rx: mpsc::Receiver<FlushMsg>) {
         let mut worker = FlushWorker {
@@ -147,20 +122,21 @@ impl Engine {
         if let Some(props) = m.get_properties() {
             flush.set_properties(props);
         }
-        let (l0_builder, blob_builder) =
-            self.build_l0_table(m, task.inner_start(), task.inner_end());
+        let l0_builder = self.build_l0_table(m, task.inner_start(), task.inner_end());
         if l0_builder.is_empty() {
             return Ok(cs);
         }
         let (tx, rx) = tikv_util::mpsc::bounded(2);
-        self.persist_tables(l0_builder, blob_builder, tx, task.id_ver);
+        self.persist_tables(l0_builder, tx, task.id_ver);
         let mut errs = vec![];
-        process_persisted_tables!(
-            rx,
-            errs,
-            |l0_create: pb::L0Create| flush.set_l0_create(l0_create),
-            |blob_create: pb::BlobCreate| flush.set_blob_create(blob_create)
-        );
+        match rx.recv().unwrap() {
+            Ok(l0_create) => {
+                flush.set_l0_create(l0_create);
+            }
+            Err(err) => {
+                errs.push(err);
+            }
+        }
         assert!(errs.is_empty());
         Ok(cs)
     }
@@ -210,23 +186,25 @@ impl Engine {
         }
         let mut builders = vec![];
         for m in &flush.mem_tbls {
-            let (l0_builder, blob_builder) =
-                self.build_l0_table(m, task.inner_start(), task.inner_end());
-            builders.push((l0_builder, blob_builder));
+            let l0_builder = self.build_l0_table(m, task.inner_start(), task.inner_end());
+            builders.push(l0_builder);
         }
         let num_mem_tables = builders.len();
         let (tx, rx) = tikv_util::mpsc::bounded(num_mem_tables);
-        for (l0_builder, blob_builder) in builders {
-            self.persist_tables(l0_builder, blob_builder, tx.clone(), task.id_ver);
+        for l0_builder in builders {
+            self.persist_tables(l0_builder, tx.clone(), task.id_ver);
         }
         let mut errs = vec![];
         for _ in 0..num_mem_tables {
-            process_persisted_tables!(
-                rx,
-                errs,
-                |l0_create: pb::L0Create| initial_flush.mut_l0_creates().push(l0_create),
-                |blob_create: pb::BlobCreate| initial_flush.mut_blob_creates().push(blob_create)
-            );
+            match rx.recv().unwrap() {
+                Ok(l0_create) => {
+                    initial_flush.mut_l0_creates().push(l0_create);
+                }
+                Err(err) => {
+                    errs.push(err);
+                    break;
+                }
+            }
         }
         if errs.is_empty() {
             return Ok(cs);
@@ -234,26 +212,12 @@ impl Engine {
         Err(errs.pop().unwrap())
     }
 
-    pub(crate) fn build_l0_table(
-        &self,
-        m: &CfTable,
-        start: &[u8],
-        end: &[u8],
-    ) -> (L0Builder, Option<BlobTableBuilder>) {
+    pub(crate) fn build_l0_table(&self, m: &CfTable, start: &[u8], end: &[u8]) -> L0Builder {
         let sst_fid = self.id_allocator.alloc_id(1).unwrap().pop().unwrap();
         let mut l0_builder = sstable::L0Builder::new(
             sst_fid,
             self.opts.table_builder_options.block_size,
             m.get_version(),
-        );
-        let mut external_link = ExternalLink::new();
-        external_link.fid = self.id_allocator.alloc_id(1).unwrap().pop().unwrap();
-        let mut blob_builder = BlobTableBuilder::new(
-            external_link.fid,
-            0,
-            sstable::NO_COMPRESSION,
-            0,
-            self.opts.min_blob_size,
         );
         for cf in 0..NUM_CFS {
             let skl = m.get_cf(cf);
@@ -273,26 +237,8 @@ impl Engine {
                     // For read committed CF, we can discard all the old
                     // versions.
                 } else {
-                    let mut v = it.value();
-                    if self.opts.min_blob_size > 0
-                        && v.value_len() >= self.opts.min_blob_size as usize
-                    {
-                        v.set_external_link();
-                        let (offset, len) = blob_builder.add(it.key(), &v);
-                        external_link.len = len;
-                        external_link.offset = offset;
-                        // info!(
-                        //     "blob table {} add key {:?} offset {} len {}, value {:?}",
-                        //     external_link.fid,
-                        //     it.key(),
-                        //     offset,
-                        //     len,
-                        //     v.get_value(),
-                        // );
-                        l0_builder.add(cf, it.key(), &v, Some(external_link));
-                    } else {
-                        l0_builder.add(cf, it.key(), &v, None);
-                    }
+                    let v = it.value();
+                    l0_builder.add(cf, it.key(), &v, None);
                     if rc {
                         prev_key.truncate(0);
                         prev_key.extend_from_slice(it.key());
@@ -301,26 +247,18 @@ impl Engine {
                 it.next_all_version();
             }
         }
-        if blob_builder.is_empty() {
-            (l0_builder, None)
-        } else {
-            (l0_builder, Some(blob_builder))
-        }
+        l0_builder
     }
 
     pub(crate) fn persist_tables(
         &self,
         mut l0_builder: L0Builder,
-        blob_builder: Option<BlobTableBuilder>,
-        tx: tikv_util::mpsc::Sender<Result<Persisted>>,
+        tx: tikv_util::mpsc::Sender<Result<pb::L0Create>>,
         id_ver: IdVer,
     ) {
-        let l0_fs = self.fs.clone();
-        let blob_fs = self.fs.clone();
-        let tx_blob_create = tx.clone();
-
-        let l0_persist = async move {
-            let res = l0_fs
+        let fs_clone = self.fs.clone();
+        self.fs.get_runtime().spawn(async move {
+            let res = fs_clone
                 .create(
                     l0_builder.get_fid(),
                     l0_builder.finish(),
@@ -336,41 +274,7 @@ impl Engine {
             l0_create.set_id(l0_builder.get_fid());
             l0_create.set_smallest(smallest_key.to_vec());
             l0_create.set_biggest(biggest_key.to_vec());
-            tx.send(Ok(Persisted::L0 { table: l0_create })).unwrap();
-        };
-
-        let blob_persist = async move {
-            if blob_builder.is_none() {
-                tx_blob_create
-                    .send(Ok(Persisted::Blob { table: None }))
-                    .unwrap();
-                return;
-            }
-            let blob_builder = blob_builder.unwrap();
-            let res = blob_fs
-                .create(
-                    blob_builder.get_fid(),
-                    blob_builder.finish(),
-                    dfs::Options::new(id_ver.id, id_ver.ver),
-                )
-                .await;
-            if let Err(e) = res {
-                tx_blob_create.send(Err(e.into())).unwrap();
-                return;
-            }
-            let mut blob_create = pb::BlobCreate::new();
-            let (smallest_key, biggest_key) = blob_builder.smallest_biggest_key();
-            blob_create.set_id(blob_builder.get_fid());
-            blob_create.set_smallest(smallest_key.to_vec());
-            blob_create.set_biggest(biggest_key.to_vec());
-            tx_blob_create
-                .send(Ok(Persisted::Blob {
-                    table: Some(blob_create),
-                }))
-                .unwrap();
-        };
-        self.fs.get_runtime().spawn(async move {
-            futures::join!(l0_persist, blob_persist);
+            tx.send(Ok(l0_create)).unwrap();
         });
     }
 }

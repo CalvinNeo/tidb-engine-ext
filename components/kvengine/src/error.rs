@@ -36,6 +36,8 @@ pub enum Error {
     IncompatibleRemoteCompactor { url: String, msg: String },
     #[error("fallback to local compactor disabled")]
     FallbackLocalCompactorDisabled,
+    #[error("remote read error {0}")]
+    RemoteRead(String),
 }
 
 impl From<table::Error> for Error {

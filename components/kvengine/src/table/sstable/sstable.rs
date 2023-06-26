@@ -806,13 +806,13 @@ mod tests {
             assert!(it.valid());
             let v = it.value();
             assert_eq!(v.get_value(), get_test_value(n - 1).as_bytes());
-            assert!(!v.is_external_link());
+            assert!(!v.is_blob_ref());
             assert_eq!(v.user_meta(), &[0u8]);
             it.next();
             assert!(it.valid());
             let v = it.value();
             assert_eq!(v.get_value(), get_test_value(n - 2).as_bytes());
-            assert!(!v.is_external_link());
+            assert!(!v.is_blob_ref());
             assert_eq!(v.user_meta(), &[0u8]);
         }
     }
@@ -879,7 +879,7 @@ mod tests {
                 assert_eq!(k, get_test_key("key", count).as_bytes());
                 let v = it.value();
                 assert_eq!(v.get_value(), get_test_value(count).as_bytes());
-                assert!(!v.is_external_link());
+                assert!(!v.is_blob_ref());
                 count += 1;
                 it.next()
             }
@@ -899,7 +899,7 @@ mod tests {
                 assert!(it.valid());
                 let v = it.value();
                 assert_eq!(v.get_value(), get_test_value(i).as_bytes());
-                assert!(!v.is_external_link());
+                assert!(!v.is_blob_ref());
                 it.next();
             }
             it.next();
@@ -1030,7 +1030,7 @@ mod tests {
             while it.valid() {
                 let v = it.value();
                 assert_eq!(v.get_value(), get_test_value(cnt).as_bytes());
-                assert!(!v.is_external_link());
+                assert!(!v.is_blob_ref());
                 cnt += 1;
                 it.next();
             }
@@ -1043,7 +1043,7 @@ mod tests {
             while it.valid() {
                 let v = it.value();
                 assert_eq!(v.get_value(), get_test_value(10000 - 1 - cnt).as_bytes());
-                assert!(!v.is_external_link());
+                assert!(!v.is_blob_ref());
                 cnt += 1;
                 it.next();
             }

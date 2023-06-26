@@ -5,6 +5,7 @@ use std::{mem, slice};
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, Bytes, BytesMut};
 
+use super::BlobRef;
 use crate::table::{
     sstable::{LZ4_COMPRESSION, NO_COMPRESSION, ZSTD_COMPRESSION},
     Value,
@@ -99,17 +100,11 @@ pub struct BlobTableBuilder {
 }
 
 impl BlobTableBuilder {
-    pub fn new(
-        fid: u64,
-        checksum_tp: u8,
-        compression_tp: u8,
-        compression_lvl: i32,
-        min_blob_size: u32,
-    ) -> Self {
+    pub fn new(fid: u64, compression_tp: u8, compression_lvl: i32, min_blob_size: u32) -> Self {
         Self {
             fid,
             buf: vec![],
-            checksum_tp,
+            checksum_tp: 0,
             compression_tp,
             compression_lvl,
             min_blob_size,
@@ -132,8 +127,8 @@ impl BlobTableBuilder {
         &mut self,
         key: &[u8],
         blob: &[u8],
-        need_compress_blob: bool,
-    ) -> (BlobOffset, ValueLength) {
+        already_compressed: Option<ValueLength>,
+    ) -> BlobRef {
         assert!(blob.len() >= self.min_blob_size as usize);
         assert!(blob.len() <= ValueLength::max_value() as usize);
         assert!(self.total_blob_size as usize + blob.len() <= BlobOffset::max_value() as usize);
@@ -149,19 +144,23 @@ impl BlobTableBuilder {
 
         let begin_off = self.buf.len();
         self.buf.resize(self.buf.len() + BLOB_ENTRY_META_SIZE, 0);
-        let compressed_len = if need_compress_blob {
+        let mut original_len = blob.len() as ValueLength;
+        let compressed_len = if let Some(len) = already_compressed {
+            self.buf.extend_from_slice(blob);
+            original_len = len;
+            blob.len() as ValueLength
+        } else {
             match self.compression_tp {
                 NO_COMPRESSION => {
                     self.buf.extend_from_slice(blob);
-                    blob.len()
+                    blob.len() as ValueLength
                 }
-                LZ4_COMPRESSION => Self::compress_lz4(blob, &mut self.buf),
-                ZSTD_COMPRESSION => Self::compress_zstd(blob, self.compression_lvl, &mut self.buf),
+                LZ4_COMPRESSION => Self::compress_lz4(blob, &mut self.buf) as ValueLength,
+                ZSTD_COMPRESSION => {
+                    Self::compress_zstd(blob, self.compression_lvl, &mut self.buf) as ValueLength
+                }
                 _ => panic!("unexpected compression type {}", self.compression_tp),
             }
-        } else {
-            self.buf.extend_from_slice(blob);
-            blob.len()
         };
 
         let mut checksum = 0u32;
@@ -174,11 +173,16 @@ impl BlobTableBuilder {
             &mut slice[begin_off + BLOB_ENTRY_LENGTH_OFFSET..],
             compressed_len as ValueLength,
         ); // put compressed length at the reserved place.
-        (begin_off as BlobOffset, compressed_len as ValueLength)
+        BlobRef::new(
+            self.fid,
+            begin_off as BlobOffset,
+            compressed_len,
+            original_len,
+        )
     }
 
-    pub fn add(&mut self, key: &[u8], value: &Value) -> (BlobOffset, ValueLength) {
-        self.add_blob(key, value.get_value(), true)
+    pub fn add(&mut self, key: &[u8], value: &Value) -> BlobRef {
+        self.add_blob(key, value.get_value(), None)
     }
 
     fn compress_lz4(uncompressed: &[u8], compressed_buf: &mut Vec<u8>) -> usize {

@@ -12,7 +12,7 @@ pub const USER_META_FORMAT_V1: u8 = 1;
 // format(1) + start_ts(8) + commit_ts(8)
 pub const USER_META_SIZE: usize = 1 + std::mem::size_of::<UserMeta>();
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct UserMeta {
     pub start_ts: u64,
     pub commit_ts: u64,

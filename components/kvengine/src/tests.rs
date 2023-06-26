@@ -564,6 +564,7 @@ fn test_lost_tombstone_issue() {
         vec![],
         Arc::new(HashMap::default()),
         [cf_builder.build(), ShardCf::new(1), ShardCf::new(2)],
+        HashMap::new(),
     );
     shard.set_data(data);
     let pri = CompactionPriority::L1Plus {
@@ -729,8 +730,9 @@ impl Applier {
                 } else {
                     self.engine.meta_committed(&cs, false);
                     unwrap_or_return!(
-                        self.engine
-                            .apply_change_set(self.engine.prepare_change_set(cs, false).unwrap()),
+                        self.engine.apply_change_set(
+                            self.engine.prepare_change_set(cs, false, None).unwrap()
+                        ),
                         "applier apply changeset"
                     );
                 }

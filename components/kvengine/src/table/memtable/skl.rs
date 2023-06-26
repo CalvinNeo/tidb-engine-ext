@@ -266,8 +266,8 @@ impl SkipListCore {
         self.height.load(Acquire) as usize
     }
 
-    pub fn put_batch(&self, batch: &mut WriteBatch, snap: &SnapAccess, cf: usize) {
-        self.put_batch_impl(batch, Some(snap), cf)
+    pub fn put_batch(&self, batch: &mut WriteBatch, snap: Option<&SnapAccess>, cf: usize) {
+        self.put_batch_impl(batch, snap, cf);
     }
 
     fn put_batch_impl(&self, batch: &mut WriteBatch, snap: Option<&SnapAccess>, cf: usize) {

@@ -9,7 +9,7 @@ use moka::sync::SegmentedCache;
 use super::*;
 use crate::{
     max_ts_by_cf,
-    table::{table::Result, ExternalLink, Value},
+    table::{blobtable::BlobRef, table::Result, Value},
     LOCK_CF, NUM_CFS, WRITE_CF,
 };
 
@@ -229,7 +229,7 @@ impl L0Builder {
         }
     }
 
-    pub fn add(&mut self, cf: usize, key: &[u8], val: &Value, external_link: Option<ExternalLink>) {
+    pub fn add(&mut self, cf: usize, key: &[u8], val: &Value, external_link: Option<BlobRef>) {
         self.builders[cf].add(key, val, external_link);
         self.count += 1;
     }

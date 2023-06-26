@@ -11,7 +11,7 @@ use super::{
         BaseBuffView, ColumnFamilyType, RaftStoreProxyPtr, RawVoidPtr, SSTReaderInterfaces,
         SSTReaderPtr, SSTView,
     },
-    CloudLockSstReader, CloudSstReader,
+    CloudSstReader,
 };
 use crate::interfaces_ffi::{EngineIteratorSeekType, SSTFormatKind};
 
@@ -32,10 +32,6 @@ impl Clone for SSTReaderInterfaces {
 }
 
 impl SSTReaderPtr {
-    unsafe fn as_mut_lock(&mut self) -> &mut CloudLockSstReader {
-        &mut *(self.inner as *mut CloudLockSstReader)
-    }
-
     unsafe fn as_mut(&mut self) -> &mut CloudSstReader {
         &mut *(self.inner as *mut CloudSstReader)
     }
@@ -91,50 +87,31 @@ pub unsafe extern "C" fn ffi_make_sst_reader(
 
 pub unsafe extern "C" fn ffi_sst_reader_remained(
     mut reader: SSTReaderPtr,
-    type_: ColumnFamilyType,
+    _type_: ColumnFamilyType,
 ) -> u8 {
-    match type_ {
-        ColumnFamilyType::Lock => reader.as_mut_lock().ffi_remained(),
-        _ => reader.as_mut().ffi_remained(),
-    }
+    reader.as_mut().ffi_remained()
 }
 
 pub unsafe extern "C" fn ffi_sst_reader_key(
     mut reader: SSTReaderPtr,
-    type_: ColumnFamilyType,
+    _type_: ColumnFamilyType,
 ) -> BaseBuffView {
-    match type_ {
-        ColumnFamilyType::Lock => reader.as_mut_lock().ffi_key(),
-        _ => reader.as_mut().ffi_key(),
-    }
+    reader.as_mut().ffi_key()
 }
 
 pub unsafe extern "C" fn ffi_sst_reader_val(
     mut reader: SSTReaderPtr,
-    type_: ColumnFamilyType,
+    _type_: ColumnFamilyType,
 ) -> BaseBuffView {
-    match type_ {
-        ColumnFamilyType::Lock => reader.as_mut_lock().ffi_val(),
-        _ => reader.as_mut().ffi_val(),
-    }
+    reader.as_mut().ffi_val()
 }
 
-pub unsafe extern "C" fn ffi_sst_reader_next(mut reader: SSTReaderPtr, type_: ColumnFamilyType) {
-    match type_ {
-        ColumnFamilyType::Lock => reader.as_mut_lock().ffi_next(),
-        _ => reader.as_mut().ffi_next(),
-    }
+pub unsafe extern "C" fn ffi_sst_reader_next(mut reader: SSTReaderPtr, _type_: ColumnFamilyType) {
+    reader.as_mut().ffi_next()
 }
 
-pub unsafe extern "C" fn ffi_gc_sst_reader(reader: SSTReaderPtr, type_: ColumnFamilyType) {
-    match type_ {
-        ColumnFamilyType::Lock => {
-            drop(Box::from_raw(reader.inner as *mut CloudLockSstReader));
-        }
-        _ => {
-            drop(Box::from_raw(reader.inner as *mut CloudSstReader));
-        }
-    }
+pub unsafe extern "C" fn ffi_gc_sst_reader(reader: SSTReaderPtr, _type_: ColumnFamilyType) {
+    drop(Box::from_raw(reader.inner as *mut CloudSstReader))
 }
 
 pub unsafe extern "C" fn ffi_sst_reader_format_kind(

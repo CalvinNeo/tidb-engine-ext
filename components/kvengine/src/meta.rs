@@ -375,16 +375,6 @@ impl ShardMeta {
             let l0 = flush.get_l0_create();
             self.add_file(l0.id, -1, 0, l0.get_smallest(), l0.get_biggest());
         }
-        if flush.has_blob_create() {
-            let blob = flush.get_blob_create();
-            self.add_file(
-                blob.id,
-                -1,
-                BLOB_LEVEL,
-                blob.get_smallest(),
-                blob.get_biggest(),
-            );
-        }
         let new_data_seq = flush.get_version() - self.base_version;
         if self.data_sequence < new_data_seq {
             debug!(
@@ -431,6 +421,15 @@ impl ShardMeta {
                 tbl.get_smallest(),
                 tbl.get_biggest(),
             )
+        }
+        for blob_table in comp.get_blob_tables() {
+            self.add_file(
+                blob_table.get_id(),
+                -1,
+                BLOB_LEVEL,
+                blob_table.get_smallest(),
+                blob_table.get_biggest(),
+            );
         }
     }
 
@@ -832,16 +831,41 @@ impl FileMeta {
         }
     }
 
-    fn is_blob_file(&self) -> bool {
+    pub fn is_blob_file(&self) -> bool {
         (self.level & (1u8 << 7)) > 0
     }
 
-    pub(crate) fn get_level(&self) -> u32 {
+    pub fn get_level(&self) -> u32 {
         if self.is_blob_file() {
             BLOB_LEVEL
         } else {
             self.level as u32
         }
+    }
+
+    pub fn get_cf(&self) -> i32 {
+        self.cf as i32
+    }
+
+    pub fn has_locks(&self) -> bool {
+        self.level == 0 || self.cf == LOCK_CF as i8
+    }
+
+    pub fn from_l0_table(table: &kvenginepb::L0Create) -> Self {
+        Self::new(-1, 0, table.get_smallest(), table.get_biggest())
+    }
+
+    pub fn from_table(table: &kvenginepb::TableCreate) -> Self {
+        Self::new(
+            table.cf,
+            table.level,
+            table.get_smallest(),
+            table.get_biggest(),
+        )
+    }
+
+    pub fn from_blob_table(table: &kvenginepb::BlobCreate) -> Self {
+        Self::new(-1, BLOB_LEVEL, table.get_smallest(), table.get_biggest())
     }
 }
 

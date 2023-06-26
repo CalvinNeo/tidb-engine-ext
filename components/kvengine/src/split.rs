@@ -119,6 +119,7 @@ impl Engine {
                 new_l0s,
                 Arc::new(new_blob_tbl_map),
                 new_cfs,
+                old_data.unloaded_tbls.clone(),
             );
             new_shard.set_data(new_data);
         }
@@ -279,6 +280,10 @@ impl Engine {
             new_cf_builders[1].build(),
             new_cf_builders[2].build(),
         ];
+        let mut unloaded_tbls = source.unloaded_tables.clone();
+        for (&id, tbl) in old_data.unloaded_tbls.iter() {
+            unloaded_tbls.insert(id, tbl.clone());
+        }
         let data = ShardData::new(
             new_shard.range.clone(),
             old_data.del_prefixes.clone(),
@@ -288,6 +293,7 @@ impl Engine {
             l0_tbls,
             Arc::new(blob_tbl_map),
             new_cfs,
+            unloaded_tbls,
         );
         new_shard.set_data(data);
         new_shard.parent_id = shard_id;

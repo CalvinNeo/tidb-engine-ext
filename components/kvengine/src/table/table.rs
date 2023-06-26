@@ -1,14 +1,19 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{convert::TryInto, io, mem::size_of, ptr, result, slice};
+use std::{io, mem::size_of, ptr, result, slice};
 
 use byteorder::{ByteOrder, LittleEndian};
 use thiserror::Error;
 
-use crate::{
-    dfs,
-    table::blobtable::builder::{BlobOffset, ValueLength},
-};
+use super::blobtable::BlobRef;
+use crate::dfs;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Row {
+    pub key: Vec<u8>,
+    pub user_meta: crate::UserMeta,
+    pub value: Vec<u8>,
+}
 
 pub trait Iterator: Send {
     // next returns the next entry with different key on the latest version.
@@ -52,14 +57,14 @@ pub trait Iterator: Send {
 
 pub const BIT_DELETE: u8 = 1;
 pub const BIT_HAS_OLD_VERSION: u8 = 2;
-pub const BIT_EXTERNAL_LINK: u8 = 4;
+pub const BIT_BLOB_REF: u8 = 4;
 
 pub fn is_deleted(meta: u8) -> bool {
     meta & BIT_DELETE > 0
 }
 
-pub fn is_external_link(meta: u8) -> bool {
-    meta & BIT_EXTERNAL_LINK > 0
+pub fn is_blob_ref(meta: u8) -> bool {
+    meta & BIT_BLOB_REF > 0
 }
 
 pub fn is_old_version(meta: u8) -> bool {
@@ -72,25 +77,6 @@ pub const VALUE_VERSION_OFF: usize = 2;
 // Size in bytes of the version field.
 pub const VALUE_VERSION_LEN: usize = std::mem::size_of::<u64>();
 
-/// Disk format is: [VAR_PTR_OFF + version: u64 + user_meta_len + data]
-/// Only data is stored in the blob file, eveything else goes in the SST.
-///
-/// Where data is:
-/// If extrernal link is set in meta:
-///     [serialized ExternalLink in little endian format]
-/// else
-///     [data as is]
-/// Link to data when the value is stored externally.
-#[derive(Default, Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct ExternalLink {
-    /// ID of file where the data is stored.
-    pub(crate) fid: u64,
-    /// Absolute offset within the file. Apparently SST max size is <= 4GB.
-    pub(crate) offset: BlobOffset,
-    /// Original value length.
-    pub(crate) len: ValueLength,
-}
-
 pub struct Version(pub u64);
 
 impl Version {
@@ -101,36 +87,6 @@ impl Version {
 
     pub fn deserialize(buf: &[u8]) -> u64 {
         LittleEndian::read_u64(buf)
-    }
-}
-
-impl ExternalLink {
-    pub(crate) fn new() -> Self {
-        Default::default()
-    }
-
-    fn deserialize(&mut self, buf: &[u8]) -> u8 {
-        let mut offset: usize = 0;
-        self.fid = LittleEndian::read_u64(&buf[offset..]);
-        offset += size_of::<u64>();
-        self.offset = LittleEndian::read_u32(&buf[offset..]);
-        offset += size_of::<u32>();
-        self.len = LittleEndian::read_u32(&buf[offset..]);
-        size_of::<Self>().try_into().unwrap()
-    }
-
-    fn serialize(&self, buf: &mut [u8]) -> u8 {
-        let mut offset: usize = 0;
-        LittleEndian::write_u64(&mut buf[offset..], self.fid);
-        offset += size_of::<u64>();
-        LittleEndian::write_u32(&mut buf[offset..], self.offset);
-        offset += size_of::<u32>();
-        LittleEndian::write_u32(&mut buf[offset..], self.len);
-        size_of::<Self>().try_into().unwrap()
-    }
-
-    fn size_of() -> usize {
-        std::mem::size_of::<Self>()
     }
 }
 
@@ -180,7 +136,7 @@ impl Value {
     }
 
     pub fn encode_buf(meta: u8, user_meta: &[u8], version: u64, val: &[u8]) -> Vec<u8> {
-        assert!(!is_external_link(meta));
+        assert!(!is_blob_ref(meta));
         let mut buf = vec![0; VALUE_VERSION_OFF + VALUE_VERSION_LEN + user_meta.len() + val.len()];
         let offset = Self::encode_preamble(&mut buf, meta, version, user_meta);
         let buf_slice = buf.as_mut_slice();
@@ -200,10 +156,10 @@ impl Value {
         }
     }
 
-    pub fn encode_with_external_link(&self, buf: &mut [u8], external_link: ExternalLink) {
-        assert!(self.is_external_link());
+    pub fn encode_with_blob_ref(&self, buf: &mut [u8], blob_ref: BlobRef) {
+        assert!(self.is_blob_ref());
         let offset = Self::encode_preamble(buf, self.meta, self.version, self.user_meta());
-        external_link.serialize(&mut buf[offset..offset + ExternalLink::size_of()]);
+        blob_ref.serialize(&mut buf[offset..offset + size_of::<BlobRef>()]);
     }
 
     pub fn decode(buf: &[u8]) -> Self {
@@ -251,9 +207,9 @@ impl Value {
     }
 
     #[inline(always)]
-    pub(crate) fn set_external_link(&mut self) {
-        assert!(!self.is_external_link());
-        self.meta |= BIT_EXTERNAL_LINK;
+    pub(crate) fn set_blob_ref(&mut self) {
+        assert!(!self.is_blob_ref());
+        self.meta |= BIT_BLOB_REF;
     }
 
     #[inline(always)]
@@ -272,8 +228,8 @@ impl Value {
     }
 
     #[inline(always)]
-    pub(crate) fn is_external_link(&self) -> bool {
-        is_external_link(self.meta)
+    pub(crate) fn is_blob_ref(&self) -> bool {
+        is_blob_ref(self.meta)
     }
 
     #[inline(always)]
@@ -318,15 +274,13 @@ impl Value {
     }
 
     #[inline(always)]
-    pub fn encoded_size_with_external_link(&self) -> usize {
-        self.encoded_size_of_preamble() + ExternalLink::size_of()
+    pub fn encoded_size_with_blob_ref(&self) -> usize {
+        self.encoded_size_of_preamble() + size_of::<BlobRef>()
     }
 
-    pub fn get_external_link(&self) -> ExternalLink {
-        assert!(self.is_external_link());
-        let mut external_link: ExternalLink = Default::default();
-        external_link.deserialize(self.get_value());
-        external_link
+    pub fn get_blob_ref(&self) -> BlobRef {
+        assert!(self.is_blob_ref());
+        BlobRef::deserialize(self.get_value())
     }
 
     #[inline(always)]
@@ -335,7 +289,7 @@ impl Value {
     }
 
     pub fn fill_in_blob(&mut self, blob: &[u8]) {
-        assert!(self.is_external_link());
+        assert!(self.is_blob_ref());
         self.blob_ptr = blob.as_ptr();
         self.len = blob.len() as u32;
     }

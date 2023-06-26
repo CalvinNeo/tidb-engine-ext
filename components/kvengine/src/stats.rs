@@ -101,7 +101,7 @@ impl super::Engine {
             engine_stats.in_use_blob_size += shard.in_use_blob_size;
             engine_stats.total_blob_size += shard.total_blob_size;
             engine_stats.partial_l0_count += shard.partial_l0s;
-            engine_stats.partial_blob_count += shard.partial_blobs;
+            engine_stats.partial_blob_count += shard.shared_blob_tables;
             engine_stats.partial_ln_count += shard.partial_tbls;
             engine_stats.index_size += shard.index_size;
             engine_stats.in_mem_index_size += shard.in_mem_index_size;
@@ -170,9 +170,10 @@ pub struct ShardStats {
     pub base_version: u64,
     pub meta_sequence: u64,
     pub write_sequence: u64,
+    // Total size of all SST files and blobs referenced by the shard (not blob table file size).
     pub total_size: u64,
     pub partial_l0s: usize,
-    pub partial_blobs: usize,
+    pub shared_blob_tables: usize,
     pub partial_tbls: usize,
     pub compaction_cf: isize,
     pub compaction_level: isize,
@@ -242,7 +243,7 @@ impl super::Shard {
         }
         total_size += mem_table_size;
         let mut partial_l0s = 0;
-        let mut partial_blobs = 0;
+        let mut shared_blob_tables = 0;
         let l0_table_count = data.l0_tbls.len();
         let mut l0_table_size = 0;
         let mut total_blob_size = 0;
@@ -255,10 +256,9 @@ impl super::Shard {
                 blob_table_size += v.size();
             } else {
                 blob_table_size += v.size() / 2;
-                partial_blobs += 1;
+                shared_blob_tables += 1;
             }
         }
-        total_size += blob_table_size;
         total_blob_size += blob_table_size;
         for l0_tbl in data.l0_tbls.as_slice() {
             if self.cover_full_table(l0_tbl.smallest(), l0_tbl.biggest()) {
@@ -345,6 +345,7 @@ impl super::Shard {
             }
             cfs.push(cf_stat);
         }
+        total_size += in_use_blob_size;
         let priority = self.compaction_priority.read().unwrap().clone();
         let compaction_cf = priority.as_ref().map_or(0, |x| x.cf());
         let compaction_level = priority.as_ref().map_or(0, |x| x.level());
@@ -381,7 +382,7 @@ impl super::Shard {
             kv_size,
             open_files,
             partial_l0s,
-            partial_blobs,
+            shared_blob_tables,
             partial_tbls,
             compaction_cf,
             compaction_level,

@@ -1,6 +1,12 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{collections::HashMap, io::Write, path::PathBuf, sync::atomic::Ordering::Relaxed};
+use std::{
+    collections::HashMap,
+    io::Write,
+    iter::Iterator,
+    path::PathBuf,
+    sync::{atomic::Ordering::Relaxed, Arc},
+};
 
 use bytes::{Buf, Bytes};
 use file_system::{IoOp, IoType};
@@ -22,39 +28,43 @@ impl EngineCore {
         &self,
         cs: kvenginepb::ChangeSet,
         use_direct_io: bool,
+        table_filter: Option<LoadTableFilterFn>,
     ) -> Result<ChangeSet> {
-        let mut ids = HashMap::new();
+        let mut ids: HashMap<u64, FileMeta> = HashMap::new();
         let mut cs = ChangeSet::new(cs);
         if cs.has_flush() {
             let flush = cs.get_flush();
             if flush.has_l0_create() {
-                ids.insert(flush.get_l0_create().id, 0);
-            }
-            if flush.has_blob_create() {
-                ids.insert(flush.get_blob_create().id, BLOB_LEVEL);
+                ids.insert(
+                    flush.get_l0_create().id,
+                    FileMeta::from_l0_table(flush.get_l0_create()),
+                );
             }
         }
         if cs.has_compaction() {
             let comp = cs.get_compaction();
             if !is_move_down(comp) {
                 for tbl in &comp.table_creates {
-                    ids.insert(tbl.id, tbl.level);
+                    ids.insert(tbl.id, FileMeta::from_table(tbl));
+                }
+                for bt in comp.get_blob_tables() {
+                    ids.insert(bt.get_id(), FileMeta::from_blob_table(bt));
                 }
             }
         }
         if cs.has_destroy_range() {
             for t in cs.get_destroy_range().get_table_creates() {
-                ids.insert(t.id, t.level);
+                ids.insert(t.id, FileMeta::from_table(t));
             }
         }
         if cs.has_truncate_ts() {
             for t in cs.get_truncate_ts().get_table_creates() {
-                ids.insert(t.id, t.level);
+                ids.insert(t.id, FileMeta::from_table(t));
             }
         }
         if cs.has_trim_over_bound() {
             for t in cs.get_trim_over_bound().get_table_creates() {
-                ids.insert(t.id, t.level);
+                ids.insert(t.id, FileMeta::from_table(t));
             }
         }
         if cs.has_snapshot() {
@@ -69,41 +79,52 @@ impl EngineCore {
         if cs.has_ingest_files() {
             let ingest_files = cs.get_ingest_files();
             for l0 in ingest_files.get_l0_creates() {
-                ids.insert(l0.id, 0);
+                ids.insert(l0.id, FileMeta::from_l0_table(l0));
             }
             for tbl in ingest_files.get_table_creates() {
-                ids.insert(tbl.id, tbl.level);
+                ids.insert(tbl.id, FileMeta::from_table(tbl));
             }
             for blob in ingest_files.get_blob_creates() {
-                ids.insert(blob.id, BLOB_LEVEL);
+                ids.insert(blob.id, FileMeta::from_blob_table(blob));
             }
         }
         if cs.has_major_compaction() {
             let major_comp = cs.get_major_compaction();
             for tbl in major_comp.get_sstable_change().get_table_creates() {
-                ids.insert(tbl.get_id(), tbl.get_level());
+                ids.insert(tbl.get_id(), FileMeta::from_table(tbl));
             }
             for blob in major_comp.get_new_blob_tables() {
-                ids.insert(blob.get_id(), BLOB_LEVEL);
+                ids.insert(blob.get_id(), FileMeta::from_blob_table(blob));
             }
         }
-        debug!(
+
+        if let Some(table_filter) = table_filter {
+            info!(
+                "[{}:{}] is preparing change set (before table filter)", cs.shard_id, cs.shard_ver;
+                "ids" => ?ids,
+            );
+            cs.unloaded_tables = ids
+                .drain_filter(|_, tb| !table_filter(cs.shard_id, tb)) // !table_filter: table will not load
+                .collect();
+        }
+
+        info!(
             "[{}:{}] is preparing change set, loading file by ids", cs.shard_id, cs.shard_ver;
             "ids" => ?ids,
         );
-        self.load_tables_by_ids(cs.shard_id, cs.shard_ver, ids, &mut cs, use_direct_io)?;
+        self.load_tables_by_ids(cs.shard_id, cs.shard_ver, &ids, &mut cs, use_direct_io)?;
         Ok(cs)
     }
 
-    fn collect_snap_ids(&self, snap: &kvenginepb::Snapshot, ids: &mut HashMap<u64, u32>) {
+    fn collect_snap_ids(&self, snap: &kvenginepb::Snapshot, ids: &mut HashMap<u64, FileMeta>) {
         for blob in snap.get_blob_creates() {
-            ids.insert(blob.id, BLOB_LEVEL);
+            ids.insert(blob.id, FileMeta::from_blob_table(blob));
         }
         for l0 in snap.get_l0_creates() {
-            ids.insert(l0.id, 0);
+            ids.insert(l0.id, FileMeta::from_l0_table(l0));
         }
         for ln in snap.get_table_creates() {
-            ids.insert(ln.id, ln.level);
+            ids.insert(ln.id, FileMeta::from_table(ln));
         }
     }
 
@@ -111,7 +132,7 @@ impl EngineCore {
         &self,
         shard_id: u64,
         shard_ver: u64,
-        ids: HashMap<u64, u32>,
+        ids: &HashMap<u64, FileMeta>,
         cs: &mut ChangeSet,
         use_direct_io: bool,
     ) -> Result<()> {
@@ -119,16 +140,17 @@ impl EngineCore {
         let runtime = self.fs.get_runtime();
         let opts = dfs::Options::new(shard_id, shard_ver);
         let mut msg_count = 0;
-        for (&id, &level) in &ids {
-            if is_blob_file(level) {
+        for (&id, tb) in ids {
+            if tb.is_blob_file() {
                 if let Ok(file) = self.open_blob_table_file(id) {
-                    cs.add_file(id, file, level, self.cache.clone())?;
+                    cs.add_file(id, file, tb.get_level(), self.cache.clone())?;
                     continue;
                 }
             } else if let Ok(file) = self.open_sstable_file(id) {
-                cs.add_file(id, file, level, self.cache.clone())?;
+                cs.add_file(id, file, tb.get_level(), self.cache.clone())?;
                 continue;
             }
+            let level = tb.get_level();
             let fs = self.fs.clone();
             let tx = result_tx.clone();
             runtime.spawn(async move {
@@ -171,6 +193,82 @@ impl EngineCore {
         ENGINE_LEVEL_WRITE_VEC
             .with_label_values(&[&level.to_string()])
             .inc_by(data_len as u64);
+        Ok(())
+    }
+
+    pub fn load_unloaded_tables(
+        &self,
+        shard_id: u64,
+        shard_ver: u64,
+        use_direct_io: bool,
+    ) -> Result<()> {
+        let shard = self.shards.get(&shard_id).unwrap();
+        let mut cs = ChangeSet::new(kvenginepb::ChangeSet::default());
+        let data = shard.get_data();
+
+        let load_tables = data
+            .unloaded_tbls
+            .iter()
+            .filter(|&(_, tbl)| shard.overlap_table(tbl.smallest.chunk(), tbl.biggest.chunk()))
+            .map(|(id, tbl)| (*id, tbl.clone()))
+            .collect();
+        info!("{} load_unloaded_tables: {:?}", shard.tag(), load_tables);
+
+        self.load_tables_by_ids(shard_id, shard_ver, &load_tables, &mut cs, use_direct_io)?;
+
+        // level 0
+        let mut new_l0s = data.l0_tbls.clone();
+        for (_, tbl) in cs.l0_tables.drain() {
+            new_l0s.push(tbl);
+        }
+        new_l0s.sort_by(|a, b| b.version().cmp(&a.version()));
+
+        // blob
+        let mut new_blob_tbl_map = data.blob_tbl_map.as_ref().clone();
+        for (id, tbl) in cs.blob_tables.drain() {
+            new_blob_tbl_map.insert(id, tbl);
+        }
+
+        // level n
+        let mut scf_builders = vec![];
+        for cf in 0..NUM_CFS {
+            let scf = ShardCfBuilder::new(cf);
+            scf_builders.push(scf);
+        }
+        for (cf, shard_cf) in data.cfs.iter().enumerate() {
+            for lh in &shard_cf.levels {
+                for sst in &(*lh.tables) {
+                    let scf = &mut scf_builders.as_mut_slice()[cf];
+                    scf.add_table(sst.clone(), lh.level);
+                }
+            }
+        }
+        for (id, tbl) in load_tables
+            .into_iter()
+            .filter(|(_, tbl)| tbl.get_level() > 0 && !tbl.is_blob_file())
+        {
+            let sst = cs.ln_tables.get(&id).unwrap();
+            let scf = &mut scf_builders.as_mut_slice()[tbl.get_cf() as usize];
+            scf.add_table(sst.clone(), tbl.get_level() as usize);
+        }
+        let mut scfs = [ShardCf::new(0), ShardCf::new(1), ShardCf::new(2)];
+        for cf in 0..NUM_CFS {
+            let scf = &mut scf_builders.as_mut_slice()[cf];
+            scfs[cf] = scf.build();
+        }
+
+        let new_data = ShardData::new(
+            data.range.clone(),
+            data.del_prefixes.clone(),
+            data.truncate_ts,
+            data.trim_over_bound,
+            data.mem_tbls.clone(),
+            new_l0s,
+            Arc::new(new_blob_tbl_map),
+            scfs,
+            HashMap::new(),
+        );
+        shard.set_data(new_data);
         Ok(())
     }
 

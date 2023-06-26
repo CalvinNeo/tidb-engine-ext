@@ -122,6 +122,7 @@ impl Engine {
             data.l0_tbls.clone(),
             data.blob_tbl_map.clone(),
             data.cfs.clone(),
+            data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
         info!(
@@ -152,7 +153,9 @@ impl Engine {
         let snap = shard.new_snap_access();
         let mem_tbl = data.get_writable_mem_table();
         for cf in 0..NUM_CFS {
-            mem_tbl.get_cf(cf).put_batch(wb.get_cf_mut(cf), &snap, cf);
+            mem_tbl
+                .get_cf(cf)
+                .put_batch(wb.get_cf_mut(cf), Some(&snap), cf);
         }
         for (k, v) in std::mem::take(&mut wb.properties) {
             if k == DEL_PREFIXES_KEY {

@@ -26,10 +26,10 @@ use rusoto_s3::{
     CopyObjectError, DeleteObjectError, DeleteObjectTaggingError, GetObjectError,
     GetObjectTaggingError, ListObjectsV2Error, PutObjectError, PutObjectTaggingError,
 };
-use tikv_util::{box_err, time::Instant};
+use tikv_util::time::Instant;
 use tokio::runtime::Runtime;
 
-use crate::dfs::{self, metrics::*, Dfs, Options};
+use crate::dfs::{self, metrics::*, Dfs, Error, Options};
 
 const MAX_RETRY_COUNT: u32 = 9;
 const RETRY_SLEEP_MS: u64 = 500;
@@ -224,7 +224,7 @@ impl S3FsCore {
             RusotoError::Service(_) => true,
             RusotoError::HttpDispatch(_) => true,
             RusotoError::InvalidDnsName(_) => false,
-            RusotoError::Credentials(_) => false,
+            RusotoError::Credentials(cred) => cred.message.contains("Timeout"),
             RusotoError::Validation(_) => false,
             RusotoError::ParseError(_) => false,
             RusotoError::Unknown(resp) => resp.status.is_server_error(),
@@ -891,10 +891,10 @@ impl Dfs for S3Fs {
     /// This method should be used by `DfsGc` ONLY to meet GC rules.
     async fn permanently_remove(&self, file_id: u64, _opts: Options) -> crate::dfs::Result<()> {
         if self.is_on_aws() {
-            return Err(box_err!(
+            return Err(Error::Other(format!(
                 "{} permanently_remove is forbidden on AWS",
                 file_id
-            ));
+            )));
         }
 
         self.delete_object(self.file_key(file_id), file_id.to_string())

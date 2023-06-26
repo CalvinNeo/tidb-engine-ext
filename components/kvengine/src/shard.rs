@@ -46,7 +46,7 @@ pub struct Shard {
     pub(crate) initial_flushed: AtomicBool,
 
     pub(crate) base_version: AtomicU64,
-
+    // Size of all SSTables + all blobs referred (note, not the blob table size).
     pub(crate) estimated_size: AtomicU64,
     pub(crate) estimated_entries: AtomicU64,
     pub(crate) max_ts: AtomicU64,
@@ -176,8 +176,9 @@ impl Shard {
         max_ts = cmp::max(max_ts, l0_max_ts);
 
         data.for_each_level(|cf, l| {
-            let (lv_size, lv_entries, lv_kv_size, lv_max_ts) = data.get_level_stats(l);
-            size += lv_size;
+            let (lv_size, lv_entries, lv_kv_size, lv_max_ts, lv_blob_size) =
+                data.get_level_stats(l);
+            size += lv_size + lv_blob_size;
             max_ts = max_ts_by_cf(max_ts, cf, lv_max_ts);
             entries += lv_entries;
             if cf == WRITE_CF {
@@ -185,6 +186,7 @@ impl Shard {
             }
             false
         });
+
         store_u64(&self.estimated_size, size);
         store_u64(&self.estimated_entries, entries);
         store_u64(&self.max_ts, max_ts);
@@ -210,6 +212,7 @@ impl Shard {
             data.l0_tbls.clone(),
             data.blob_tbl_map.clone(),
             data.cfs.clone(),
+            data.unloaded_tbls.clone(),
         );
         self.set_data(new_data);
     }
@@ -227,6 +230,7 @@ impl Shard {
             data.l0_tbls.clone(),
             data.blob_tbl_map.clone(),
             data.cfs.clone(),
+            data.unloaded_tbls.clone(),
         );
         self.set_data(new_data);
     }
@@ -256,6 +260,7 @@ impl Shard {
             data.l0_tbls.clone(),
             data.blob_tbl_map.clone(),
             data.cfs.clone(),
+            data.unloaded_tbls.clone(),
         );
         self.set_data(new_data);
 
@@ -276,6 +281,7 @@ impl Shard {
             data.l0_tbls.clone(),
             data.blob_tbl_map.clone(),
             data.cfs.clone(),
+            data.unloaded_tbls.clone(),
         );
         self.set_data(new_data);
 
@@ -321,6 +327,7 @@ impl Shard {
         if max_level.tables.len() <= 1 {
             return None;
         }
+
         let step = (max_level.tables.len() / count).max(1);
         Some(
             max_level
@@ -555,6 +562,7 @@ impl Shard {
             shard_data.l0_tbls.clone(),
             shard_data.blob_tbl_map.clone(),
             shard_data.cfs.clone(),
+            shard_data.unloaded_tbls.clone(),
         );
         self.set_data(new_data);
     }
@@ -603,6 +611,7 @@ impl ShardData {
             vec![],
             Arc::new(HashMap::new()),
             [ShardCf::new(0), ShardCf::new(1), ShardCf::new(2)],
+            HashMap::new(),
         )
     }
 
@@ -615,6 +624,7 @@ impl ShardData {
         l0_tbls: Vec<L0Table>,
         blob_tbl_map: Arc<HashMap<u64, BlobTable>>,
         cfs: [ShardCf; 3],
+        unloaded_tbls: HashMap<u64, FileMeta>,
     ) -> Self {
         assert!(!mem_tbls.is_empty());
 
@@ -628,6 +638,7 @@ impl ShardData {
                 l0_tbls,
                 blob_tbl_map,
                 cfs,
+                unloaded_tbls,
             }),
         }
     }
@@ -642,6 +653,8 @@ pub(crate) struct ShardDataCore {
     pub(crate) l0_tbls: Vec<L0Table>,
     pub(crate) blob_tbl_map: Arc<HashMap<u64, BlobTable>>,
     pub(crate) cfs: [ShardCf; 3],
+    /// Tables that are not loaded from DFS yet.
+    pub(crate) unloaded_tbls: HashMap<u64, FileMeta>,
 }
 
 impl Deref for ShardDataCore {
@@ -725,41 +738,36 @@ impl ShardDataCore {
         (total_size, total_entries, total_kv_size, max_ts)
     }
 
-    // Return (total_size, total_blob_size).
-    // pub(crate) fn get_blob_total_size(&self) -> u64 {
-    // let mut total_size = 0u64;
-    //
-    // self.blob_tbls.iter().for_each(|blob_tbl| {
-    // if self.cover_full_table(blob_tbl.smallest_key(), blob_tbl.biggest_key()) {
-    // total_size += blob_tbl.size();
-    // } else {
-    // total_size += blob_tbl.size() / 2;
-    // };
-    // });
-    // total_size
-    // }
-
     pub(crate) fn get_level_total_size(&self, level: &LevelHandler) -> u64 {
         let (total_size, ..) = self.get_level_stats(level);
         total_size
     }
 
     // Return (total_size, total_entries, total_kv_size, max_ts).
-    pub(crate) fn get_level_stats(&self, level: &LevelHandler) -> (u64, u64, u64, u64) {
-        let (mut total_size, mut total_entries, mut total_kv_size, mut max_ts) = (0, 0, 0, 0);
+    pub(crate) fn get_level_stats(&self, level: &LevelHandler) -> (u64, u64, u64, u64, u64) {
+        let (mut total_size, mut total_entries, mut total_kv_size, mut max_ts, mut total_blob_size) =
+            (0, 0, 0, 0, 0);
         level.tables.iter().enumerate().for_each(|(i, tbl)| {
             if self.is_over_bound_table(level, i, tbl) {
                 total_size += tbl.size() / 2;
+                total_blob_size += tbl.in_use_total_blob_size / 2;
                 total_entries += tbl.entries as u64 / 2;
                 total_kv_size += tbl.kv_size / 2;
             } else {
                 total_size += tbl.size();
+                total_blob_size += tbl.in_use_total_blob_size;
                 total_entries += tbl.entries as u64;
                 total_kv_size += tbl.kv_size;
             }
             max_ts = cmp::max(max_ts, tbl.max_ts);
         });
-        (total_size, total_entries, total_kv_size, max_ts)
+        (
+            total_size,
+            total_entries,
+            total_kv_size,
+            max_ts,
+            total_blob_size,
+        )
     }
 
     fn is_over_bound_table(&self, level: &LevelHandler, i: usize, tbl: &SsTable) -> bool {

@@ -16,7 +16,7 @@ use crate::{
     table::{
         blobtable::blobtable::BlobTable,
         memtable::CfTable,
-        sstable::{BlockCacheKey, File, L0Table, LocalFile, SsTable},
+        sstable::{BlockCacheKey, L0Table, LocalFile, SsTable},
     },
     *,
 };
@@ -26,6 +26,8 @@ pub struct ChangeSet {
     pub l0_tables: HashMap<u64, L0Table>,
     pub ln_tables: HashMap<u64, SsTable>,
     pub blob_tables: HashMap<u64, BlobTable>,
+    /// Tables that are not loaded from DFS.
+    pub unloaded_tables: HashMap<u64, FileMeta>,
 }
 
 impl Deref for ChangeSet {
@@ -49,6 +51,7 @@ impl ChangeSet {
             l0_tables: HashMap::new(),
             ln_tables: HashMap::new(),
             blob_tables: HashMap::new(),
+            unloaded_tables: HashMap::new(),
         }
     }
 
@@ -71,42 +74,35 @@ impl ChangeSet {
         }
         Ok(())
     }
-
-    pub fn add_file_legacy(
-        &mut self,
-        id: u64,
-        file: Arc<dyn File>,
-        level: u32,
-        cache: Option<SegmentedCache<BlockCacheKey, Bytes>>,
-    ) -> Result<()> {
-        if level == 0 {
-            let l0_table = L0Table::new(file, cache, false)?;
-            self.l0_tables.insert(id, l0_table);
-        } else {
-            let ln_table = SsTable::new(file, cache, level == 1)?;
-            self.ln_tables.insert(id, ln_table);
-        }
-        Ok(())
-    }
 }
 
 pub(crate) fn create_snapshot_tables(
     snap: &kvenginepb::Snapshot,
     tables: &ChangeSet,
+    for_restore: bool,
 ) -> (Vec<L0Table>, HashMap<u64, BlobTable>, [ShardCf; 3]) {
+    // Note: Some tables in `snap` will not exist in `tables` if it's not necessary
+    // to load from DFS.
+    // Should only happen in restoration.
     let blob_creates = snap.get_blob_creates();
     let mut blob_tbl_map = HashMap::new();
 
     if !blob_creates.is_empty() {
         for blob_create in blob_creates {
-            let blob_tbl = tables.blob_tables.get(&blob_create.id).unwrap();
-            blob_tbl_map.insert(blob_create.id, blob_tbl.clone());
+            if let Some(blob_tbl) = tables.blob_tables.get(&blob_create.id) {
+                blob_tbl_map.insert(blob_create.id, blob_tbl.clone());
+            } else {
+                assert!(for_restore, "{:?}", blob_create);
+            }
         }
     };
     let mut l0_tbls = vec![];
     for l0_create in snap.get_l0_creates() {
-        let l0_tbl = tables.l0_tables.get(&l0_create.id).unwrap().clone();
-        l0_tbls.push(l0_tbl);
+        if let Some(l0_tbl) = tables.l0_tables.get(&l0_create.id) {
+            l0_tbls.push(l0_tbl.clone());
+        } else {
+            assert!(for_restore, "{:?}", l0_create);
+        }
     }
     l0_tbls.sort_by(|a, b| b.version().cmp(&a.version()));
 
@@ -116,9 +112,12 @@ pub(crate) fn create_snapshot_tables(
         scf_builders.push(scf);
     }
     for table_create in snap.get_table_creates() {
-        let tbl = tables.ln_tables.get(&table_create.id).unwrap().clone();
-        let scf = &mut scf_builders.as_mut_slice()[table_create.cf as usize];
-        scf.add_table(tbl, table_create.level as usize);
+        if let Some(tbl) = tables.ln_tables.get(&table_create.id) {
+            let scf = &mut scf_builders.as_mut_slice()[table_create.cf as usize];
+            scf.add_table(tbl.clone(), table_create.level as usize);
+        } else {
+            assert!(for_restore, "{:?}", table_create);
+        }
     }
     let mut scfs = [ShardCf::new(0), ShardCf::new(1), ShardCf::new(2)];
     for cf in 0..NUM_CFS {
@@ -190,8 +189,15 @@ impl EngineCore {
         } else if cs.has_restore_shard() {
             self.apply_restore_shard(&shard, &cs)?;
         }
-        self.refresh_shard_states(&shard);
         debug!("{} finished applying change set: {:?}", shard.tag(), cs);
+
+        // Get shard again as version may be changed after change set applied.
+        // Note that the shard may have been destroyed (e.g. by merge, in rfstore
+        // thread) at this point.
+        if let Some(shard) = self.get_shard(cs.shard_id) {
+            self.refresh_shard_states(&shard);
+        }
+
         Ok(())
     }
 
@@ -215,12 +221,7 @@ impl EngineCore {
                     cs.sequence,
                 );
             }
-            let mut new_blob_tbl_map = old_data.blob_tbl_map.as_ref().clone();
 
-            if flush.has_blob_create() {
-                let blob_id = flush.get_blob_create().get_id();
-                new_blob_tbl_map.insert(blob_id, cs.blob_tables.get(&blob_id).unwrap().clone());
-            };
             let mut new_l0_tbls = Vec::with_capacity(old_data.l0_tbls.len() + 1);
             new_l0_tbls.push(l0_tbl);
             new_l0_tbls.extend_from_slice(old_data.l0_tbls.as_slice());
@@ -232,8 +233,9 @@ impl EngineCore {
                 old_data.trim_over_bound,
                 new_mem_tbls,
                 new_l0_tbls,
-                Arc::new(new_blob_tbl_map),
+                old_data.blob_tbl_map.clone(),
                 old_data.cfs.clone(),
+                old_data.unloaded_tbls.clone(),
             );
             shard.set_data(new_data);
             self.send_free_mem_msg(FreeMemMsg::FreeMem(last));
@@ -245,7 +247,8 @@ impl EngineCore {
         let data = shard.get_data();
         let mut mem_tbls = data.mem_tbls.clone();
 
-        let (l0s, blob_tbl_map, scfs) = create_snapshot_tables(initial_flush, cs);
+        let (l0s, blob_tbl_map, scfs) =
+            create_snapshot_tables(initial_flush, cs, self.opts.for_restore);
         mem_tbls.retain(|x| {
             let version = x.get_version();
             let flushed =
@@ -264,6 +267,7 @@ impl EngineCore {
             l0s,
             Arc::new(blob_tbl_map),
             scfs,
+            data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
         store_bool(&shard.initial_flushed, true);
@@ -299,17 +303,7 @@ impl EngineCore {
                 }
                 !is_deleted
             });
-
-            new_blob_tbl_map.retain(|_, v| {
-                let is_deleted = comp.get_top_deletes().contains(&v.id());
-                if is_deleted {
-                    del_files.insert(
-                        v.id(),
-                        shard.cover_full_table(v.smallest_key(), v.biggest_key()),
-                    );
-                }
-                !is_deleted
-            });
+            new_blob_tbl_map.extend(cs.blob_tables.clone());
             for cf in 0..NUM_CFS {
                 let new_l1 = self.new_level(shard, cs, &data, cf, &mut del_files, true);
                 new_cfs[cf].set_level(new_l1);
@@ -335,6 +329,7 @@ impl EngineCore {
             new_l0s,
             Arc::new(new_blob_tbl_map),
             new_cfs,
+            data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
         self.remove_dfs_files(shard, del_files);
@@ -433,6 +428,7 @@ impl EngineCore {
             new_l0s,
             Arc::new(new_blob_tbl_map),
             new_cfs,
+            data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
         self.remove_dfs_files(shard, del_file_is_subrange);
@@ -523,6 +519,7 @@ impl EngineCore {
             new_l0s,
             data.blob_tbl_map.clone(),
             new_cfs,
+            data.unloaded_tbls.clone(),
         );
         let new_del_prefixes = new_data.del_prefixes.marshal();
         shard.set_data(new_data);
@@ -553,6 +550,7 @@ impl EngineCore {
             new_l0s,
             data.blob_tbl_map.clone(),
             new_cfs,
+            data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
         if new_truncate_ts.is_none() {
@@ -577,6 +575,7 @@ impl EngineCore {
             new_l0s,
             data.blob_tbl_map.clone(),
             new_cfs,
+            data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
         shard.set_property(TRIM_OVER_BOUND, TRIM_OVER_BOUND_DISABLE);
@@ -712,6 +711,7 @@ impl EngineCore {
             new_l0s,
             Arc::new(new_blob_tbl_map),
             new_cfs,
+            old_data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
         Ok(())
@@ -740,7 +740,8 @@ impl EngineCore {
         );
         let snap_data = new_shard.get_data();
         let old_data = old_shard.get_data();
-        let (l0_tbls, blob_tbl_map, cfs) = create_snapshot_tables(cs.get_restore_shard(), cs);
+        let (l0_tbls, blob_tbl_map, cfs) =
+            create_snapshot_tables(cs.get_restore_shard(), cs, self.opts.for_restore);
         let new_data = ShardData::new(
             snap_data.range.clone(),
             snap_data.del_prefixes.clone(),
@@ -750,6 +751,7 @@ impl EngineCore {
             l0_tbls,
             Arc::new(blob_tbl_map),
             cfs,
+            snap_data.unloaded_tbls.clone(),
         );
         new_shard.set_data(new_data);
         new_shard.set_active(old_shard.is_active());

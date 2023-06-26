@@ -4,7 +4,7 @@ use std::{cmp, collections::HashMap, sync::Arc};
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, Bytes};
 
-use super::builder::*;
+use super::{builder::*, BlobRef};
 use crate::table::{
     sstable::{File, LZ4_COMPRESSION, NO_COMPRESSION, ZSTD_COMPRESSION},
     Error, Result,
@@ -84,14 +84,22 @@ impl BlobTable {
         })
     }
 
-    pub fn get(&self, offset: u32, size: u32) -> Result<Vec<u8>> {
+    pub fn get(&self, blob_ref: &BlobRef) -> Result<Vec<u8>> {
         let data = self
             .file
             .as_ref()
             .unwrap_or_else(|| panic!("file is not set"))
-            .read(offset as u64, size as usize + BLOB_ENTRY_META_SIZE)?;
-        let mut decompressed = Vec::with_capacity(size as usize);
-        if self.decompress(&data, size, &mut decompressed)? {
+            .read(
+                blob_ref.offset as u64,
+                blob_ref.len as usize + BLOB_ENTRY_META_SIZE,
+            )?;
+        let mut decompressed = Vec::with_capacity(blob_ref.original_len as usize);
+        if self.decompress(
+            &data,
+            blob_ref.len,
+            blob_ref.original_len,
+            &mut decompressed,
+        )? {
             Ok(decompressed)
         } else {
             Ok(data[BLOB_ENTRY_VALUE_OFFSET..].to_vec())
@@ -104,14 +112,13 @@ impl BlobTable {
     // the original data.
     pub fn get_from_preloaded<'a>(
         &'a self,
-        offset: u32,
-        size: u32,
+        blob_ref: &BlobRef,
         need_decompress: bool,
         buf: &'a mut Vec<u8>,
     ) -> Result<&[u8]> {
-        let data = &self.preloaded_data.as_ref().unwrap()
-            [offset as usize..offset as usize + BLOB_ENTRY_VALUE_OFFSET + size as usize];
-        if need_decompress && self.decompress(data, size, buf)? {
+        let data = &self.preloaded_data.as_ref().unwrap()[blob_ref.offset as usize
+            ..blob_ref.offset as usize + BLOB_ENTRY_VALUE_OFFSET + blob_ref.len as usize];
+        if need_decompress && self.decompress(data, blob_ref.len, blob_ref.original_len, buf)? {
             Ok(buf.as_slice())
         } else {
             Ok(&data[BLOB_ENTRY_VALUE_OFFSET..])
@@ -122,10 +129,9 @@ impl BlobTable {
         &self,
         data: &[u8],
         size: u32,
+        original_len: u32,
         decompressed_buf: &mut Vec<u8>,
     ) -> Result<bool> {
-        let total_data_size = size as usize + BLOB_ENTRY_META_SIZE;
-        assert!(data.len() >= total_data_size);
         let checksum = LittleEndian::read_u32(data);
         let compressed_len = LittleEndian::read_u32(&data[BLOB_ENTRY_LENGTH_OFFSET..]);
         assert_eq!(compressed_len, size);
@@ -137,30 +143,29 @@ impl BlobTable {
         return match self.footer.compression_type {
             NO_COMPRESSION => Ok(false), // in place decoding
             LZ4_COMPRESSION => unsafe {
-                let decompressed = lz4::block::decompress(compressed_data, None)?;
-                if decompressed_buf.capacity() < decompressed.len() {
-                    decompressed_buf.reserve(decompressed.len() - decompressed_buf.capacity());
+                if decompressed_buf.capacity() < original_len as usize {
+                    decompressed_buf.reserve(original_len as usize - decompressed_buf.len());
                 }
-                decompressed_buf.copy_from_slice(&decompressed);
-                decompressed_buf.set_len(decompressed.len());
+                lz4::block::decompress_to_buffer(
+                    compressed_data,
+                    Some(original_len as i32),
+                    decompressed_buf,
+                )?;
+                decompressed_buf.set_len(original_len as usize);
                 Ok(true)
             },
             ZSTD_COMPRESSION => unsafe {
-                let capacity = zstd_sys::ZSTD_getFrameContentSize(
-                    compressed_data.as_ptr() as *const libc::c_void,
-                    compressed_data.len(),
-                ) as usize;
-                if decompressed_buf.capacity() < capacity {
-                    decompressed_buf.reserve(capacity - decompressed_buf.capacity());
+                if decompressed_buf.capacity() < original_len as usize {
+                    decompressed_buf.reserve(original_len as usize - decompressed_buf.len());
                 }
                 let result = zstd_sys::ZSTD_decompress(
                     decompressed_buf.as_mut_ptr() as *mut libc::c_void,
-                    capacity,
+                    original_len as usize,
                     compressed_data.as_ptr() as *const libc::c_void,
                     compressed_data.len(),
                 );
                 assert_eq!(zstd_sys::ZSTD_isError(result), 0u32);
-                decompressed_buf.set_len(capacity);
+                decompressed_buf.set_len(original_len as usize);
                 Ok(true)
             },
             _ => panic!("unknown compression type {}", self.footer.compression_type),
@@ -242,18 +247,18 @@ impl BlobPrefetcher {
         }
     }
 
-    pub fn get(&mut self, fid: u64, offset: u32, size: u32) -> Result<&[u8]> {
+    pub fn get(&mut self, blob_ref: &BlobRef) -> Result<&[u8]> {
         let blob_table = self
             .tables
-            .get(&fid)
-            .ok_or_else(|| Error::Other(format!("blob table not found, fid: {}", fid)))?;
-        let data_size = size as usize + BLOB_ENTRY_META_SIZE;
+            .get(&blob_ref.fid)
+            .ok_or_else(|| Error::Other(format!("blob table not found, fid: {}", blob_ref.fid)))?;
+        let data_size = blob_ref.len as usize + BLOB_ENTRY_META_SIZE;
         let (buffer_offset, buffer) = self
             .tbl_buffers
-            .entry(fid)
-            .or_insert_with(|| (offset, vec![]));
-        if !(offset >= *buffer_offset
-            && offset + data_size as u32 <= *buffer_offset + buffer.len() as u32)
+            .entry(blob_ref.fid)
+            .or_insert_with(|| (blob_ref.offset, vec![]));
+        if !(blob_ref.offset >= *buffer_offset
+            && blob_ref.offset + data_size as u32 <= *buffer_offset + buffer.len() as u32)
         {
             let file = blob_table.file.as_ref().unwrap_or_else(|| {
                 panic!(
@@ -263,21 +268,26 @@ impl BlobPrefetcher {
             });
             let len = cmp::min(
                 cmp::max(self.prefetch_size, data_size),
-                file.size() as usize - offset as usize,
+                file.size() as usize - blob_ref.offset as usize,
             );
             if len != buffer.len() {
                 buffer.resize(len, 0);
             }
-            file.read_at(buffer, offset as u64)?;
-            *buffer_offset = offset;
+            file.read_at(buffer, blob_ref.offset as u64)?;
+            *buffer_offset = blob_ref.offset;
         }
-        let data = &buffer[(offset - *buffer_offset) as usize..];
-        if blob_table.decompress(data, size, &mut self.decompressed_buffer)? {
+        let data = &buffer[(blob_ref.offset - *buffer_offset) as usize..];
+        if blob_table.decompress(
+            data,
+            blob_ref.len,
+            blob_ref.original_len,
+            &mut self.decompressed_buffer,
+        )? {
             return Ok(&self.decompressed_buffer);
         }
         Ok(
-            &buffer[(offset - *buffer_offset) as usize + BLOB_ENTRY_VALUE_OFFSET
-                ..(offset - *buffer_offset) as usize + data_size],
+            &buffer[(blob_ref.offset - *buffer_offset) as usize + BLOB_ENTRY_VALUE_OFFSET
+                ..(blob_ref.offset - *buffer_offset) as usize + data_size],
         )
     }
 }
@@ -289,7 +299,7 @@ mod tests {
     use rand::{distributions::Alphanumeric, rngs::ThreadRng, Rng};
 
     use super::BlobTable;
-    use crate::table::{sstable, ExternalLink, Value};
+    use crate::table::{blobtable::BlobRef, sstable, Value};
 
     fn get_blob_text(max_len: usize, rng: &mut ThreadRng) -> String {
         let len = rng.gen_range(1..max_len);
@@ -301,14 +311,13 @@ mod tests {
 
     struct TestData {
         blob: String,
-        external_link: ExternalLink,
+        blob_ref: BlobRef,
     }
 
     #[test]
     fn test_basic() {
         let mut rng = rand::thread_rng();
-        let mut builder =
-            super::BlobTableBuilder::new(0, 0, sstable::builder::NO_COMPRESSION, 0, 0);
+        let mut builder = super::BlobTableBuilder::new(0, sstable::builder::NO_COMPRESSION, 0, 0);
         let mut test_data = Vec::new();
         let meta: u8 = 0;
 
@@ -317,25 +326,16 @@ mod tests {
             let blob = get_blob_text(64, &mut rng);
             let encoded = Value::encode_buf(meta, &[0], 0, blob.as_bytes());
             let value = Value::decode(encoded.as_slice());
-            // In this test assume that all values are converted to external links.
-            let mut external_link = ExternalLink::new();
-            let (offset, len) = builder.add(key.as_bytes(), &value);
-            external_link.len = len;
-            external_link.offset = offset;
-
-            test_data.push(TestData {
-                blob,
-                external_link,
-            });
+            // In this test assume that all values are converted to blob refs.
+            let blob_ref = builder.add(key.as_bytes(), &value);
+            test_data.push(TestData { blob, blob_ref });
         }
 
         let file = sstable::InMemFile::new(1, builder.finish());
         let table = super::BlobTable::new(Arc::new(file)).unwrap();
 
         for td in test_data {
-            let blob = table
-                .get(td.external_link.offset, td.external_link.len)
-                .unwrap();
+            let blob = table.get(&td.blob_ref).unwrap();
             assert_eq!(td.blob.as_bytes(), blob);
         }
 
@@ -345,15 +345,14 @@ mod tests {
 
     #[test]
     fn test_prefetcher() {
-        let mut builder =
-            super::BlobTableBuilder::new(0, 0, sstable::builder::NO_COMPRESSION, 0, 0);
+        let mut builder = super::BlobTableBuilder::new(1, sstable::builder::NO_COMPRESSION, 0, 0);
         let mut offsets = Vec::new();
         for i in 0..100 {
             let key_str = format!("key_{:03}", i);
             let val_str = format!("val_{:03}", i);
             let val_buf = Value::encode_buf(b'A', &[0], 0, val_str.as_bytes());
-            let (offset, _) = builder.add(key_str.as_bytes(), &Value::decode(val_buf.as_slice()));
-            offsets.push(offset);
+            let blob_ref = builder.add(key_str.as_bytes(), &Value::decode(val_buf.as_slice()));
+            offsets.push(blob_ref);
         }
         let file = sstable::InMemFile::new(1, builder.finish());
         let table = super::BlobTable::new(Arc::new(file)).unwrap();
@@ -361,9 +360,7 @@ mod tests {
         let mut prefetcher = super::BlobPrefetcher::new(Arc::new(blob_tables), 1000);
         for i in 0..100 {
             let expected_val = format!("val_{:03}", i);
-            let val = prefetcher
-                .get(1, offsets[i], expected_val.len() as u32)
-                .unwrap();
+            let val = prefetcher.get(&offsets[i]).unwrap();
             assert_eq!(val, expected_val.as_bytes());
         }
     }

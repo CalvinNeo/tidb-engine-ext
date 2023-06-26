@@ -398,7 +398,7 @@ mod tests {
 
     use super::*;
     use crate::table::{
-        blobtable::{blobtable::BlobTable, builder::BlobTableBuilder},
+        blobtable::{blobtable::BlobTable, builder::BlobTableBuilder, BlobRef},
         sstable::{
             file::InMemFile,
             sstable::{
@@ -427,27 +427,21 @@ mod tests {
 
     #[cfg(test)]
     fn test_fetch_value_from_blob_table(bt: &BlobTable, v: Value) -> Result<Vec<u8>> {
-        assert!(v.is_external_link());
-        let external_link = v.get_external_link();
-        assert_eq!(bt.id(), external_link.fid);
-        bt.get(external_link.offset, external_link.len)
+        assert!(v.is_blob_ref());
+        let blob_ref = v.get_blob_ref();
+        assert_eq!(bt.id(), blob_ref.fid);
+        bt.get(&blob_ref)
     }
 
     #[cfg(test)]
     fn test_store_value_in_blob_table(
         blob_builder: &mut BlobTableBuilder,
-        blob_fid: u64,
         k: &String,
         v: &mut Value,
-    ) -> ExternalLink {
-        assert!(v.value_len() > size_of::<ExternalLink>() + v.user_meta_len());
-        v.set_external_link();
-        let mut external_link = ExternalLink::new();
-        external_link.fid = blob_fid;
-        let (offset, len) = blob_builder.add(k.as_bytes(), v);
-        external_link.len = len;
-        external_link.offset = offset;
-        external_link
+    ) -> BlobRef {
+        assert!(v.value_len() > size_of::<BlobRef>() + v.user_meta_len());
+        v.set_blob_ref();
+        blob_builder.add(k.as_bytes(), v)
     }
 
     #[cfg(test)]
@@ -460,15 +454,14 @@ mod tests {
         let sst_fid = TEST_ID_ALLOC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let blob_fid = TEST_ID_ALLOC.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let mut sst_builder = new_table_builder_for_test(sst_fid);
-        let mut blob_builder = BlobTableBuilder::new(0, 0, NO_COMPRESSION, 0, 0);
+        let mut blob_builder = BlobTableBuilder::new(blob_fid, NO_COMPRESSION, 0, 0);
         let meta = 0u8;
 
         for (k, v) in kvs {
             let value_buf = Value::encode_buf(meta, &[0], 0, v.as_bytes());
             let mut v = Value::decode(value_buf.as_slice());
-            let external_link =
-                test_store_value_in_blob_table(&mut blob_builder, blob_fid, k, &mut v);
-            sst_builder.add(k.as_bytes(), &v, Some(external_link));
+            let blob_ref = test_store_value_in_blob_table(&mut blob_builder, k, &mut v);
+            sst_builder.add(k.as_bytes(), &v, Some(blob_ref));
         }
 
         let mut buf = BytesMut::with_capacity(sst_builder.estimated_size());

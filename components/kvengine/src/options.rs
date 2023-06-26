@@ -42,9 +42,16 @@ pub struct Options {
 
     pub blob_prefetch_size: usize,
 
+    // Target size of a blob table, if the estimated size of a blob table is smaller than this
+    // value, don't bother creating it.
+    pub blob_table_target_size: usize,
+
     pub max_del_range_delay: Duration,
 
     pub enable_inner_key_offset: bool,
+
+    /// Indicate kvengine is used for restore or not.
+    pub for_restore: bool,
 }
 
 impl Default for Options {
@@ -64,8 +71,10 @@ impl Default for Options {
             max_blob_table_size: 64 * 1024 * 1024,
             blob_table_gc_ratio: 0.5,
             blob_prefetch_size: 256 * 1024,
+            blob_table_target_size: 2 * 1024 * 1024,
             max_del_range_delay: Duration::from_secs(3600),
             enable_inner_key_offset: false,
+            for_restore: false,
         }
     }
 }

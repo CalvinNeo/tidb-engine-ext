@@ -12,7 +12,7 @@ use crate::{
 // ConcatIterator concatenates the sequences defined by several iterators.  (It
 // only works with TableIterators, probably just because it's faster to not be
 // so generic.)
-pub struct ConcatIterator {
+pub(crate) struct ConcatIterator {
     idx: i32,
     iter: Option<Box<TableIterator>>,
     level: LevelHandler,
@@ -32,7 +32,7 @@ impl ConcatIterator {
         }
     }
 
-    pub fn new_with_tables(tables: Vec<SsTable>, reversed: bool, fill_cache: bool) -> Self {
+    pub(crate) fn new_with_tables(tables: Vec<SsTable>, reversed: bool, fill_cache: bool) -> Self {
         let level = LevelHandler::new(1, tables);
         ConcatIterator {
             idx: -1,

@@ -8,7 +8,7 @@ use farmhash;
 use xorf::BinaryFuse8;
 
 use super::super::table::Value;
-use crate::table::{ExternalLink, BIT_HAS_OLD_VERSION, VALUE_VERSION_LEN};
+use crate::table::{blobtable::BlobRef, BIT_HAS_OLD_VERSION, VALUE_VERSION_LEN};
 
 pub const CRC32C: u8 = 1;
 pub const PROP_KEY_SMALLEST: &str = "smallest";
@@ -68,19 +68,17 @@ impl EntrySlice {
         self.end_offs.push(self.buf.len() as u32);
     }
 
-    fn append_value(&mut self, val: Value, external_link: Option<ExternalLink>) {
+    fn append_value(&mut self, val: Value, blob_ref: Option<BlobRef>) {
         let old_len = self.buf.len();
-        let new_len = if external_link.is_some() {
-            old_len + val.encoded_size_with_external_link()
+        let new_len = if blob_ref.is_some() {
+            old_len + val.encoded_size_with_blob_ref()
         } else {
             old_len + val.encoded_size()
         };
         self.buf.resize(new_len, 0);
         let slice = self.buf.as_mut_slice();
-        match external_link {
-            Some(external_link) => {
-                val.encode_with_external_link(&mut slice[old_len..], external_link)
-            }
+        match blob_ref {
+            Some(blob_ref) => val.encode_with_blob_ref(&mut slice[old_len..], blob_ref),
             None => val.encode(&mut slice[old_len..]),
         }
         self.end_offs.push(new_len as u32);
@@ -167,13 +165,13 @@ impl Builder {
         buf.put_slice(val);
     }
 
-    pub fn add(&mut self, key: &[u8], val: &Value, external_link: Option<ExternalLink>) {
+    pub fn add(&mut self, key: &[u8], val: &Value, blob_ref: Option<BlobRef>) {
         if self.block_builder.same_last_key(key) {
             self.block_builder
                 .set_last_entry_old_ver_if_zero(val.version);
-            self.old_builder.add_entry(key, *val, external_link);
-            if let Some(external_link) = external_link {
-                self.total_blob_size += external_link.len as u64;
+            self.old_builder.add_entry(key, *val, blob_ref);
+            if let Some(blob_ref) = blob_ref {
+                self.total_blob_size += blob_ref.len as u64;
             }
             self.old_entries += 1;
         } else {
@@ -186,11 +184,14 @@ impl Builder {
                 self.old_builder
                     .finish_block(self.sst_fid, self.checksum_tp);
             }
-            self.kv_size += (key.len() + val.user_meta_len() + val.value_len()) as u64;
-            if let Some(external_link) = external_link {
-                self.total_blob_size += external_link.len as u64;
+            self.kv_size += (key.len() + val.user_meta_len()) as u64;
+            if let Some(blob_ref) = blob_ref {
+                self.total_blob_size += blob_ref.len as u64;
+                self.kv_size += blob_ref.original_len as u64;
+            } else {
+                self.kv_size += val.value_len() as u64;
             }
-            self.block_builder.add_entry(key, *val, external_link);
+            self.block_builder.add_entry(key, *val, blob_ref);
             self.key_hashes.push(farmhash::fingerprint64(key));
             if self.smallest.is_empty() {
                 self.smallest.extend_from_slice(key);
@@ -463,12 +464,12 @@ impl BlockBuilder {
         }
     }
 
-    fn add_entry(&mut self, key: &[u8], val: Value, external_link: Option<ExternalLink>) {
+    fn add_entry(&mut self, key: &[u8], val: Value, blob_ref: Option<BlobRef>) {
         self.block.tmp_keys.append(key);
-        self.block.tmp_vals.append_value(val, external_link);
+        self.block.tmp_vals.append_value(val, blob_ref);
         self.block.old_vers.push(0);
-        let encoded_size = if external_link.is_some() {
-            val.encoded_size_with_external_link()
+        let encoded_size = if blob_ref.is_some() {
+            val.encoded_size_with_blob_ref()
         } else {
             val.encoded_size()
         };
