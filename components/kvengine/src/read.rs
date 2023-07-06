@@ -818,7 +818,11 @@ impl Iterator {
     }
 
     pub fn next(&mut self) {
-        if self.all_versions && self.valid() && self.inner.next_version() {
+        if self.all_versions
+            && self.valid()
+            && self.inner.next_version()
+            && !self.inner.value().is_deleted()
+        {
             self.update_item();
             return;
         }
@@ -842,11 +846,11 @@ impl Iterator {
                 self.inner.next();
                 continue;
             }
-            self.update_item();
-            if !self.all_versions && self.val.is_deleted() {
+            if self.inner.value().is_deleted() {
                 self.inner.next();
                 continue;
             }
+            self.update_item();
             return;
         }
         self.val = table::Value::new();

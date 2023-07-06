@@ -200,10 +200,13 @@ impl CloudSstReader {
     fn sync_write_cf_iter(&mut self) {
         self.key_buf.truncate(0);
         while self.iter.valid() {
-            if is_deleted(self.iter.meta()) {
-                self.iter.next();
-                continue;
-            }
+            assert!(
+                !is_deleted(self.iter.meta()),
+                "key: {:?}, meta: {:?}",
+                self.iter.key(),
+                self.iter.meta()
+            );
+
             self.key_buf.encode_bytes(self.iter.key(), false).unwrap();
             let short_value = self.iter.val().to_vec();
             let user_meta = UserMeta::from_slice(self.iter.user_meta());
@@ -224,10 +227,13 @@ impl CloudSstReader {
     fn sync_lock_cf_iter(&mut self) {
         self.key_buf.truncate(0);
         while self.iter.valid() {
-            if is_deleted(self.iter.meta()) {
-                self.iter.next();
-                continue;
-            }
+            assert!(
+                !is_deleted(self.iter.meta()),
+                "key: {:?}, meta: {:?}",
+                self.iter.key(),
+                self.iter.meta()
+            );
+
             self.key_buf.encode_bytes(self.iter.key(), false).unwrap();
             self.val_buf.truncate(0);
             self.val_buf.extend_from_slice(self.iter.val());
