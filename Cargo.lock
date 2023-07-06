@@ -1598,6 +1598,7 @@ dependencies = [
  "futures-util",
  "getset",
  "grpcio-health",
+ "hex 0.4.2",
  "into_other",
  "itertools 0.10.0",
  "keys",

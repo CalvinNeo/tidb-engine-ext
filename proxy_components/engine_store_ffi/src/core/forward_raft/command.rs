@@ -92,10 +92,16 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
         let mut ssts_wrap = vec![];
         let mut sst_views = vec![];
 
+        let sst_names: Vec<String> = ssts
+            .iter()
+            .map(|e| hex::encode_upper(e.meta.get_uuid()))
+            .collect();
+
         info!("begin handle ingest sst";
             "region" => ?ob_region,
             "index" => index,
             "term" => term,
+            "sst_names" => ?sst_names,
         );
 
         for sst in ssts {
@@ -121,6 +127,15 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
         }
 
         let ssts_wrap = sort_sst_by_start_key(ssts_wrap, self.key_manager.clone());
+        let sst_names2: Vec<String> = ssts_wrap
+            .iter()
+            .map(|e| e.0.to_str().unwrap().to_string())
+            .collect();
+
+        info!("!!!! sorted sst names";
+            "sorted sst names" => ?sst_names2,
+        );
+
         for (path, cf) in &ssts_wrap {
             sst_views.push((path.to_str().unwrap().as_bytes(), *cf));
         }

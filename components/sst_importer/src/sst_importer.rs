@@ -256,7 +256,7 @@ impl SstImporter {
     pub fn delete(&self, meta: &SstMeta) -> Result<()> {
         match self.dir.delete(meta, self.key_manager.as_deref()) {
             Ok(path) => {
-                info!("delete"; "path" => ?path);
+                info!("delete"; "path" => ?path, "trace" => ?std::backtrace::Backtrace::capture());
                 Ok(())
             }
             Err(e) => {
