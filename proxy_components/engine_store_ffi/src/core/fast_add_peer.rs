@@ -96,8 +96,8 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                             let need_fallback = elapsed > fallback_millis;
                             // TODO If snapshot is sent, we need fallback but can't do fallback?
                             let do_fallback = need_fallback;
-                            info!("fast path: ongoing {}:{} {}, MsgAppend duplicated",
-                                self.store_id, region_id, new_peer_id;
+                            info!("fast path: ongoing {}:{} {}, MsgAppend duplicated{}",
+                                self.store_id, region_id, new_peer_id, if do_fallback { ", fallback to normal" } else {""};
                                     "to_peer_id" => msg.get_to_peer().get_id(),
                                     "from_peer_id" => msg.get_from_peer().get_id(),
                                     "region_id" => region_id,
@@ -111,6 +111,10 @@ impl<T: Transport + 'static, ER: RaftEngine> ProxyForwarder<T, ER> {
                                     "do_fallback" => do_fallback,
                             );
                             if do_fallback {
+                                let mut wb = self.raft_engine.log_batch(2);
+                                let raft_state = kvproto::raft_serverpb::RaftLocalState::default();
+                                self.raft_engine.clean(region_id, 0, &raft_state, &mut wb);
+                                self.raft_engine.consume(&mut wb, true);
                                 o.get_mut().inited_or_fallback.store(true, Ordering::SeqCst);
                                 is_first = false;
                                 early_skip = false;

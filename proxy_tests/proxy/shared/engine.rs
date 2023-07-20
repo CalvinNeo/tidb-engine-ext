@@ -38,6 +38,36 @@ mod shared {
         test_write(ChoosenKVEngine::PS);
         test_write(ChoosenKVEngine::Rocks);
     }
+
+    #[test]
+    fn test_aaa() {
+        let (mut cluster, _pd_client) = new_mock_cluster(0, 1);
+        let _ = cluster.run();
+        
+        let re = cluster.get_engines(1).raft.clone();
+        let mut wb = re.log_batch(100);
+        let mut entry = Entry::new();
+        entry.set_index(6);
+        entry.set_term(1);
+        let mut entries: Vec<raft::eraftpb::Entry> = vec![entry];
+        wb.append(1, None, entries);
+        re.consume(&mut wb, true);
+
+        assert_eq!(re.get_entry(1, 6).unwrap().unwrap().get_term(), 1);
+
+        let mut wb2 = re.log_batch(100);
+        let mut raft_local_state2 = RaftLocalState::default();
+        // Make sure no early return in clean.
+        raft_local_state2.set_last_index(200);
+        re
+        .clean(1, 1, &raft_local_state2, &mut wb2)
+        .unwrap();
+        
+        re.consume(&mut wb2, true).unwrap();
+
+        assert_eq!(re.get_entry(1, 6).unwrap().unwrap().get_term(), 1);
+        cluster.shutdown();
+    }
 }
 
 mod pagestorage {

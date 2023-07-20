@@ -154,7 +154,9 @@ pub fn copy_data_from(
     debug!("copy raft log {:?}", entries);
 
     raft_wb.append(region_id, None, entries)?;
-    target_engines.raft.consume(&mut raft_wb, true)?;
+    let r = target_engines.raft.consume(&mut raft_wb, true).unwrap();
+    debug!("copy raft log finished {}", r);
+
     Ok(())
 }
 

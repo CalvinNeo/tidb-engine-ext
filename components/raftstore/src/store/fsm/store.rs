@@ -1050,7 +1050,19 @@ impl<EK: KvEngine, ER: RaftEngine, T: Transport> PollHandler<PeerFsm<EK, ER>, St
         }
         let write_begin = TiInstant::now();
         if let Some(write_worker) = &mut self.poll_ctx.sync_write_worker {
+            let mut ents = vec![];
+            for i in 5..15 {
+                if let Ok(Some(e)) = self.poll_ctx.engines.raft.get_entry(1, i) {
+                    ents.push(e);
+                }
+            }
+            let raft_state = self.poll_ctx.engines.raft.get_raft_state(1);
+            let apply_state = self.poll_ctx.engines.raft.get_raft_state(1);
+            tikv_util::debug!("!!!!!! BBBB {} {:?} {:?} raft_state {:?} apply_state {:?}", 
+                self.tag, ents, std::thread::current().id(), raft_state, apply_state);
             if self.poll_ctx.has_ready {
+
+                tikv_util::debug!("!!!!!! YYYYY 1 {}", self.tag);
                 write_worker.write_to_db(false);
 
                 for mut inspector in latency_inspect {
@@ -1062,11 +1074,13 @@ impl<EK: KvEngine, ER: RaftEngine, T: Transport> PollHandler<PeerFsm<EK, ER>, St
                     PeerFsmDelegate::new(peer, &mut self.poll_ctx).post_raft_ready_append();
                 }
             } else {
+                tikv_util::debug!("!!!!!! YYYYY 2 {}", self.tag);
                 for inspector in latency_inspect {
                     inspector.finish();
                 }
             }
         } else {
+            tikv_util::debug!("!!!!!! YYYYY 3 {}", self.tag);
             // Use the valid size of async-ios for generating `writer_id` when the local
             // senders haven't been updated by `poller.begin().
             let writer_id = rand::random::<usize>()

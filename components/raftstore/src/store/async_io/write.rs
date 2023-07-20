@@ -647,6 +647,7 @@ where
 
             STORE_WRITE_TRIGGER_SIZE_HISTOGRAM.observe(self.batch.get_raft_size() as f64);
 
+            tikv_util::debug!("!!!!! run {}", self.store_id);
             self.write_to_db(true);
 
             self.clear_latency_inspect();
@@ -706,6 +707,7 @@ where
 
         fail_point!("raft_before_save");
 
+        tikv_util::debug!("!!!!!! ZZZZZ 1 {} {} {:?}", self.tag, self.store_id, std::thread::current().id());
         let mut write_kv_time = 0f64;
         if let ExtraBatchWrite::V1(kv_wb) = &mut self.batch.extra_batch_write {
             if !kv_wb.is_empty() {
@@ -740,9 +742,16 @@ where
         fail_point!("raft_between_save");
 
         let mut write_raft_time = 0f64;
+        tikv_util::debug!("!!!!!! ZZZZZ 2 {} {} {:?}", self.tag, self.store_id, std::thread::current().id());
         if !self.batch.raft_wbs[0].is_empty() {
             fail_point!("raft_before_save_on_store_1", self.store_id == 1, |_| {});
-
+            let mut ents = vec![];
+            for i in 5..15 {
+                if let Ok(Some(e)) = self.raft_engine.get_entry(1, i) {
+                    ents.push(e);
+                }
+            }
+            tikv_util::debug!("!!!!!! AAAA {} {} {:?} {:?}", self.tag, self.store_id, ents, std::thread::current().id());
             let now = Instant::now();
             self.perf_context.start_observe();
             for i in 0..self.batch.raft_wbs.len() {

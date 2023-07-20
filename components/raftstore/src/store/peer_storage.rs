@@ -606,6 +606,7 @@ where
             "begin to apply snapshot";
             "region_id" => self.region.get_id(),
             "peer_id" => self.peer_id,
+            "current" => ?self.region(),
         );
 
         let mut snap_data = RaftSnapshotData::default();
@@ -642,6 +643,7 @@ where
             // It's possible that there will be some logs between `last_compacted_idx` and
             // `first_index` are not deleted. So a cleanup task for the range should be
             // triggered after applying the snapshot.
+            tikv_util::debug!("!!!!! clean {} by {:?}", self.peer_id, self.raft_state());
             self.clear_meta(first_index, kv_wb, raft_wb)?;
         }
         // Write its source peers' `RegionLocalState` together with itself for atomicity
