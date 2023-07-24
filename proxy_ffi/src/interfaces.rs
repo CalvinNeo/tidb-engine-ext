@@ -621,7 +621,14 @@ pub mod root {
                 ) -> root::DB::BaseBuffView,
             >,
         }
-        pub const RAFT_STORE_PROXY_VERSION: u64 = 17683519757677544108;
+        extern "C" {
+            pub fn ffi_get_server_info_from_proxy(
+                arg1: isize,
+                arg2: root::DB::BaseBuffView,
+                arg3: root::DB::RawVoidPtr,
+            ) -> u32;
+        }
+        pub const RAFT_STORE_PROXY_VERSION: u64 = 17617056987647874357;
         pub const RAFT_STORE_PROXY_MAGIC_NUMBER: u32 = 324508639;
     }
 }

@@ -1,6 +1,6 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::time;
+use std::time::{Duration, Instant};
 
 use futures_util::{compat::Future01CompatExt, future::BoxFuture, FutureExt};
 use lazy_static::lazy_static;
@@ -36,7 +36,7 @@ pub struct TimerTask {
 }
 
 pub fn make_timer_task(millis: u64) -> TimerTask {
-    let deadline = time::Instant::now() + time::Duration::from_millis(millis);
+    let deadline = Instant::now() + Duration::from_millis(millis);
     let delay = PROXY_TIMER_HANDLE.delay(deadline).compat().map(|_| {});
     TimerTask {
         future: Box::pin(delay),
