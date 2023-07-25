@@ -23,6 +23,7 @@ use super::{
     interfaces_ffi::{
         BaseBuffView, CppStrVecView, KVGetStatus, RaftProxyStatus, RaftStoreProxyFFIHelper,
         RaftStoreProxyPtr, RawCppPtr, RawCppStringPtr, RawRustPtr, RawVoidPtr, SSTReaderInterfaces,
+        RaftstoreVer,
     },
     read_index_helper,
     sst_reader_impls::*,
@@ -84,8 +85,17 @@ impl RaftStoreProxyFFIHelper {
             fn_make_timer_task: Some(ffi_make_timer_task),
             fn_poll_timer_task: Some(ffi_poll_timer_task),
             fn_get_region_local_state: Some(ffi_get_region_local_state),
+            fn_get_cluster_raftstore_version: Some(ffi_get_cluster_raftstore_version),
         }
     }
+}
+
+unsafe extern "C" fn ffi_get_cluster_raftstore_version(
+    proxy_ptr: RaftStoreProxyPtr,
+    refresh_strategy: u8,
+    timeout_ms: i64,
+) -> RaftstoreVer {
+    RaftstoreVer::V1
 }
 
 unsafe extern "C" fn ffi_get_region_local_state(
