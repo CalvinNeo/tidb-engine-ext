@@ -1,6 +1,6 @@
 // Copyright 2023 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{mem, slice};
+use std::{mem, ops::Deref, slice};
 
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -8,7 +8,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use super::BlobRef;
 use crate::table::{
     sstable::{LZ4_COMPRESSION, NO_COMPRESSION, ZSTD_COMPRESSION},
-    Value,
+    InnerKey, Value,
 };
 
 pub type ValueLength = u32; // Max value length is 4GB
@@ -86,6 +86,28 @@ impl BlobFooter {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+#[serde(rename_all = "kebab-case")]
+pub struct BlobTableBuildOptions {
+    pub compression_type: u8,
+    pub min_blob_size: u32,
+    pub max_blob_table_size: usize,
+    // Do not bother creating a blob table if the target blob table size is not reached.
+    pub target_blob_table_size: usize,
+}
+
+impl Default for BlobTableBuildOptions {
+    fn default() -> Self {
+        Self {
+            compression_type: LZ4_COMPRESSION,
+            min_blob_size: 1024,
+            max_blob_table_size: 64 * 1024 * 1024,
+            target_blob_table_size: 2 * 1024 * 1024,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct BlobTableBuilder {
     fid: u64,
@@ -125,11 +147,11 @@ impl BlobTableBuilder {
 
     pub fn add_blob(
         &mut self,
-        key: &[u8],
+        inner_key: InnerKey<'_>,
         blob: &[u8],
         already_compressed: Option<ValueLength>,
     ) -> BlobRef {
-        assert!(blob.len() >= self.min_blob_size as usize);
+        let key = inner_key.deref();
         assert!(blob.len() <= ValueLength::max_value() as usize);
         assert!(self.total_blob_size as usize + blob.len() <= BlobOffset::max_value() as usize);
         if self.smallest_key.is_empty() || self.smallest_key.as_slice() > key {
@@ -181,7 +203,7 @@ impl BlobTableBuilder {
         )
     }
 
-    pub fn add(&mut self, key: &[u8], value: &Value) -> BlobRef {
+    pub fn add(&mut self, key: InnerKey<'_>, value: &Value) -> BlobRef {
         self.add_blob(key, value.get_value(), None)
     }
 

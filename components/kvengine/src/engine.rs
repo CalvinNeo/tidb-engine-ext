@@ -16,7 +16,8 @@ use std::{
     time::Duration,
 };
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes};
+use cloud_encryption::MasterKey;
 use dashmap::{mapref::entry::Entry, DashMap};
 use file_system::IoRateLimiter;
 use fslock;
@@ -26,10 +27,12 @@ use tikv_util::{mpsc, sys::thread::StdThreadBuildWrapper};
 
 use crate::{
     apply::ChangeSet,
+    config::PerKeyspaceConfig,
     meta::ShardMeta,
     table::{
         memtable::CfTable,
         sstable::{BlockCacheKey, MAGIC_NUMBER, ZSTD_COMPRESSION},
+        InnerKey,
     },
     *,
 };
@@ -68,11 +71,14 @@ impl Engine {
     pub fn open(
         fs: Arc<dyn dfs::Dfs>,
         opts: Arc<Options>,
+        config: KvEngineConfig,
         meta_iter: &mut impl MetaIterator,
         recoverer: impl RecoverHandler + 'static,
         id_allocator: Arc<dyn IdAllocator>,
         meta_change_listener: Box<dyn MetaChangeListener>,
         rate_limiter: Arc<IoRateLimiter>,
+        ks_gc_sp_map: Option<Arc<DashMap<u32, u64>>>,
+        master_key: MasterKey,
     ) -> Result<Engine> {
         info!("open KVEngine");
         if !opts.local_dir.exists() {
@@ -98,10 +104,12 @@ impl Engine {
         let compression_lvl = opts.table_builder_options.compression_lvl;
         let allow_fallback_local = opts.allow_fallback_local;
         let file_locks = (0..FILE_LOCK_SLOTS).map(|_| Mutex::new(())).collect();
+        let per_keyspace_configs = Arc::new(config.get_per_keyspace_configs());
         let core = EngineCore {
             engine_id: AtomicU64::new(meta_iter.engine_id()),
             shards: DashMap::new(),
             opts: opts.clone(),
+            per_keyspace_configs,
             flush_tx,
             compact_tx,
             fs: fs.clone(),
@@ -112,6 +120,7 @@ impl Engine {
                 compression_lvl,
                 allow_fallback_local,
                 id_allocator.clone(),
+                master_key.clone(),
             ),
             id_allocator,
             managed_safe_ts: AtomicU64::new(0),
@@ -121,6 +130,8 @@ impl Engine {
             loaded: AtomicBool::new(false),
             file_locks,
             shutting_down: AtomicBool::new(false),
+            ks_safepoint_v2: ks_gc_sp_map,
+            master_key,
         };
         let en = Engine {
             core: Arc::new(core),
@@ -250,6 +261,7 @@ pub struct EngineCore {
     pub(crate) engine_id: AtomicU64,
     pub(crate) shards: DashMap<u64, Arc<Shard>>,
     pub opts: Arc<Options>,
+    pub per_keyspace_configs: Arc<HashMap<u32, PerKeyspaceConfig>>,
     pub(crate) flush_tx: mpsc::Sender<FlushMsg>,
     pub(crate) compact_tx: mpsc::Sender<CompactMsg>,
     pub(crate) fs: Arc<dyn dfs::Dfs>,
@@ -263,6 +275,8 @@ pub struct EngineCore {
     pub(crate) loaded: AtomicBool,
     pub(crate) file_locks: Vec<Mutex<()>>,
     pub(crate) shutting_down: AtomicBool,
+    pub(crate) ks_safepoint_v2: Option<Arc<DashMap<u32, u64>>>,
+    pub(crate) master_key: MasterKey,
 }
 
 impl Drop for EngineCore {
@@ -325,15 +339,11 @@ impl EngineCore {
 
     fn new_shard_from_change_set(&self, cs: ChangeSet) -> Shard {
         let engine_id = self.engine_id.load(Ordering::Acquire);
-        let shard = Shard::new_for_ingest(engine_id, &cs, self.opts.clone());
+        let shard = Shard::new_for_ingest(engine_id, &cs, self.opts.clone(), &self.master_key);
         let (l0s, blob_tbls, scfs) =
             create_snapshot_tables(cs.get_snapshot(), &cs, self.opts.for_restore);
-        let old_data = shard.get_data();
         let data = ShardData::new(
             shard.range.clone(),
-            old_data.del_prefixes.clone(),
-            old_data.truncate_ts,
-            old_data.trim_over_bound,
             vec![CfTable::new()],
             l0s,
             Arc::new(blob_tbls),
@@ -465,6 +475,21 @@ impl EngineCore {
                 mem_tbls.push(mem_tbl.clone());
             }
         }
+        let mut double_over_bound_l0s = vec![];
+        for l0 in &data.l0_tbls {
+            if l0.smallest() < shard.inner_start() && l0.biggest() >= shard.inner_end() {
+                double_over_bound_l0s.push(l0.clone());
+            }
+        }
+        let mut double_over_bound_tbls = vec![];
+        data.for_each_level(|_cf, lvl| {
+            if let Some(tbl) = lvl.tables.first() {
+                if tbl.smallest() < shard.inner_start() && tbl.biggest() >= shard.inner_end() {
+                    double_over_bound_tbls.push(tbl.clone());
+                }
+            }
+            false
+        });
         self.send_flush_msg(FlushMsg::Task(Box::new(FlushTask::new_initial(
             shard,
             InitialFlush {
@@ -472,6 +497,8 @@ impl EngineCore {
                 mem_tbls,
                 base_version: shard.get_base_version(),
                 data_sequence,
+                double_over_bound_l0s,
+                double_over_bound_tbls,
             },
         ))));
     }
@@ -485,7 +512,6 @@ impl EngineCore {
         meta: ShardMeta,
     ) -> Result<kvenginepb::ChangeSet> {
         let shard = self.get_shard_with_ver(shard_id, shard_ver)?;
-        let inner_key_off = shard.inner_key_off;
         let l0_version = shard.load_mem_table_version();
         let mut cs = new_change_set(shard_id, shard_ver);
         let ingest_files = cs.mut_ingest_files();
@@ -500,8 +526,13 @@ impl EngineCore {
         let block_size = self.opts.table_builder_options.block_size;
         let max_table_size = self.opts.table_builder_options.max_table_size;
         let zstd_compression_lvl = self.opts.table_builder_options.compression_lvl;
-        let mut builder =
-            table::sstable::Builder::new(0, block_size, ZSTD_COMPRESSION, zstd_compression_lvl);
+        let mut builder = table::sstable::Builder::new(
+            0,
+            block_size,
+            ZSTD_COMPRESSION,
+            zstd_compression_lvl,
+            shard.encryption_key.clone(),
+        );
         let mut fids = vec![];
 
         for (id, smallest, biggest) in meta.get_blob_files() {
@@ -521,13 +552,16 @@ impl EngineCore {
             let id = fids.pop().unwrap();
             builder.reset(id);
             while iter.valid() {
-                builder.add(&iter.key()[inner_key_off..], &iter.value(), None);
+                builder.add(iter.key(), &iter.value(), None);
                 iter.next();
                 if builder.estimated_size() > max_table_size || !iter.valid() {
                     info!("builder estimated_size {}", builder.estimated_size());
-                    let mut buf = BytesMut::with_capacity(builder.estimated_size());
+                    let mut buf = Vec::with_capacity(builder.estimated_size());
                     let res = builder.finish(0, &mut buf);
-                    let level = meta.get_ingest_level(&res.smallest, &res.biggest);
+                    let level = meta.get_ingest_level(
+                        InnerKey::from_inner_buf(&res.smallest),
+                        InnerKey::from_inner_buf(&res.biggest),
+                    );
                     assert!(!is_blob_file(level));
                     if level == 0 {
                         let mut offsets = vec![buf.len() as u32; NUM_CFS];
@@ -556,7 +590,7 @@ impl EngineCore {
                     let fs = self.fs.clone();
                     let atx = tx.clone();
                     self.fs.get_runtime().spawn(async move {
-                        if let Err(err) = fs.create(id, buf.freeze(), opts).await {
+                        if let Err(err) = fs.create(id, buf.into(), opts).await {
                             atx.send(Err(err)).unwrap();
                         } else {
                             atx.send(Ok(())).unwrap();
@@ -646,7 +680,7 @@ impl EngineCore {
         shard.refresh_states();
 
         fail::fail_point!("before_engine_trigger_compact", |_| ());
-        if shard.ready_to_compact() {
+        if shard.ready_to_compact() && shard.get_compaction_priority().is_some() {
             self.trigger_compact(shard.id_ver());
         }
     }
@@ -700,6 +734,10 @@ impl EngineCore {
                 e
             );
         }
+    }
+
+    pub fn get_master_key(&self) -> MasterKey {
+        self.master_key.clone()
     }
 }
 

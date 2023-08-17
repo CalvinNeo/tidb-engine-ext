@@ -5,6 +5,10 @@ edition = "2018"
 publish = false
 
 [dependencies]
+aws = { workspace = true }
+base64 = "0.13"
+cloud = { workspace = true }
+cloud_encryption = { workspace = true }
 collections = { workspace = true }
 encryption = { workspace = true }
 grpcio = { workspace = true }

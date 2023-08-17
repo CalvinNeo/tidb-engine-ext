@@ -117,6 +117,7 @@ log_wrappers = { workspace = true }
 match-template = "0.0.1"
 memory_trace_macros = { workspace = true }
 mime = "0.3.13"
+moka = { workspace = true }
 more-asserts = "0.2"
 mur3 = "0.1"
 nom = { version = "5.1.0", default-features = false, features = ["std"] }
@@ -245,6 +246,7 @@ members = [
   "components/cloud/aws",
   "components/cloud/azure",
   "components/cloud/gcp",
+  "components/cloud_encryption",
   "components/codec",
   "components/collections",
   "components/concurrency_manager",
@@ -323,6 +325,7 @@ case_macros = { path = "components/case_macros" }
 causal_ts = { path = "components/causal_ts" }
 cdc = { path = "components/cdc", default-features = false }
 cloud = { path = "components/cloud" }
+cloud_encryption = { path = "components/cloud_encryption" }
 codec = { path = "components/codec" }
 collections = { path = "components/collections" }
 concurrency_manager = { path = "components/concurrency_manager" }
@@ -345,6 +348,7 @@ keys = { path = "components/keys" }
 kvengine = { path = "components/kvengine" }
 log_wrappers = { path = "components/log_wrappers" }
 memory_trace_macros = { path = "components/memory_trace_macros" }
+moka = { version = "0.9.6", features = ["future"] }
 online_config = { path = "components/online_config" }
 panic_hook = { path = "components/panic_hook" }
 pd_client = { path = "components/pd_client" }

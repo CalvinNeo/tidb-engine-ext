@@ -113,6 +113,7 @@ message IngestFiles {
   repeated TableCreate tableCreates = 2;
   Properties properties = 3;
   repeated BlobCreate BlobCreates = 4;
+  uint64 max_ts = 5;
 }
 
 message Properties {

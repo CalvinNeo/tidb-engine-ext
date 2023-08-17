@@ -4,12 +4,13 @@ use std::{ops::Deref, sync::Arc};
 
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use cloud_encryption::EncryptionKey;
 use moka::sync::SegmentedCache;
 
 use super::*;
 use crate::{
     max_ts_by_cf,
-    table::{blobtable::BlobRef, table::Result, Value},
+    table::{blobtable::BlobRef, table::Result, InnerKey, Value},
     LOCK_CF, NUM_CFS, WRITE_CF,
 };
 
@@ -48,8 +49,9 @@ impl L0Table {
         file: Arc<dyn File>,
         cache: Option<SegmentedCache<BlockCacheKey, Bytes>>,
         ignore_lock: bool,
+        encryption_key: Option<EncryptionKey>,
     ) -> Result<Self> {
-        let core = L0TableCore::new(file, cache, ignore_lock)?;
+        let core = L0TableCore::new(file, cache, ignore_lock, encryption_key)?;
         Ok(Self {
             core: Arc::new(core),
         })
@@ -73,6 +75,7 @@ impl L0TableCore {
         file: Arc<dyn File>,
         cache: Option<SegmentedCache<BlockCacheKey, Bytes>>,
         ignore_lock: bool,
+        encryption_key: Option<EncryptionKey>,
     ) -> Result<Self> {
         let footer_off = file.size() - L0_FOOTER_SIZE as u64;
         let mut footer = L0Footer::default();
@@ -96,7 +99,13 @@ impl L0TableCore {
             if start_off == end_off || ignore_lock && i == LOCK_CF {
                 continue;
             }
-            let tbl = sstable::SsTable::new_l0_cf(file.clone(), start_off, end_off, cache.clone())?;
+            let tbl = sstable::SsTable::new_l0_cf(
+                file.clone(),
+                start_off,
+                end_off,
+                cache.clone(),
+                encryption_key.clone(),
+            )?;
             entries += tbl.entries as u64;
             if i == WRITE_CF {
                 kv_size += tbl.kv_size;
@@ -128,15 +137,15 @@ impl L0TableCore {
             if let Some(cf_tbl) = &cfs[i] {
                 let smallest = cf_tbl.smallest();
                 if !smallest.is_empty()
-                    && (smallest_buf.is_empty() || smallest_buf.chunk() > smallest)
+                    && (smallest_buf.is_empty() || smallest_buf.chunk() > smallest.deref())
                 {
                     smallest_buf.truncate(0);
-                    smallest_buf.extend_from_slice(smallest);
+                    smallest_buf.extend_from_slice(smallest.deref());
                 }
                 let biggest = cf_tbl.biggest();
-                if biggest > biggest_buf.chunk() {
+                if biggest.deref() > biggest_buf.chunk() {
                     biggest_buf.truncate(0);
-                    biggest_buf.extend_from_slice(biggest);
+                    biggest_buf.extend_from_slice(biggest.deref());
                 }
                 max_ts = max_ts_by_cf(max_ts, i, cf_tbl.max_ts);
             }
@@ -180,19 +189,19 @@ impl L0TableCore {
         self.kv_size
     }
 
-    pub fn smallest(&self) -> &[u8] {
-        self.smallest.chunk()
+    pub fn smallest(&self) -> InnerKey<'_> {
+        InnerKey::from_inner_buf(self.smallest.chunk())
     }
 
-    pub fn biggest(&self) -> &[u8] {
-        self.biggest.chunk()
+    pub fn biggest(&self) -> InnerKey<'_> {
+        InnerKey::from_inner_buf(self.biggest.chunk())
     }
 
     pub fn version(&self) -> u64 {
         self.footer.version
     }
 
-    pub fn has_data_in_range(&self, start: &[u8], end: &[u8]) -> bool {
+    pub fn has_data_in_range(&self, start: InnerKey<'_>, end: InnerKey<'_>) -> bool {
         if self.smallest() >= end || self.biggest() < start {
             return false;
         }
@@ -215,10 +224,15 @@ pub struct L0Builder {
 }
 
 impl L0Builder {
-    pub fn new(fid: u64, block_size: usize, version: u64) -> Self {
+    pub fn new(
+        fid: u64,
+        block_size: usize,
+        version: u64,
+        encryption_key: Option<EncryptionKey>,
+    ) -> Self {
         let mut builders = Vec::with_capacity(4);
         for _ in 0..NUM_CFS {
-            let builder = Builder::new(fid, block_size, NO_COMPRESSION, 0);
+            let builder = Builder::new(fid, block_size, NO_COMPRESSION, 0, encryption_key.clone());
             builders.push(builder);
         }
         Self {
@@ -229,7 +243,13 @@ impl L0Builder {
         }
     }
 
-    pub fn add(&mut self, cf: usize, key: &[u8], val: &Value, external_link: Option<BlobRef>) {
+    pub fn add(
+        &mut self,
+        cf: usize,
+        key: InnerKey<'_>,
+        val: &Value,
+        external_link: Option<BlobRef>,
+    ) {
         self.builders[cf].add(key, val, external_link);
         self.count += 1;
     }
@@ -239,7 +259,7 @@ impl L0Builder {
         for builder in &self.builders {
             estimated_size += builder.estimated_size();
         }
-        let mut buf = BytesMut::with_capacity(estimated_size);
+        let mut buf = Vec::with_capacity(estimated_size);
         let mut offsets = Vec::with_capacity(NUM_CFS);
         for builder in &mut self.builders {
             let offset = buf.len() as u32;
@@ -254,7 +274,7 @@ impl L0Builder {
         buf.put_u64_le(self.version);
         buf.put_u32_le(NUM_CFS as u32);
         buf.put_u32_le(MAGIC_NUMBER);
-        buf.freeze()
+        Bytes::from(buf)
     }
 
     pub fn smallest_biggest(&self) -> (Bytes, Bytes) {

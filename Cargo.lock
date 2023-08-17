@@ -1061,6 +1061,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud_encryption"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "hmac",
+ "openssl",
+ "rand 0.8.5",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.48"
 source = "git+https://github.com/rust-lang/cmake-rs#00e6b220342a8b0ec4548071928ade38fd5f691b"
@@ -1763,6 +1777,7 @@ version = "0.0.1"
 dependencies = [
  "api_version",
  "case_macros",
+ "cloud_encryption",
  "collections",
  "derive_more",
  "encryption",
@@ -1807,6 +1822,7 @@ version = "0.0.1"
 dependencies = [
  "bytes",
  "case_macros",
+ "cloud_encryption",
  "collections",
  "error_code",
  "fail",
@@ -3024,6 +3040,7 @@ dependencies = [
  "bstr",
  "byteorder",
  "bytes",
+ "cloud_encryption",
  "crc32c",
  "dashmap 4.0.2",
  "dyn-clone",
@@ -4716,6 +4733,7 @@ version = "0.0.1"
 dependencies = [
  "byteorder",
  "bytes",
+ "cloud_encryption",
  "encryption",
  "engine_rocks",
  "engine_traits",
@@ -4750,6 +4768,7 @@ dependencies = [
  "causal_ts",
  "chrono",
  "clap",
+ "cloud_encryption",
  "collections",
  "concurrency_manager",
  "crossbeam",
@@ -5049,6 +5068,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "causal_ts",
+ "cloud_encryption",
  "collections",
  "concurrency_manager",
  "crc32fast",
@@ -5790,6 +5810,10 @@ checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
 name = "security"
 version = "0.0.1"
 dependencies = [
+ "aws",
+ "base64",
+ "cloud",
+ "cloud_encryption",
  "collections",
  "encryption",
  "grpcio",
@@ -7165,6 +7189,7 @@ dependencies = [
  "match-template",
  "memory_trace_macros",
  "mime",
+ "moka",
  "more-asserts",
  "mur3",
  "nom 5.1.0",

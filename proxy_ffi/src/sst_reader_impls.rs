@@ -74,12 +74,13 @@ pub unsafe extern "C" fn ffi_make_sst_reader(
     let mut cs_pb = kvenginepb::ChangeSet::default();
     cs_pb.merge_from_bytes(cs_bin).unwrap();
     let cloud_helper = &proxy_ptr.as_ref().cloud_helper;
+    let master_key = proxy_ptr.as_ref().master_key.clone();
     let kv_engine = proxy_ptr.as_ref().kv_engine();
     let ptr = if view.type_ == ColumnFamilyType::Lock {
-        let lock_sst_reader = cloud_helper.make_lock_sst_reader(cs_pb, kv_engine);
+        let lock_sst_reader = cloud_helper.make_lock_sst_reader(cs_pb, kv_engine, master_key);
         Box::into_raw(Box::new(lock_sst_reader)) as RawVoidPtr
     } else {
-        let sst_reader = cloud_helper.make_sst_reader(cs_pb, kv_engine);
+        let sst_reader = cloud_helper.make_sst_reader(cs_pb, kv_engine, master_key);
         Box::into_raw(Box::new(sst_reader)) as RawVoidPtr
     };
     ptr.into()

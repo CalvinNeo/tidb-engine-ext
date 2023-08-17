@@ -6,6 +6,7 @@ use std::{
 };
 
 use byteorder::{ByteOrder, LittleEndian};
+use cloud_encryption::MasterKey;
 use engine_traits::CF_RAFT;
 use kvengine::{dfs::Dfs, read::SnapAccess, table::is_deleted};
 use kvproto::raft_serverpb::RegionLocalState;
@@ -37,11 +38,16 @@ impl CloudHelper {
         &self,
         cs_pb: kvenginepb::ChangeSet,
         kv_engine: &RwLock<Option<Box<dyn RaftStoreProxyEngineTrait + Sync + Send>>>,
+        master_key: Option<MasterKey>,
     ) -> CloudSstReader {
         let cs_pb = Self::transform_cs(cs_pb, kv_engine, CF_WRITE_IDX);
         let runtime = self.dfs.get_runtime();
-        let snap_access =
-            runtime.block_on(SnapAccess::from_change_set(self.dfs.clone(), cs_pb, false));
+        let snap_access = runtime.block_on(SnapAccess::from_change_set(
+            self.dfs.clone(),
+            cs_pb,
+            false,
+            &master_key.unwrap(),
+        ));
         CloudSstReader::new(&snap_access, CF_WRITE_IDX)
     }
 
@@ -49,11 +55,16 @@ impl CloudHelper {
         &self,
         cs_pb: kvenginepb::ChangeSet,
         kv_engine: &RwLock<Option<Box<dyn RaftStoreProxyEngineTrait + Sync + Send>>>,
+        master_key: Option<MasterKey>,
     ) -> CloudSstReader {
         let cs_pb = Self::transform_cs(cs_pb, kv_engine, CF_LOCK_IDX);
         let runtime = self.dfs.get_runtime();
-        let snap_access =
-            runtime.block_on(SnapAccess::from_change_set(self.dfs.clone(), cs_pb, false));
+        let snap_access = runtime.block_on(SnapAccess::from_change_set(
+            self.dfs.clone(),
+            cs_pb,
+            false,
+            &master_key.unwrap(),
+        ));
         CloudSstReader::new(&snap_access, CF_LOCK_IDX)
     }
 

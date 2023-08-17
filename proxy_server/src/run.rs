@@ -18,6 +18,7 @@ use std::{
 };
 
 use api_version::{dispatch_api_version, KvFormat};
+use cloud_encryption::MasterKey;
 use concurrency_manager::ConcurrencyManager;
 use encryption_export::{data_key_manager_from_config, DataKeyManager};
 use engine_rocks::{
@@ -132,6 +133,8 @@ pub fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
     engine_store_server_helper: &EngineStoreServerHelper,
 ) {
     let engine_store_server_helper_ptr = engine_store_server_helper as *const _ as isize;
+    let mut security_config = config.security.clone();
+    security_config.master_key.override_from_env();
     let mut tikv = TiKvServer::<CER>::init(config, proxy_config, engine_store_server_helper_ptr);
 
     // Must be called after `TiKvServer::init`.
@@ -142,8 +145,9 @@ pub fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
     tikv.check_conflict_addr();
     tikv.init_fs();
     tikv.init_yatp();
-    tikv.init_encryption();
+    // tikv.init_encryption();
 
+    let master_key = block_on(security_config.new_master_key());
     let mut proxy = RaftStoreProxy::new(
         AtomicU8::new(RaftProxyStatus::Idle as u8),
         tikv.encryption_key_manager.clone(),
@@ -153,6 +157,7 @@ pub fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
         ))),
         None,
         tikv.dfs.clone(),
+        Some(master_key.clone()),
     );
 
     let proxy_ref = &proxy;
@@ -187,7 +192,7 @@ pub fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
     let engine_store_server_helper_ptr = engine_store_server_helper as *const _ as isize;
     // Will call TiFlashEngine::init
     let (engines, engines_info) =
-        tikv.init_tiflash_engines(listener, engine_store_server_helper_ptr);
+        tikv.init_tiflash_engines(listener, engine_store_server_helper_ptr, master_key);
     tikv.init_engines(engines.clone());
     {
         if engines.kv.element_engine.is_none() {
@@ -261,14 +266,18 @@ fn run_impl_only_for_decryption<CER: ConfiguredRaftEngine, F: KvFormat>(
             .map(Arc::new);
 
     let engine_store_server_helper_ptr = engine_store_server_helper as *const _ as isize;
+    let mut security_config = config.security.clone();
+    security_config.master_key.override_from_env();
     let tikv = TiKvServer::<CER>::init(config, proxy_config, engine_store_server_helper_ptr);
 
+    let master_key = block_on(security_config.new_master_key());
     let mut proxy = RaftStoreProxy::new(
         AtomicU8::new(RaftProxyStatus::Idle as u8),
         encryption_key_manager.clone(),
         Option::None,
         None,
         tikv.dfs.clone(),
+        Some(master_key),
     );
 
     let proxy_ref = &proxy;
@@ -423,6 +432,7 @@ impl<CER: ConfiguredRaftEngine> TiKvServer<CER> {
         &mut self,
         flow_listener: engine_rocks::FlowListener,
         engine_store_server_helper: isize,
+        master_key: MasterKey,
     ) -> (Engines<TiFlashEngine, CER>, Arc<EnginesResourceInfo>) {
         let block_cache = self
             .config
@@ -480,6 +490,7 @@ impl<CER: ConfiguredRaftEngine> TiKvServer<CER> {
             Some(engine_store_hub),
             Some(proxy_config_set),
         );
+        kv_engine.set_master_key(master_key);
 
         let engines = Engines::new(kv_engine.clone(), raft_engine);
 

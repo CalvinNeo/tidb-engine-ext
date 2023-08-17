@@ -17,6 +17,7 @@ use std::{
 
 use bitflags::bitflags;
 use bytes::Bytes;
+use cloud_encryption::EncryptionKey;
 use collections::{HashMap, HashSet};
 use crossbeam::{atomic::AtomicCell, channel::TrySendError};
 use engine_traits::{
@@ -237,6 +238,7 @@ bitflags! {
         const SPLIT          = 0b0000_0010;
         const PREPARE_MERGE  = 0b0000_0100;
         const COMMIT_MERGE   = 0b0000_1000;
+        const ENCRYPTED      = 0b0001_0000;
     }
 }
 
@@ -1319,7 +1321,8 @@ where
             // source peer can not get the latest commit index anymore.
             // Here update the commit index to let source apply rest uncommitted entries.
             //
-            // CSE ensures that the last index is matched, we only need to commit to the last index.
+            // CSE ensures that the last index is matched, we only need to commit to the
+            // last index.
             let last_index = self.get_store().last_index();
             return if last_index > self.raft_group.raft.raft_log.committed {
                 self.raft_group.raft.raft_log.commit_to(last_index);

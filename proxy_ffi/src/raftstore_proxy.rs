@@ -5,6 +5,7 @@ use std::sync::{
     Arc, RwLock,
 };
 
+use cloud_encryption::{EncryptionKey, MasterKey};
 use encryption::DataKeyManager;
 
 use super::{
@@ -21,6 +22,7 @@ pub struct RaftStoreProxy {
     read_index_client: Option<Box<dyn read_index_helper::ReadIndex>>,
     raftstore_proxy_engine: RwLock<Option<Eng>>,
     pub cloud_helper: CloudHelper,
+    pub master_key: Option<MasterKey>,
 }
 
 impl RaftStoreProxy {
@@ -30,6 +32,7 @@ impl RaftStoreProxy {
         read_index_client: Option<Box<dyn read_index_helper::ReadIndex>>,
         raftstore_proxy_engine: Option<Eng>,
         dfs: Arc<dyn kvengine::dfs::Dfs>,
+        master_key: Option<MasterKey>,
     ) -> Self {
         RaftStoreProxy {
             status,
@@ -37,6 +40,7 @@ impl RaftStoreProxy {
             read_index_client,
             raftstore_proxy_engine: RwLock::new(raftstore_proxy_engine),
             cloud_helper: CloudHelper::new(dfs),
+            master_key,
         }
     }
 }

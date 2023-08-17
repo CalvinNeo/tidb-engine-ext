@@ -9,6 +9,7 @@ use std::{
     sync::{atomic::AtomicIsize, Arc},
 };
 
+use cloud_encryption::MasterKey;
 pub(crate) use details::RocksEngine;
 pub use details::RocksEngine as MixedModeEngine;
 use engine_rocks::RocksSnapshot;
@@ -23,6 +24,8 @@ use crate::{
 mod details {
     use std::sync::Arc;
 
+    use cloud_encryption::MasterKey;
+
     use crate::{mixed_engine::elementary::ElementaryEngine, PageStorageExt, ProxyEngineExt};
     #[derive(Clone, Debug)]
     pub struct RocksEngine {
@@ -33,6 +36,7 @@ mod details {
         pub proxy_ext: ProxyEngineExt,
         pub ps_ext: Option<PageStorageExt>,
         pub element_engine: Option<Arc<dyn ElementaryEngine + Sync + Send>>,
+        pub master_key: Option<MasterKey>,
     }
 }
 
@@ -44,6 +48,7 @@ impl RocksEngine {
             proxy_ext: ProxyEngineExt::default(),
             ps_ext: None,
             element_engine: None::<_>,
+            master_key: None,
         }
     }
 
@@ -91,6 +96,7 @@ impl RocksEngine {
             proxy_ext: ProxyEngineExt::default(),
             ps_ext: None,
             element_engine: None::<_>,
+            master_key: None,
         }
     }
 
@@ -120,6 +126,10 @@ impl RocksEngine {
 
     pub fn support_multi_batch_write(&self) -> bool {
         self.rocks.support_multi_batch_write()
+    }
+
+    pub fn set_master_key(&mut self, key: MasterKey) {
+        self.master_key = Some(key);
     }
 }
 
@@ -151,6 +161,10 @@ impl KvEngine for RocksEngine {
     ) -> bool {
         self.proxy_ext
             .can_apply_snapshot(is_timeout, new_batch, region_id, queue_size)
+    }
+
+    fn get_master_key(&self) -> Option<MasterKey> {
+        self.master_key.clone()
     }
 }
 

@@ -9,6 +9,7 @@ use protobuf::Message;
 use slog_global::*;
 
 use super::*;
+use crate::table::InnerKey;
 
 #[derive(Default, Clone)]
 pub struct ShardMeta {
@@ -334,16 +335,26 @@ impl ShardMeta {
             return true;
         }
         if cs.has_ingest_files() {
-            let ingest_files = cs.get_ingest_files();
-            let ingest_id =
-                get_shard_property(INGEST_ID_KEY, ingest_files.get_properties()).unwrap();
-            if let Some(old_ingest_id) = self.get_property(INGEST_ID_KEY) {
-                if ingest_id.eq(&old_ingest_id) {
-                    info!(
-                        "{} skip duplicated ingest files, ingest_id:{:?}",
-                        self.tag(),
-                        ingest_id,
-                    );
+            let ingest_files = cs.mut_ingest_files();
+            if let Some(ingest_id) =
+                get_shard_property(INGEST_ID_KEY, ingest_files.get_properties())
+            {
+                // For legacy BR.
+                if let Some(old_ingest_id) = self.get_property(INGEST_ID_KEY) {
+                    if ingest_id.eq(&old_ingest_id) {
+                        info!(
+                            "{} skip duplicated ingest files, ingest_id:{:?}",
+                            self.tag(),
+                            ingest_id,
+                        );
+                        return true;
+                    }
+                }
+            } else {
+                // For load data.
+                let is_empty = self.dedup_ingest_files_of_load_data(ingest_files);
+                if is_empty {
+                    info!("{} skip duplicated ingest files", self.tag(),);
                     return true;
                 }
             }
@@ -366,6 +377,39 @@ impl ShardMeta {
             return true;
         }
         false
+    }
+
+    // We assume that the shard is empty before load data.
+    // Duplication happens when client side retry, or the shard is merged from two
+    // shards and one of which has not been ingested.
+    fn dedup_ingest_files_of_load_data(&self, ingest_files: &mut pb::IngestFiles) -> bool /* is_empty */
+    {
+        let l0_files = ingest_files
+            .take_l0_creates()
+            .into_iter()
+            .filter(|file| !self.all_files().contains_key(&file.id))
+            .collect::<Vec<_>>();
+        ingest_files.set_l0_creates(l0_files.into());
+
+        let ln_files = ingest_files
+            .take_table_creates()
+            .into_iter()
+            .filter(|file| !self.all_files().contains_key(&file.id))
+            .collect::<Vec<_>>()
+            .into();
+        ingest_files.set_table_creates(ln_files);
+
+        let blob_files = ingest_files
+            .take_blob_creates()
+            .into_iter()
+            .filter(|file| !self.all_files().contains_key(&file.id))
+            .collect::<Vec<_>>()
+            .into();
+        ingest_files.set_blob_creates(blob_files);
+
+        ingest_files.get_l0_creates().is_empty()
+            && ingest_files.get_table_creates().is_empty()
+            && ingest_files.get_blob_creates().is_empty()
     }
 
     fn apply_flush(&mut self, cs: &pb::ChangeSet) {
@@ -531,6 +575,7 @@ impl ShardMeta {
     }
 
     fn apply_ingest_files(&mut self, ingest_files: &pb::IngestFiles) {
+        self.max_ts = std::cmp::max(self.max_ts, ingest_files.max_ts);
         self.apply_properties(ingest_files.get_properties());
         for tbl in ingest_files.get_table_creates() {
             self.add_file(tbl.id, 0, tbl.level, tbl.get_smallest(), tbl.get_biggest());
@@ -641,7 +686,7 @@ impl ShardMeta {
         }
         for new_shard in &mut new_shards {
             for (fid, fm) in &old.files {
-                if new_shard.overlap_table(&fm.smallest, &fm.biggest) {
+                if new_shard.overlap_table(fm.smallest(), fm.biggest()) {
                     new_shard.files.insert(*fid, fm.clone());
                 }
             }
@@ -707,7 +752,7 @@ impl ShardMeta {
         &self.files
     }
 
-    pub fn overlap_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+    pub fn overlap_table(&self, smallest: InnerKey<'_>, biggest: InnerKey<'_>) -> bool {
         // [start-----smallest-----biggest-----end)
         // smallest-----[start-----biggest-----end)
         // [start-----smallest-----end)-----biggest
@@ -726,13 +771,21 @@ impl ShardMeta {
         blob_files
     }
 
-    pub(crate) fn entirely_over_bound_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+    pub(crate) fn entirely_over_bound_table(
+        &self,
+        smallest: InnerKey<'_>,
+        biggest: InnerKey<'_>,
+    ) -> bool {
         // smallest-----biggest-----[start----------end)
         // [start----------end)-----smallest-----biggest
         !self.overlap_table(smallest, biggest)
     }
 
-    pub(crate) fn partially_over_bound_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+    pub(crate) fn partially_over_bound_table(
+        &self,
+        smallest: InnerKey<'_>,
+        biggest: InnerKey<'_>,
+    ) -> bool {
         // smallest-----[start-----end)-----biggest
         // smallest-----[start-----biggest-----end)
         // [start-----smallest-----end)-----biggest
@@ -744,7 +797,7 @@ impl ShardMeta {
     // may not be optimal but prevent compaction generate conflicting files.
     // It find the top most existing file's level as ingest level, if there is
     // overlap with existing files, it will use the one level upper.
-    pub(crate) fn get_ingest_level(&self, smallest: &[u8], biggest: &[u8]) -> u32 {
+    pub(crate) fn get_ingest_level(&self, smallest: InnerKey<'_>, biggest: InnerKey<'_>) -> u32 {
         // find the top most level as ingest level.
         let mut ingest_level = self
             .files
@@ -760,7 +813,7 @@ impl ShardMeta {
             .files
             .values()
             .filter(|f| f.level == ingest_level && f.cf == 0)
-            .any(|file| file.smallest.chunk() <= biggest && smallest <= file.biggest.chunk());
+            .any(|file| file.smallest() <= biggest && smallest <= file.biggest());
         if overlap {
             ingest_level -= 1;
         }
@@ -784,8 +837,9 @@ impl ShardMeta {
     }
 
     pub fn commit_merge(&mut self, source: &ShardMeta, sequence: u64) {
+        // Include the max_ts and source files in the parent for future initial flush.
+        self.max_ts = std::cmp::max(self.max_ts, source.max_ts);
         let mut parent = self.clone();
-        // Include the source files in the parent for future initial flush.
         for (&id, source_file) in &source.files {
             parent.files.insert(id, source_file.clone());
         }
@@ -867,6 +921,21 @@ impl FileMeta {
     pub fn from_blob_table(table: &kvenginepb::BlobCreate) -> Self {
         Self::new(-1, BLOB_LEVEL, table.get_smallest(), table.get_biggest())
     }
+
+    pub fn smallest(&self) -> InnerKey<'_> {
+        InnerKey::from_inner_buf(&self.smallest)
+    }
+
+    pub fn biggest(&self) -> InnerKey<'_> {
+        InnerKey::from_inner_buf(&self.biggest)
+    }
+}
+
+#[cfg(test)]
+impl Default for FileMeta {
+    fn default() -> Self {
+        Self::new(0, 0, b"", b"")
+    }
 }
 
 pub fn is_move_down(comp: &pb::Compaction) -> bool {
@@ -918,7 +987,10 @@ mod tests {
             assert_eq!(meta.max_ts, 100);
             let assert_get_ingest_level = |smallest: &str, biggest: &str, level| {
                 assert_eq!(
-                    meta.get_ingest_level(smallest.as_bytes(), biggest.as_bytes()),
+                    meta.get_ingest_level(
+                        InnerKey::from_inner_buf(smallest.as_bytes()),
+                        InnerKey::from_inner_buf(biggest.as_bytes())
+                    ),
                     level
                 );
             };
@@ -1112,27 +1184,95 @@ mod tests {
         for (idx, (smallest, biggest, overlap, entirely_over_bound, partially_over_bound)) in
             cases.into_iter().enumerate()
         {
-            let smallest = [smallest];
-            let biggest = [biggest];
+            let smallest_buf = [smallest];
+            let smallest = InnerKey::from_inner_buf(&smallest_buf);
+            let biggest_buf = [biggest];
+            let biggest = InnerKey::from_inner_buf(&biggest_buf);
 
             assert_eq!(
-                meta.overlap_table(&smallest, &biggest),
+                meta.overlap_table(smallest, biggest),
                 overlap,
                 "case {}",
                 idx
             );
             assert_eq!(
-                meta.entirely_over_bound_table(&smallest, &biggest),
+                meta.entirely_over_bound_table(smallest, biggest),
                 entirely_over_bound,
                 "case {}",
                 idx
             );
             assert_eq!(
-                meta.partially_over_bound_table(&smallest, &biggest),
+                meta.partially_over_bound_table(smallest, biggest),
                 partially_over_bound,
                 "case {}",
                 idx
             );
+        }
+    }
+
+    #[test]
+    fn test_dedup_ingest_files() {
+        let make_ingest_files = |l0: &[u64], ln: &[u64], blob: &[u64]| -> pb::IngestFiles {
+            let mut ingest_files = pb::IngestFiles::default();
+            for &id in l0 {
+                ingest_files.mut_l0_creates().push(kvenginepb::L0Create {
+                    id,
+                    ..Default::default()
+                });
+            }
+            for &id in ln {
+                ingest_files
+                    .mut_table_creates()
+                    .push(kvenginepb::TableCreate {
+                        id,
+                        ..Default::default()
+                    });
+            }
+            for &id in blob {
+                ingest_files
+                    .mut_blob_creates()
+                    .push(kvenginepb::BlobCreate {
+                        id,
+                        ..Default::default()
+                    });
+            }
+            ingest_files
+        };
+
+        {
+            let meta = ShardMeta::default();
+            let mut ingest_files = make_ingest_files(&[1], &[2], &[3]);
+            let expected = ingest_files.clone();
+
+            let is_empty = meta.dedup_ingest_files_of_load_data(&mut ingest_files);
+            assert!(!is_empty);
+            assert_eq!(ingest_files, expected);
+        }
+
+        {
+            let files = (1..=7).into_iter().map(|id| (id, FileMeta::default()));
+            let meta = ShardMeta {
+                files: HashMap::from_iter(files),
+                ..Default::default()
+            };
+            let mut ingest_files = make_ingest_files(&[1, 2], &[3, 4], &[5, 6, 7]);
+            let is_empty = meta.dedup_ingest_files_of_load_data(&mut ingest_files);
+            assert!(is_empty);
+            assert_eq!(ingest_files, pb::IngestFiles::default());
+        }
+
+        {
+            let files = (1..=7).into_iter().map(|id| (id, FileMeta::default()));
+            let meta = ShardMeta {
+                files: HashMap::from_iter(files),
+                ..Default::default()
+            };
+            let mut ingest_files =
+                make_ingest_files(&[1, 2, 10, 11], &[3, 4, 12], &[5, 6, 7, 13, 14]);
+            let is_empty = meta.dedup_ingest_files_of_load_data(&mut ingest_files);
+            assert!(!is_empty);
+            let expected = make_ingest_files(&[10, 11], &[12], &[13, 14]);
+            assert_eq!(ingest_files, expected);
         }
     }
 }

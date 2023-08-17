@@ -64,7 +64,7 @@ impl S3Fs {
         Self { core }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testexport"))]
     pub fn new_for_test(s3c: rusoto_core::Client, bucket: String, prefix: String) -> Self {
         Self {
             core: Arc::new(S3FsCore::new_with_s3_client(
@@ -272,6 +272,7 @@ impl S3FsCore {
         &self,
         start_after: &str,
         prefix: Option<&str>,
+        max_keys: Option<u32>,
     ) -> crate::dfs::Result<(
         Vec<ListObjectContent>,
         bool,           // has_more. Deprecated, use `next_start_after`
@@ -286,6 +287,9 @@ impl S3FsCore {
             params.put("list-type", "2");
             params.put("start-after", &start_after);
             params.put("prefix", &prefix);
+            if let Some(max_keys) = max_keys {
+                params.put("max-keys", &max_keys.to_string());
+            }
             req.set_params(params);
             let mut result = self.dispatch(req, ListObjectsV2Error::from_response).await;
             if result.is_ok() {
@@ -909,9 +913,9 @@ impl Dfs for S3Fs {
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "PascalCase")]
-struct ListObjects {
-    contents: Vec<ListObjectContent>,
-    is_truncated: bool,
+pub struct ListObjects {
+    pub contents: Vec<ListObjectContent>,
+    pub is_truncated: bool,
 }
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
@@ -1026,20 +1030,17 @@ impl Debug for Response {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{fs, io::Write, str};
+#[cfg(any(test, feature = "testexport"))]
+pub mod test_util {
+    use std::str;
 
-    use bytes::Buf;
-    use rand::random;
     use rusoto_mock::{
         MockCredentialsProvider, MockRequestDispatcher, MultipleMockRequestDispatcher,
     };
 
-    use super::*;
-    use crate::table::sstable::{new_filename, File, LocalFile};
+    use crate::dfs::S3Fs;
 
-    fn new_s3fs(file_data: &[u8]) -> S3Fs {
+    pub fn new_test_s3fs(file_data: &[u8]) -> S3Fs {
         let s3c = rusoto_core::Client::new_with(
             MockCredentialsProvider,
             MultipleMockRequestDispatcher::new(vec![
@@ -1052,6 +1053,20 @@ mod tests {
         );
         S3Fs::new_for_test(s3c, "shard-db".into(), "prefix".into())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io::Write};
+
+    use bytes::Buf;
+    use rand::random;
+
+    use super::*;
+    use crate::{
+        dfs::test_util::new_test_s3fs,
+        table::sstable::{new_filename, File, LocalFile},
+    };
 
     #[test]
     fn test_s3() {
@@ -1059,7 +1074,7 @@ mod tests {
 
         let local_dir = tempfile::tempdir().unwrap();
         let file_data = "abcdefgh".to_string().into_bytes();
-        let s3fs = new_s3fs(&file_data);
+        let s3fs = new_test_s3fs(&file_data);
         let (tx, rx) = tikv_util::mpsc::bounded(1);
 
         let fs = s3fs.clone();
@@ -1122,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_parse_sst_file() {
-        let s3fs = new_s3fs(b"abcdefgh");
+        let s3fs = new_test_s3fs(b"abcdefgh");
 
         let file_key = s3fs.file_key(random());
         assert_eq!(

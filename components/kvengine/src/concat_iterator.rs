@@ -4,7 +4,7 @@ use crate::{
     table::{
         search,
         sstable::{SsTable, TableIterator},
-        Iterator, Value,
+        InnerKey, Iterator, Value,
     },
     LevelHandler,
 };
@@ -117,12 +117,12 @@ impl Iterator for ConcatIterator {
         self.iter.as_mut().unwrap().rewind();
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek(&mut self, key: InnerKey<'_>) {
         use std::cmp::Ordering::*;
         let idx: i32;
         if !self.reversed {
             idx = search(self.num_tables(), |idx| {
-                self.get_table(idx).biggest().cmp(key) != Less
+                self.get_table(idx).biggest().cmp(&key) != Less
             }) as i32;
             if idx >= self.num_tables() as i32 {
                 self.iter = None;
@@ -131,7 +131,7 @@ impl Iterator for ConcatIterator {
         } else {
             let n = self.num_tables();
             let ridx = search(n, |idx| {
-                self.get_table(n - 1 - idx).smallest().cmp(key) != Greater
+                self.get_table(n - 1 - idx).smallest().cmp(&key) != Greater
             }) as i32;
             if ridx >= n as i32 {
                 self.iter = None;
@@ -143,7 +143,7 @@ impl Iterator for ConcatIterator {
         self.iter.as_mut().unwrap().seek(key);
     }
 
-    fn key(&self) -> &[u8] {
+    fn key(&self) -> InnerKey<'_> {
         self.iter.as_ref().unwrap().key()
     }
 
@@ -161,11 +161,13 @@ impl Iterator for ConcatIterator {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+
     use crate::{
         concat_iterator::ConcatIterator,
         table::{
             sstable::{build_test_table_with_kvs, build_test_table_with_prefix, get_test_value},
-            Iterator,
+            InnerKey, Iterator,
         },
     };
 
@@ -181,7 +183,7 @@ mod tests {
         let mut it = ConcatIterator::new_with_tables(tables, false, true);
         it.rewind();
         assert_eq!(it.valid(), true);
-        assert_eq!(it.key(), "k1".as_bytes());
+        assert_eq!(it.key().deref(), "k1".as_bytes());
         let v = it.value();
         assert_eq!(v.get_value(), "a1".as_bytes());
     }
@@ -204,19 +206,19 @@ mod tests {
                 it.next();
             }
             assert_eq!(cnt, 30000);
-            it.seek("a".as_bytes());
-            assert_eq!(it.key(), "keya0000".as_bytes());
+            it.seek(InnerKey::from_inner_buf("a".as_bytes()));
+            assert_eq!(it.key().deref(), "keya0000".as_bytes());
             assert_eq!(it.value().get_value(), get_test_value(0).as_bytes());
 
-            it.seek("keyb".as_bytes());
-            assert_eq!(it.key(), "keyb0000".as_bytes());
+            it.seek(InnerKey::from_inner_buf("keyb".as_bytes()));
+            assert_eq!(it.key().deref(), "keyb0000".as_bytes());
             assert_eq!(it.value().get_value(), get_test_value(0).as_bytes());
 
-            it.seek("keyb9999b".as_bytes());
-            assert_eq!(it.key(), "keyc0000".as_bytes());
+            it.seek(InnerKey::from_inner_buf("keyb9999b".as_bytes()));
+            assert_eq!(it.key().deref(), "keyc0000".as_bytes());
             assert_eq!(it.value().get_value(), get_test_value(0).as_bytes());
 
-            it.seek("keyd".as_bytes());
+            it.seek(InnerKey::from_inner_buf("keyd".as_bytes()));
             assert_eq!(it.valid(), false);
         }
         {
@@ -235,19 +237,19 @@ mod tests {
             }
             assert_eq!(cnt, 30000);
 
-            it.seek("a".as_bytes());
+            it.seek(InnerKey::from_inner_buf("a".as_bytes()));
             assert_eq!(it.valid(), false);
 
-            it.seek("keyb".as_bytes());
-            assert_eq!(it.key(), "keya9999".as_bytes());
+            it.seek(InnerKey::from_inner_buf("keyb".as_bytes()));
+            assert_eq!(it.key().deref(), "keya9999".as_bytes());
             assert_eq!(it.value().get_value(), get_test_value(9999).as_bytes());
 
-            it.seek("keyb9999b".as_bytes());
-            assert_eq!(it.key(), "keyb9999".as_bytes());
+            it.seek(InnerKey::from_inner_buf("keyb9999b".as_bytes()));
+            assert_eq!(it.key().deref(), "keyb9999".as_bytes());
             assert_eq!(it.value().get_value(), get_test_value(9999).as_bytes());
 
-            it.seek("keyd".as_bytes());
-            assert_eq!(it.key(), "keyc9999".as_bytes());
+            it.seek(InnerKey::from_inner_buf("keyd".as_bytes()));
+            assert_eq!(it.key().deref(), "keyc9999".as_bytes());
             assert_eq!(it.value().get_value(), get_test_value(9999).as_bytes());
         }
     }

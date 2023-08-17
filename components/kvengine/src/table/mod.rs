@@ -9,3 +9,9 @@ mod tests;
 
 pub use merge_iterator::*;
 pub use table::*;
+
+pub struct EncryptionProperty {
+    pub data_key_id: u64,
+    pub encrypted_data_key: Vec<u8>,
+    pub method: u8,
+}

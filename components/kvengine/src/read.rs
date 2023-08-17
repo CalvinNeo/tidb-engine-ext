@@ -10,6 +10,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes, BytesMut};
+use cloud_encryption::{EncryptionKey, MasterKey};
 use kvenginepb as pb;
 use kvenginepb::IngestFiles;
 use protobuf::Message;
@@ -19,7 +20,7 @@ use crate::{
         blobtable::blobtable::{BlobPrefetcher, BlobTable},
         memtable::{CfTable, Hint, WriteBatch},
         sstable::{InMemFile, L0Table, SsTable},
-        table,
+        table, InnerKey,
     },
     *,
 };
@@ -81,9 +82,11 @@ impl SnapAccess {
         dfs: Arc<dyn dfs::Dfs>,
         change_set: pb::ChangeSet,
         ignore_lock: bool,
+        master_key: &MasterKey,
     ) -> Self {
-        let core =
-            Arc::new(SnapAccessCore::from_change_set(dfs, change_set, None, ignore_lock).await);
+        let core = Arc::new(
+            SnapAccessCore::from_change_set(dfs, change_set, None, ignore_lock, master_key).await,
+        );
         Self { core }
     }
 
@@ -91,9 +94,11 @@ impl SnapAccess {
         dfs: Arc<dyn dfs::Dfs>,
         change_set: pb::ChangeSet,
         wb: &mut WriteBatch,
+        master_key: &MasterKey,
     ) -> Self {
         let wb = if wb.is_empty() { None } else { Some(wb) };
-        let core = Arc::new(SnapAccessCore::from_change_set(dfs, change_set, wb, true).await);
+        let core =
+            Arc::new(SnapAccessCore::from_change_set(dfs, change_set, wb, true, master_key).await);
         Self { core }
     }
 
@@ -101,7 +106,11 @@ impl SnapAccess {
         dfs: Arc<dyn dfs::Dfs>,
         mut mem_table_data: &[u8],
         snapshot: &[u8],
+        master_key: &MasterKey,
     ) -> Result<Self> {
+        let mut change_set = kvenginepb::ChangeSet::default();
+        change_set.merge_from_bytes(snapshot).unwrap();
+        let inner_key_off = change_set.get_snapshot().get_inner_key_off() as usize;
         let mut wb = crate::table::memtable::WriteBatch::new();
         if !mem_table_data.is_empty() {
             let format_version = mem_table_data.get_u32();
@@ -115,12 +124,11 @@ impl SnapAccess {
                 Error::RemoteRead(format!("failed to deserialize mem table data: {}", e))
             })?;
             for row in rows {
-                wb.put(&row.key, 0, &row.user_meta.to_array(), 0, &row.value);
+                let key = InnerKey::from_outer_key(&row.key, inner_key_off);
+                wb.put(key, 0, &row.user_meta.to_array(), 0, &row.value);
             }
         }
-        let mut change_set = kvenginepb::ChangeSet::default();
-        change_set.merge_from_bytes(snapshot).unwrap();
-        Ok(Self::from_change_set_and_memtable_data(dfs, change_set, &mut wb).await)
+        Ok(Self::from_change_set_and_memtable_data(dfs, change_set, &mut wb, master_key).await)
     }
 }
 
@@ -141,12 +149,14 @@ impl Debug for SnapAccess {
 pub struct SnapAccessCore {
     tag: ShardTag,
     managed_ts: u64,
-    base_version: u64,
+    _base_version: u64,
     meta_seq: u64,
     write_sequence: u64,
     data: ShardData,
     get_hint: Mutex<Hint>,
     blob_table_prefetch_size: usize,
+    deleting_prefixes: Arc<DeletePrefixes>,
+    encryption_key: Option<EncryptionKey>,
 }
 
 impl SnapAccessCore {
@@ -159,11 +169,13 @@ impl SnapAccessCore {
             tag: shard.tag(),
             write_sequence,
             meta_seq,
-            base_version,
+            _base_version: base_version,
             managed_ts: 0,
             data,
             get_hint: Mutex::new(Hint::new()),
             blob_table_prefetch_size: shard.opt.blob_prefetch_size,
+            deleting_prefixes: shard.get_del_prefixes(),
+            encryption_key: shard.encryption_key.clone(),
         }
     }
 
@@ -172,6 +184,7 @@ impl SnapAccessCore {
         change_set: pb::ChangeSet,
         wb: Option<&mut WriteBatch>,
         ignore_lock: bool,
+        master_key: &MasterKey,
     ) -> Self {
         let mut cs = ChangeSet::new(change_set);
         let mut ids = HashMap::new();
@@ -184,7 +197,7 @@ impl SnapAccessCore {
             // don't have to fiddle too much with the code below.
             ids.insert(0, 0);
         }
-        if cs.has_snapshot() {
+        let encryption_key = if cs.has_snapshot() {
             let snap = cs.get_snapshot();
             for l0 in snap.get_l0_creates() {
                 ids.insert(l0.id, 0);
@@ -195,7 +208,11 @@ impl SnapAccessCore {
             for blob in snap.get_blob_creates() {
                 ids.insert(blob.id, BLOB_LEVEL);
             }
-        }
+            get_shard_property(ENCRYPTION_KEY, snap.get_properties())
+                .map(|v| master_key.decrypt_encryption_key(&v).unwrap())
+        } else {
+            None
+        };
         let (result_tx, mut result_rx) = tokio::sync::mpsc::unbounded_channel();
         let runtime = dfs.get_runtime();
         let opts = dfs::Options::new(cs.shard_id, cs.shard_ver);
@@ -229,10 +246,14 @@ impl SnapAccessCore {
                         let blob_table = BlobTable::new(Arc::new(file)).unwrap();
                         cs.blob_tables.insert(id, blob_table);
                     } else if level == 0 {
-                        let l0_table = L0Table::new(Arc::new(file), None, ignore_lock).unwrap();
+                        let l0_table =
+                            L0Table::new(Arc::new(file), None, ignore_lock, encryption_key.clone())
+                                .unwrap();
                         cs.l0_tables.insert(id, l0_table);
                     } else {
-                        let ln_table = SsTable::new(Arc::new(file), None, level == 1).unwrap();
+                        let ln_table =
+                            SsTable::new(Arc::new(file), None, level == 1, encryption_key.clone())
+                                .unwrap();
                         cs.ln_tables.insert(id, ln_table);
                     }
                 }
@@ -245,14 +266,10 @@ impl SnapAccessCore {
         if !errors.is_empty() {
             panic!("errors is not empty: {:?}", errors);
         }
-        let mut shard = Shard::new_for_ingest(0, &cs, Arc::new(Options::default()));
+        let mut shard = Shard::new_for_ingest(0, &cs, Arc::new(Options::default()), master_key);
         let (l0s, blob_tbls, scfs) = create_snapshot_tables(cs.get_snapshot(), &cs, false);
-        let old_data = shard.get_data();
         let data = ShardData::new(
             shard.range.clone(),
-            old_data.del_prefixes.clone(),
-            old_data.truncate_ts,
-            old_data.trim_over_bound,
             mem_tbls,
             l0s,
             Arc::new(blob_tbls),
@@ -330,15 +347,18 @@ impl SnapAccessCore {
         all_versions: bool,
         read_ts: Option<u64>,
     ) -> Iterator {
+        let data = self.data.clone();
+        let mut key = BytesMut::new();
+        key.extend_from_slice(data.prefix());
         Iterator {
             all_versions,
             reversed,
             read_ts: self.get_read_ts(cf, read_ts),
-            key: BytesMut::new(),
+            key,
             val: table::Value::new(),
             inner: self.new_mem_table_iterator(cf, reversed),
             blob_prefetcher: None,
-            data: self.data.clone(),
+            data,
             range: None,
         }
     }
@@ -353,7 +373,7 @@ impl SnapAccessCore {
         }
     }
 
-    fn fetch_blob(&self, key: &[u8], val: &table::Value) -> Vec<u8> {
+    fn fetch_blob(&self, key: InnerKey<'_>, val: &table::Value) -> Vec<u8> {
         assert!(val.is_blob_ref());
         let blob_ref = val.get_blob_ref();
         let blob_table = self
@@ -381,7 +401,7 @@ impl SnapAccessCore {
         }
 
         debug_assert_eq!(self.data.prefix(), &key[..self.data.inner_key_off]);
-        let inner_key = &key[self.data.inner_key_off..];
+        let inner_key = InnerKey::from_outer_key(key, self.data.inner_key_off);
         let mut item = Item::new();
         item.owned_val = Some(vec![]);
         item.val = self.get_value(
@@ -401,7 +421,7 @@ impl SnapAccessCore {
     fn get_value(
         &self,
         cf: usize,
-        inner_key: &[u8],
+        inner_key: InnerKey<'_>,
         version: u64,
         path: &mut AccessPath,
         out_val_owner: &mut Vec<u8>,
@@ -411,9 +431,9 @@ impl SnapAccessCore {
             let v = if i == 0 && cf == 0 {
                 // only use hint for the first mem-table and cf 0.
                 let mut hint = self.get_hint.lock().unwrap();
-                tbl.get_with_hint(inner_key, version, &mut hint)
+                tbl.get_with_hint(inner_key.deref(), version, &mut hint)
             } else {
-                tbl.get(inner_key, version)
+                tbl.get(inner_key.deref(), version)
             };
             path.mem_table += 1;
             if v.is_valid() {
@@ -422,7 +442,7 @@ impl SnapAccessCore {
                 return table::Value::decode(out_val_owner.as_slice());
             }
         }
-        let key_hash = farmhash::fingerprint64(inner_key);
+        let key_hash = farmhash::fingerprint64(inner_key.deref());
         for l0 in &self.data.l0_tbls {
             if let Some(tbl) = &l0.get_cf(cf) {
                 let v = tbl.get(inner_key, version, key_hash, out_val_owner, 0);
@@ -525,10 +545,10 @@ impl SnapAccessCore {
         self.tag.id_ver.ver
     }
 
-    pub(crate) fn contains_in_older_table(&self, key: &[u8], cf: usize) -> bool {
-        let key_hash = farmhash::fingerprint64(key);
+    pub(crate) fn contains_in_older_table(&self, key: InnerKey<'_>, cf: usize) -> bool {
+        let key_hash = farmhash::fingerprint64(key.deref());
         for tbl in &self.data.mem_tbls[1..] {
-            let val = tbl.get_cf(cf).get(key, u64::MAX);
+            let val = tbl.get_cf(cf).get(key.deref(), u64::MAX);
             if val.is_valid() {
                 return !val.is_deleted();
             }
@@ -557,17 +577,20 @@ impl SnapAccessCore {
         false
     }
 
-    fn to_change_set(&self, ranges: &[(Bytes, Bytes)], ignore_locks: bool) -> pb::ChangeSet {
+    /// NOTE: `ChangeSet.snapshot.data_sequence` is not set, as it's not able to
+    /// get the accurate data sequence of ShardMeta from Shard.
+    fn to_change_set(&self, outer_ranges: &[(Bytes, Bytes)], ignore_locks: bool) -> pb::ChangeSet {
         let mut cs = new_change_set(self.get_tag().id_ver.id, self.get_tag().id_ver.ver);
-        let mut snap = pb::Snapshot::new();
+        cs.set_sequence(self.meta_seq);
+
+        let snap = cs.mut_snapshot();
         let mut properties = pb::Properties::new();
         properties.shard_id = self.get_tag().id_ver.id;
-        let data_sequence = if !self.data.l0_tbls.is_empty() {
-            self.data.l0_tbls[0].version() - self.base_version
-        } else {
-            self.meta_seq
-        };
-        snap.set_data_sequence(data_sequence);
+        if let Some(encryption_key) = &self.encryption_key {
+            properties.mut_keys().push(ENCRYPTION_KEY.to_string());
+            properties.mut_values().push(encryption_key.export());
+        }
+
         snap.set_outer_start(self.get_start_key().to_vec());
         snap.set_outer_end(self.get_end_key().to_vec());
         snap.set_inner_key_off(self.data.range.inner_key_off as u32);
@@ -586,8 +609,12 @@ impl SnapAccessCore {
                 }
             }
             let mut overlap = false;
-            for (start, end) in ranges {
-                if v.has_data_in_range(start.as_ref(), end.as_ref()) {
+            for (outer_start, outer_end) in outer_ranges {
+                let inner_start =
+                    InnerKey::from_outer_key(outer_start, self.data.range.inner_key_off);
+                let inner_end =
+                    InnerKey::from_outer_end_key(outer_end, self.data.range.inner_key_off);
+                if v.has_data_in_range(inner_start, inner_end) {
                     overlap = true;
                     break;
                 }
@@ -622,8 +649,12 @@ impl SnapAccessCore {
                     continue;
                 }
                 let mut overlap = false;
-                for (start, end) in ranges {
-                    if v.has_overlap(start.as_ref(), end.as_ref(), false) {
+                for (outer_start, outer_end) in outer_ranges {
+                    let inner_start =
+                        InnerKey::from_outer_key(outer_start, self.data.range.inner_key_off);
+                    let inner_end =
+                        InnerKey::from_outer_end_key(outer_end, self.data.range.inner_key_off);
+                    if v.has_overlap(inner_start, inner_end, false) {
                         overlap = true;
                         break;
                     }
@@ -648,9 +679,6 @@ impl SnapAccessCore {
             count,
             overlapped_count,
         );
-        if overlapped_count > 0 {
-            cs.set_snapshot(snap);
-        }
         cs
     }
 
@@ -658,25 +686,24 @@ impl SnapAccessCore {
         &self,
         ranges: &[(Bytes, Bytes)],
         ignore_locks: bool,
-    ) -> Option<(String, Vec<u8>)> {
+        cache_key: bool,
+    ) -> (String, Vec<u8>) {
         let cs = self.to_change_set(ranges, ignore_locks);
-        if !cs.has_snapshot() {
-            return None;
-        }
-        let mut ranges_bytes = Vec::new();
-        for (start, end) in ranges {
-            ranges_bytes.append(start.to_vec().as_mut());
-            ranges_bytes.append(end.to_vec().as_mut());
-        }
-        let ranges_key = hex::encode(ranges_bytes);
-        let key = format!(
-            "{}:{}:{}:{}",
-            cs.shard_id,
-            cs.shard_ver,
-            cs.get_snapshot().data_sequence,
-            ranges_key,
-        );
-        Some((key, cs.write_to_bytes().unwrap()))
+        let key = if cache_key {
+            let mut ranges_bytes = Vec::new();
+            for (start, end) in ranges {
+                ranges_bytes.append(start.to_vec().as_mut());
+                ranges_bytes.append(end.to_vec().as_mut());
+            }
+            let ranges_key = hex::encode(ranges_bytes);
+            format!(
+                "{}:{}:{}:{}",
+                cs.shard_id, cs.shard_ver, cs.sequence, ranges_key,
+            )
+        } else {
+            "".to_string()
+        };
+        (key, cs.write_to_bytes().unwrap())
     }
 
     pub fn get_all_files(&self) -> Vec<u64> {
@@ -684,7 +711,7 @@ impl SnapAccessCore {
     }
 
     pub fn get_newer(&self, cf: usize, key: &[u8], version: u64) -> Item<'_> {
-        let inner_key = &key[self.data.inner_key_off..];
+        let inner_key = InnerKey::from_outer_key(key, self.data.inner_key_off);
         let mut item = Item::new();
         item.owned_val = Some(vec![]);
         item.val = self.get_newer_val(cf, inner_key, version, item.owned_val.as_mut().unwrap());
@@ -698,14 +725,14 @@ impl SnapAccessCore {
     fn get_newer_val(
         &self,
         cf: usize,
-        inner_key: &[u8],
+        inner_key: InnerKey<'_>,
         version: u64,
         out_val_owner: &mut Vec<u8>,
     ) -> table::Value {
-        let key_hash = farmhash::fingerprint64(inner_key);
+        let key_hash = farmhash::fingerprint64(inner_key.deref());
         for i in 0..self.data.mem_tbls.len() {
             let tbl = self.data.mem_tbls.as_slice()[i].get_cf(cf);
-            let v = tbl.get_newer(inner_key, version);
+            let v = tbl.get_newer(inner_key.deref(), version);
             if v.is_valid() {
                 out_val_owner.resize(v.encoded_size(), 0);
                 v.encode(out_val_owner.as_mut_slice());
@@ -745,8 +772,8 @@ impl SnapAccessCore {
             }
         }
 
-        let inner_prefix = &prefix[self.data.inner_key_off..];
-        if self.data.del_prefixes.cover_prefix(inner_prefix) {
+        let inner_prefix = InnerKey::from_outer_key(prefix, self.data.inner_key_off);
+        if self.deleting_prefixes.cover_prefix(inner_prefix) {
             return false;
         }
         let mut it = self.new_iterator(0, false, false, Some(u64::MAX), true);
@@ -764,11 +791,24 @@ impl SnapAccessCore {
     // check if the ingest files overlaps with the existing data in the shard.
     pub fn overlap_ingest_files(&self, ingest_files: &IngestFiles) -> bool {
         let table_creates = ingest_files.get_table_creates();
-        let inner_smallest = table_creates.first().unwrap().get_smallest();
-        let inner_biggest = table_creates.last().unwrap().get_biggest();
-        let mut tbl_it = self.new_table_iterator(0, false, false);
-        tbl_it.seek(inner_smallest);
-        tbl_it.valid() && tbl_it.key() <= inner_biggest
+        let cf = self.data.get_cf(WRITE_CF); // Ingest to WRITE_CF only.
+        for table_create in table_creates {
+            let inner_smallest = InnerKey::from_inner_buf(table_create.get_smallest());
+            let inner_biggest = InnerKey::from_inner_buf(table_create.get_biggest());
+            let lvl = cf.get_level(table_create.level as usize);
+            if let Some(old_tbl) = lvl.get_table(inner_smallest) {
+                // Ingest file with same file id is allowed for frontend retry. And will be
+                // de-duplicated in `ShardMeta::preprocess_change_set`.
+                if old_tbl.id() != table_create.id && old_tbl.smallest() <= inner_biggest {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn get_encryption_key(&self) -> Option<EncryptionKey> {
+        self.encryption_key.clone()
     }
 }
 
@@ -781,7 +821,7 @@ pub struct Iterator {
     pub(crate) inner: Box<dyn table::Iterator>,
     blob_prefetcher: Option<BlobPrefetcher>,
     data: ShardData,
-    range: Option<(Bytes, Bytes)>, // [lower_bound, upper_bound)
+    range: Option<(Bytes, Bytes)>, // [outer_lower_bound, outer_upper_bound)
 }
 
 impl Iterator {
@@ -832,7 +872,7 @@ impl Iterator {
 
     fn update_item(&mut self) {
         self.key.truncate(self.data.inner_key_off);
-        self.key.extend_from_slice(self.inner.key());
+        self.key.extend_from_slice(self.inner.key().deref());
         self.val = self.inner.value();
     }
 
@@ -863,7 +903,8 @@ impl Iterator {
         if key.len() <= self.data.inner_key_off {
             self.inner.rewind();
         } else {
-            self.inner.seek(&key[self.data.inner_key_off..]);
+            self.inner
+                .seek(InnerKey::from_outer_key(key, self.data.inner_key_off));
         }
         self.parse_item();
     }
@@ -905,30 +946,32 @@ impl Iterator {
         outer_lower_bound_include: Bytes,
         outer_upper_bound_exclude: Bytes,
     ) -> bool {
-        let inner_lower_bound = outer_lower_bound_include.slice(self.data.inner_key_off..);
-        let inner_upper_bound = outer_upper_bound_exclude.slice(self.data.inner_key_off..);
+        let inner_lower_bound =
+            InnerKey::from_outer_key(&outer_lower_bound_include, self.data.inner_key_off);
+        let inner_upper_bound =
+            InnerKey::from_outer_end_key(&outer_upper_bound_exclude, self.data.inner_key_off);
         let mut seeked = false;
         // reset monotonic range can be optimized to avoid seek.
-        if self.is_reset_monotonic_range(&inner_lower_bound, &inner_upper_bound) {
+        if self.is_reset_monotonic_range(inner_lower_bound, inner_upper_bound) {
             // If inner is not valid, the iterator has reached the end, there is no more
             // data to return, we can avoid the seek.
             if self.inner.valid() {
                 if self.reversed {
                     // If the new inner_upper_bound is greater than the current key, we can
                     // continue to use the current key to iterate backward, avoid the seek.
-                    if self.inner.key() > inner_upper_bound.chunk() {
-                        self.inner.seek(inner_upper_bound.chunk());
+                    if self.inner.key() > inner_upper_bound {
+                        self.inner.seek(inner_upper_bound);
                         seeked = true;
                     }
                     // the upper bound is exclusive, so we need to skip the current key.
-                    if self.inner.key() == inner_upper_bound.chunk() {
+                    if self.inner.key() == inner_upper_bound {
                         self.inner.next();
                     }
                 } else {
                     // If the new inner_lower_bound is greater than or equal to the current key,
                     // we can continue to use the current key to iterate forward, avoid the seek.
-                    if self.inner.key() < inner_lower_bound.chunk() {
-                        self.inner.seek(inner_lower_bound.chunk());
+                    if self.inner.key() < inner_lower_bound {
+                        self.inner.seek(inner_lower_bound);
                         seeked = true;
                     }
                 }
@@ -936,26 +979,32 @@ impl Iterator {
         } else {
             // always seek if not reset monotonic range.
             if self.reversed {
-                self.inner.seek(inner_upper_bound.chunk());
-                if self.inner.key() == inner_upper_bound.chunk() {
+                self.inner.seek(inner_upper_bound);
+                if self.inner.key() == inner_upper_bound {
                     self.inner.next();
                 }
             } else {
-                self.inner.seek(inner_lower_bound.chunk());
+                self.inner.seek(inner_lower_bound);
             }
             seeked = true;
         }
-        self.range = Some((inner_lower_bound, inner_upper_bound));
+        self.range = Some((outer_lower_bound_include, outer_upper_bound_exclude));
         self.parse_item();
         seeked
     }
 
-    fn is_reset_monotonic_range(&self, inner_lower_bound: &[u8], inner_upper_bound: &[u8]) -> bool {
-        if let Some((old_lower, old_upper)) = &self.range {
+    fn is_reset_monotonic_range(
+        &self,
+        inner_lower_bound: InnerKey<'_>,
+        inner_upper_bound: InnerKey<'_>,
+    ) -> bool {
+        if let Some((outer_old_lower, outer_old_upper)) = &self.range {
             if self.reversed {
-                inner_upper_bound <= old_lower.chunk()
+                inner_upper_bound
+                    <= InnerKey::from_outer_key(outer_old_lower, self.data.inner_key_off)
             } else {
-                old_upper <= inner_lower_bound.chunk()
+                InnerKey::from_outer_end_key(outer_old_upper, self.data.inner_key_off)
+                    <= inner_lower_bound
             }
         } else {
             false
@@ -963,12 +1012,14 @@ impl Iterator {
     }
 
     pub(crate) fn is_inner_key_over_bound(&self) -> bool {
-        if let Some((lower, upper)) = &self.range {
+        if let Some((outer_lower, outer_upper)) = &self.range {
             if self.inner.valid() {
                 if self.reversed {
-                    self.inner.key() < lower.chunk()
+                    self.inner.key()
+                        < InnerKey::from_outer_key(outer_lower, self.data.inner_key_off)
                 } else {
-                    self.inner.key() >= upper.chunk()
+                    self.inner.key()
+                        >= InnerKey::from_outer_end_key(outer_upper, self.data.inner_key_off)
                 }
             } else {
                 true

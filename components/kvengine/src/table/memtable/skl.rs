@@ -17,6 +17,7 @@ use crate::{
     table::{
         is_deleted,
         table::{Iterator, Value, VALUE_VERSION_LEN, VALUE_VERSION_OFF},
+        InnerKey,
     },
     SnapAccess,
 };
@@ -45,7 +46,7 @@ impl WriteBatch {
         }
     }
 
-    pub fn put(&mut self, key: &[u8], meta: u8, user_meta: &[u8], version: u64, val: &[u8]) {
+    pub fn put(&mut self, key: InnerKey<'_>, meta: u8, user_meta: &[u8], version: u64, val: &[u8]) {
         let offset = self.buf.len();
         let entry = WriteBatchEntry {
             buf_off: offset as u32,
@@ -55,7 +56,7 @@ impl WriteBatch {
             version,
             val_len: val.len() as u32,
         };
-        self.buf.extend_from_slice(key);
+        self.buf.extend_from_slice(key.deref());
         self.buf.extend_from_slice(user_meta);
         self.buf.extend_from_slice(val);
         self.entries.push(entry);
@@ -127,11 +128,6 @@ impl WriteBatchEntry {
             + VALUE_VERSION_LEN
             + self.user_meta_len as usize
             + self.val_len as usize
-    }
-
-    pub fn trim_to_inner_key(&mut self, inner_key_off: usize) {
-        self.buf_off += inner_key_off as u32;
-        self.key_len -= inner_key_off as u16;
     }
 }
 
@@ -279,7 +275,7 @@ impl SkipListCore {
             if is_deleted(entry.meta) {
                 let key = entry.key(&batch.buf);
                 if snap
-                    .map(|snap| snap.contains_in_older_table(key, cf))
+                    .map(|snap| snap.contains_in_older_table(InnerKey::from_inner_buf(key), cf))
                     .unwrap_or_default()
                 {
                     self.put_with_hint(&batch.buf, entry, &mut hint);
@@ -852,16 +848,16 @@ impl Iterator for SkIterator {
         }
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek(&mut self, key: InnerKey<'_>) {
         if self.reversed {
-            self.seek_for_prev(key)
+            self.seek_for_prev(key.deref())
         } else {
-            self.seek_for_next(key)
+            self.seek_for_next(key.deref())
         }
     }
 
-    fn key(&self) -> &[u8] {
-        self.uk.chunk()
+    fn key(&self) -> InnerKey<'_> {
+        InnerKey::from_inner_buf(self.uk.chunk())
     }
 
     fn value(&self) -> Value {
@@ -912,7 +908,7 @@ mod tests {
         assert_eq!(it.valid(), false);
         it.seek_to_last();
         assert_eq!(it.valid(), false);
-        it.seek(key);
+        it.seek(InnerKey::from_inner_buf(key));
         assert_eq!(it.valid(), false);
     }
 
@@ -926,9 +922,27 @@ mod tests {
 
         let mut wb = WriteBatch::new();
 
-        wb.put("key1".as_bytes(), 0, &[0], 0, val1.as_bytes());
-        wb.put("key2".as_bytes(), 0, &[0], 2, val2.as_bytes());
-        wb.put("key3".as_bytes(), 0, &[0], 0, val3.as_bytes());
+        wb.put(
+            InnerKey::from_inner_buf("key1".as_bytes()),
+            0,
+            &[0],
+            0,
+            val1.as_bytes(),
+        );
+        wb.put(
+            InnerKey::from_inner_buf("key2".as_bytes()),
+            0,
+            &[0],
+            2,
+            val2.as_bytes(),
+        );
+        wb.put(
+            InnerKey::from_inner_buf("key3".as_bytes()),
+            0,
+            &[0],
+            0,
+            val3.as_bytes(),
+        );
 
         l.put_batch_impl(&mut wb, None, 0);
 
@@ -947,7 +961,13 @@ mod tests {
         assert_eq!(v.get_value(), "00062".as_bytes());
 
         let mut wb = WriteBatch::new();
-        wb.put("key3".as_bytes(), 0, &[0], 1, val4.as_bytes());
+        wb.put(
+            InnerKey::from_inner_buf("key3".as_bytes()),
+            0,
+            &[0],
+            1,
+            val4.as_bytes(),
+        );
         l.put_batch_impl(&mut wb, None, 0);
         v = l.get("key3".as_bytes(), 1);
         assert_eq!(v.is_empty(), false);
@@ -960,7 +980,13 @@ mod tests {
         for i in 0..1000 {
             let key = format!("{:05}", i * 10 + 5);
             let mut wb = WriteBatch::new();
-            wb.put(key.as_bytes(), 0, &[], 0, new_value(i).as_bytes());
+            wb.put(
+                InnerKey::from_inner_buf(key.as_bytes()),
+                0,
+                &[],
+                0,
+                new_value(i).as_bytes(),
+            );
             l.put_batch_impl(&mut wb, None, 0);
         }
 
@@ -1126,13 +1152,19 @@ mod tests {
         assert_eq!(it.valid(), false);
         for i in 0..n {
             let mut wb = WriteBatch::new();
-            wb.put(new_key(i).as_bytes(), 0, &[0], 0, new_value(i).as_bytes());
+            wb.put(
+                InnerKey::from_inner_buf(new_key(i).as_bytes()),
+                0,
+                &[0],
+                0,
+                new_value(i).as_bytes(),
+            );
             l.put_batch_impl(&mut wb, None, 0);
         }
         let mut it = l.new_iterator(false);
         it.rewind();
         for i in 0..n {
-            assert_eq!(it.key(), new_key(i).as_bytes());
+            assert_eq!(it.key().deref(), new_key(i).as_bytes());
             assert_eq!(it.value().get_value(), new_value(i).as_bytes());
             it.next();
         }
@@ -1149,7 +1181,13 @@ mod tests {
         assert_eq!(it.valid(), false);
         for i in (0..n).rev() {
             let mut wb = WriteBatch::new();
-            wb.put(new_key(i).as_bytes(), 0, &[0], 0, new_value(i).as_bytes());
+            wb.put(
+                InnerKey::from_inner_buf(new_key(i).as_bytes()),
+                0,
+                &[0],
+                0,
+                new_value(i).as_bytes(),
+            );
             l.put_batch_impl(&mut wb, None, 0);
         }
         it.seek_to_last();
@@ -1174,26 +1212,32 @@ mod tests {
             let v = i * 10 + 1000;
             let key = format!("{:05}", v);
             let mut wb = WriteBatch::new();
-            wb.put(key.as_bytes(), 0, &[0], 0, new_value(v).as_bytes());
+            wb.put(
+                InnerKey::from_inner_buf(key.as_bytes()),
+                0,
+                &[0],
+                0,
+                new_value(v).as_bytes(),
+            );
             l.put_batch_impl(&mut wb, None, 0)
         }
         it.seek_to_first();
         assert_eq!(it.valid(), true);
         assert_eq!(it.value().get_value(), "01000".as_bytes());
 
-        it.seek("01000".as_bytes());
+        it.seek(InnerKey::from_inner_buf("01000".as_bytes()));
         assert_eq!(it.valid(), true);
         assert_eq!(it.value().get_value(), "01000".as_bytes());
 
-        it.seek("01005".as_bytes());
+        it.seek(InnerKey::from_inner_buf("01005".as_bytes()));
         assert_eq!(it.valid(), true);
         assert_eq!(it.value().get_value(), "01010".as_bytes());
 
-        it.seek("01010".as_bytes());
+        it.seek(InnerKey::from_inner_buf("01010".as_bytes()));
         assert_eq!(it.valid(), true);
         assert_eq!(it.value().get_value(), "01010".as_bytes());
 
-        it.seek("99999".as_bytes());
+        it.seek(InnerKey::from_inner_buf("99999".as_bytes()));
         assert_eq!(it.valid(), false);
 
         // try seek for prev
@@ -1238,7 +1282,13 @@ mod tests {
                 break;
             }
             let key = random_key();
-            wb.put(key.as_slice(), 0, &[], 0, key.as_slice());
+            wb.put(
+                InnerKey::from_inner_buf(key.as_slice()),
+                0,
+                &[],
+                0,
+                key.as_slice(),
+            );
             cnt += 1;
             l.put_batch_impl(&mut wb, None, 0);
             wb.reset();
@@ -1248,11 +1298,11 @@ mod tests {
         let mut cnt_got = 0;
         it.seek_to_first();
         while it.valid() {
-            assert_eq!(last_key.as_slice() <= it.key(), true);
-            assert_eq!(it.key() == it.value().get_value(), true);
+            assert_eq!(last_key.as_slice() <= it.key().deref(), true);
+            assert_eq!(it.key().deref() == it.value().get_value(), true);
             cnt_got += 1;
             last_key.truncate(0);
-            last_key.extend_from_slice(it.key());
+            last_key.extend_from_slice(it.key().deref());
             it.next();
         }
         assert_eq!(cnt, cnt_got);
@@ -1263,7 +1313,13 @@ mod tests {
         let l = SkipList::new(None);
         let mut wb = WriteBatch::new();
         let key = random_key();
-        wb.put(key.as_slice(), 0, &[], 2, key.as_slice());
+        wb.put(
+            InnerKey::from_inner_buf(key.as_slice()),
+            0,
+            &[],
+            2,
+            key.as_slice(),
+        );
         let entry = &wb.entries[0];
         l.put(&wb.buf, entry);
         let mut h = Hint::new();
@@ -1279,7 +1335,7 @@ mod tests {
         let mut wb = WriteBatch::new();
         for i in 0u64..10000000 {
             let key = format!("{:08}", i);
-            wb.put(key.as_bytes(), 0, &[], 1, &[1]);
+            wb.put(InnerKey::from_inner_buf(key.as_bytes()), 0, &[], 1, &[1]);
             l.put_batch_impl(&mut wb, None, 0);
             wb.reset();
             if l.size() > 8 * 1024 * 1024 {
@@ -1321,7 +1377,7 @@ mod tests {
                 let key = &bin;
                 let um = &bin;
                 let val = &bin;
-                wb.put(key, 1, um, i, val);
+                wb.put(InnerKey::from_inner_buf(key), 1, um, i, val);
                 let entry = wb.get(0);
                 let buf = wb.buf.chunk();
                 l.put_with_hint(buf, &entry, &mut hint);

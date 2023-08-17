@@ -26,6 +26,8 @@ use batch_system::{
     BasicMailbox, BatchRouter, BatchSystem, Config as BatchSystemConfig, Fsm, HandleResult,
     HandlerBuilder, PollHandler, Priority,
 };
+use bytes::Buf;
+use cloud_encryption::{EncryptionKey, MasterKey};
 use collections::{HashMap, HashMapEntry, HashSet};
 use crossbeam::channel::{TryRecvError, TrySendError};
 use engine_traits::{
@@ -50,7 +52,7 @@ use protobuf::{wire_format::WireType, CodedInputStream, Message};
 use raft::eraftpb::{
     ConfChange, ConfChangeType, ConfChangeV2, Entry, EntryType, Snapshot as RaftSnapshot,
 };
-use raft_proto::ConfChangeI;
+use raft_proto::{eraftpb, ConfChangeI};
 use resource_control::{ResourceController, ResourceMetered};
 use smallvec::{smallvec, SmallVec};
 use sst_importer::SstImporter;
@@ -96,7 +98,7 @@ use crate::{
             self, admin_cmd_epoch_lookup, check_flashback_state, check_req_region_epoch,
             compare_region_epoch, ChangePeerI, ConfChangeKind, KeysInfoFormatter, LatencyInspector,
         },
-        Config, RegionSnapshot, RegionTask, WriteCallback,
+        Config, ProposalContext, RegionSnapshot, RegionTask, WriteCallback,
     },
     Error, Result,
 };
@@ -1043,6 +1045,10 @@ where
     buckets: Option<BucketStat>,
 
     unfinished_write_seqno: Vec<SequenceNumber>,
+
+    #[derivative(Debug = "ignore")]
+    encryption_key: Option<EncryptionKey>,
+    decryption_buf: Vec<u8>,
 }
 
 impl<EK> ApplyDelegate<EK>
@@ -1077,6 +1083,8 @@ where
             trace: ApplyMemoryTrace::default(),
             buckets: None,
             unfinished_write_seqno: vec![],
+            encryption_key: None,
+            decryption_buf: vec![],
         }
     }
 
@@ -1195,6 +1203,55 @@ where
         }
     }
 
+    fn parse_cmd(&mut self, entry: &eraftpb::Entry, ctx: &ApplyContext<EK>) -> RaftCmdRequest {
+        let mut data = entry.get_data();
+        let proposal_ctx = ProposalContext::from_bytes(entry.get_context());
+        let index = entry.index;
+        let store_id = self.peer.store_id;
+        let region_id = self.region.get_id();
+        let ver = self.region.get_region_epoch().version;
+        if proposal_ctx.contains(ProposalContext::ENCRYPTED) {
+            if self.encryption_key.is_none() {
+                // fetch encryption key from kv_engine
+                let engine = &ctx.engine;
+                let master_key = engine.get_master_key().unwrap();
+                let region_encryption_key = keys::region_encryption_key_key(region_id);
+                let encryption_key = match engine.get_value_cf(CF_RAFT, &region_encryption_key) {
+                    Ok(Some(v)) => v.to_vec(),
+                    Ok(None) => {
+                        panic!("encryption key is not set for region {}", region_id);
+                    }
+                    Err(e) => {
+                        panic!("failed to fetch encryption key: {:?}", e);
+                    }
+                };
+                self.encryption_key =
+                    Some(master_key.decrypt_encryption_key(&encryption_key).unwrap());
+            }
+            let encryption_key = self.encryption_key.as_ref().unwrap();
+            let key_ver = data.get_u32();
+            self.decryption_buf.truncate(0);
+            encryption_key.decrypt(
+                data,
+                region_id,
+                entry.index as u32,
+                key_ver,
+                &mut self.decryption_buf,
+            );
+            util::parse_data_at(
+                &self.decryption_buf,
+                index,
+                &format!("[{}:{}:{}]", store_id, region_id, ver),
+            )
+        } else {
+            util::parse_data_at(
+                data,
+                index,
+                &format!("[{}:{}:{}]", store_id, region_id, ver),
+            )
+        }
+    }
+
     fn handle_raft_entry_normal(
         &mut self,
         apply_ctx: &mut ApplyContext<EK>,
@@ -1212,7 +1269,7 @@ where
 
         if !data.is_empty() {
             if !self.peer.is_witness || !can_witness_skip(entry) {
-                let cmd = util::parse_data_at(data, index, &self.tag);
+                let cmd = self.parse_cmd(entry, apply_ctx);
                 if apply_ctx.yield_high_latency_operation && has_high_latency_operation(&cmd) {
                     self.priority = Priority::Low;
                 }

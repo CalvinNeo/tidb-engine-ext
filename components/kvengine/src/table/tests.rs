@@ -1,6 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::cmp::Ordering::*;
+use std::{cmp::Ordering::*, ops::Deref};
 
 use bytes::{Buf, Bytes};
 use rand::Rng;
@@ -106,18 +106,18 @@ impl Iterator for SimpleIterator {
         }
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek(&mut self, key: InnerKey<'_>) {
         self.idx = search(self.latest_offsets.len(), |idx| {
-            self.keys[self.latest_offsets[idx]].chunk().cmp(key) != Less
+            self.keys[self.latest_offsets[idx]].chunk().cmp(key.deref()) != Less
         }) as i32;
         self.ver_idx = 0;
-        if self.reversed && (!self.valid() || self.key().cmp(key) != Equal) {
+        if self.reversed && (!self.valid() || self.key().cmp(&key) != Equal) {
             self.idx -= 1;
         }
     }
 
-    fn key(&self) -> &[u8] {
-        self.keys[self.entry_idx()].as_ref()
+    fn key(&self) -> InnerKey<'_> {
+        InnerKey::from_inner_buf(self.keys[self.entry_idx()].as_ref())
     }
 
     fn value(&self) -> Value {
@@ -135,7 +135,7 @@ fn get_all(mut it: Box<dyn Iterator>) -> (Vec<Bytes>, Vec<Bytes>) {
     let mut keys = vec![];
     let mut vals = vec![];
     while it.valid() {
-        let key_b = Bytes::copy_from_slice(it.key());
+        let key_b = Bytes::copy_from_slice(it.key().deref());
         keys.push(key_b);
         vals.push(Bytes::copy_from_slice(it.value().get_value()));
         it.next();
@@ -248,7 +248,7 @@ fn test_merge_iterator_seek() {
         false,
     ));
     let mut merge_it = new_merge_iterator(vec![it1, it2, it3, it4], false);
-    merge_it.seek(&Bytes::from("4".as_bytes()));
+    merge_it.seek(InnerKey::from_inner_buf("4".as_bytes()));
     let (keys, vals) = get_all(merge_it);
     let expected_keys = vec!["5", "7", "9"];
     let expected_vals = vec!["b5", "a7", "d9"];
@@ -277,7 +277,7 @@ fn test_merge_iterator_seek_reversed() {
         true,
     ));
     let mut merge_it = new_merge_iterator(vec![it1, it2, it3, it4], true);
-    merge_it.seek(&Bytes::from("5".as_bytes()));
+    merge_it.seek(InnerKey::from_inner_buf("5".as_bytes()));
     let (keys, vals) = get_all(merge_it);
     let expected_keys = vec!["5", "3", "2", "1"];
     let expected_vals = vec!["b5", "a3", "b2", "a1"];
@@ -306,7 +306,7 @@ fn test_merge_iterator_seek_invalid() {
         false,
     ));
     let mut merge_it = new_merge_iterator(vec![it1, it2, it3, it4], false);
-    merge_it.seek(&Bytes::from("f".as_bytes()));
+    merge_it.seek(InnerKey::from_inner_buf("f".as_bytes()));
     assert!(!merge_it.valid());
 }
 
@@ -329,7 +329,7 @@ fn test_merge_iterator_seek_invalid_reversed() {
         true,
     ));
     let mut merge_it = new_merge_iterator(vec![it1, it2, it3, it4], true);
-    merge_it.seek(&Bytes::from("0".as_bytes()));
+    merge_it.seek(InnerKey::from_inner_buf("0".as_bytes()));
     assert!(!merge_it.valid());
 }
 
@@ -363,12 +363,12 @@ fn test_multi_version_merge_iterator() {
         let it4 = Box::new(SimpleIterator::new_multi_version(70, 60, reversed));
         let mut it = new_merge_iterator(vec![it1, it2, it3, it4], reversed);
         it.rewind();
-        let mut cur_key = Bytes::copy_from_slice(it.key());
+        let mut cur_key = Bytes::copy_from_slice(it.key().deref());
         for _ in 1..100 {
             it.next();
             assert_eq!(it.valid(), true);
-            assert_ne!(cur_key, it.key().to_owned());
-            cur_key = Bytes::copy_from_slice(it.key());
+            assert_ne!(cur_key.chunk(), it.key().deref());
+            cur_key = Bytes::copy_from_slice(it.key().deref());
             let cur_ver = it.value().version;
             while it.next_version() {
                 assert_eq!(it.value().version < cur_ver, true);
@@ -376,9 +376,9 @@ fn test_multi_version_merge_iterator() {
         }
         for _ in 0..100 {
             let key = Bytes::from(format!("key{:03}", rnd.gen_range::<u8, _>(0..100)));
-            it.seek(&key);
+            it.seek(InnerKey::from_inner_buf(&key));
             assert_eq!(it.valid(), true);
-            assert_eq!(it.key(), key);
+            assert_eq!(it.key().deref(), key.chunk());
             let mut cur_ver = it.value().version;
             while it.next_version() {
                 assert_eq!(it.value().version < cur_ver, true);
@@ -393,8 +393,6 @@ fn test_multi_version_merge_iterator() {
 mod tests {
 
     use std::{mem::size_of, sync::Arc};
-
-    use bytes::BytesMut;
 
     use super::*;
     use crate::table::{
@@ -441,7 +439,7 @@ mod tests {
     ) -> BlobRef {
         assert!(v.value_len() > size_of::<BlobRef>() + v.user_meta_len());
         v.set_blob_ref();
-        blob_builder.add(k.as_bytes(), v)
+        blob_builder.add(InnerKey::from_inner_buf(k.as_bytes()), v)
     }
 
     #[cfg(test)]
@@ -461,20 +459,20 @@ mod tests {
             let value_buf = Value::encode_buf(meta, &[0], 0, v.as_bytes());
             let mut v = Value::decode(value_buf.as_slice());
             let blob_ref = test_store_value_in_blob_table(&mut blob_builder, k, &mut v);
-            sst_builder.add(k.as_bytes(), &v, Some(blob_ref));
+            sst_builder.add(InnerKey::from_inner_buf(k.as_bytes()), &v, Some(blob_ref));
         }
 
-        let mut buf = BytesMut::with_capacity(sst_builder.estimated_size());
+        let mut buf = Vec::with_capacity(sst_builder.estimated_size());
 
         sst_builder.finish(0, &mut buf);
 
         let bytes = blob_builder.finish();
 
-        let sst_file = InMemFile::new(sst_fid, buf.freeze());
+        let sst_file = InMemFile::new(sst_fid, buf.into());
         let blob_file = InMemFile::new(blob_fid, bytes);
 
         (
-            SsTable::new(Arc::new(sst_file), new_test_cache(), load_filter).unwrap(),
+            SsTable::new(Arc::new(sst_file), new_test_cache(), load_filter, None).unwrap(),
             BlobTable::new(Arc::new(blob_file)).unwrap(),
         )
     }
@@ -497,7 +495,7 @@ mod tests {
         it.rewind();
         while it.valid() {
             let k = it.key();
-            assert_eq!(k, get_test_key("key", count).as_bytes());
+            assert_eq!(k.deref(), get_test_key("key", count).as_bytes());
             let value = test_fetch_value_from_blob_table(&bt, it.value());
             assert_eq!(value.unwrap(), get_blob_test_value(count).as_bytes());
             count += 1;

@@ -8,6 +8,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
+use cloud_encryption::EncryptionKey;
 use kvenginepb as pb;
 use moka::sync::SegmentedCache;
 
@@ -17,6 +18,7 @@ use crate::{
         blobtable::blobtable::BlobTable,
         memtable::CfTable,
         sstable::{BlockCacheKey, L0Table, LocalFile, SsTable},
+        InnerKey,
     },
     *,
 };
@@ -61,15 +63,16 @@ impl ChangeSet {
         file: LocalFile,
         level: u32,
         cache: SegmentedCache<BlockCacheKey, Bytes>,
+        encryption_key: Option<EncryptionKey>,
     ) -> Result<()> {
         if is_blob_file(level) {
             let blob_table = BlobTable::new(Arc::new(file))?;
             self.blob_tables.insert(id, blob_table);
         } else if level == 0 {
-            let l0_table = L0Table::new(Arc::new(file), Some(cache), false)?;
+            let l0_table = L0Table::new(Arc::new(file), Some(cache), false, encryption_key)?;
             self.l0_tables.insert(id, l0_table);
         } else {
-            let ln_table = SsTable::new(Arc::new(file), Some(cache), level == 1)?;
+            let ln_table = SsTable::new(Arc::new(file), Some(cache), level == 1, encryption_key)?;
             self.ln_tables.insert(id, ln_table);
         }
         Ok(())
@@ -228,9 +231,6 @@ impl EngineCore {
 
             let new_data = ShardData::new(
                 old_data.range.clone(),
-                old_data.del_prefixes.clone(),
-                old_data.truncate_ts,
-                old_data.trim_over_bound,
                 new_mem_tbls,
                 new_l0_tbls,
                 old_data.blob_tbl_map.clone(),
@@ -260,9 +260,6 @@ impl EngineCore {
         });
         let new_data = ShardData::new(
             data.range.clone(),
-            data.del_prefixes.clone(),
-            data.truncate_ts,
-            data.trim_over_bound,
             mem_tbls,
             l0s,
             Arc::new(blob_tbl_map),
@@ -284,7 +281,10 @@ impl EngineCore {
                 return;
             }
             for create in comp.get_table_creates() {
-                let cover = shard.cover_full_table(&create.smallest, &create.biggest);
+                let cover = shard.cover_full_table(
+                    InnerKey::from_inner_buf(&create.smallest),
+                    InnerKey::from_inner_buf(&create.biggest),
+                );
                 del_files.insert(create.id, cover);
             }
             self.remove_dfs_files(shard, del_files);
@@ -322,9 +322,6 @@ impl EngineCore {
         }
         let new_data = ShardData::new(
             data.range.clone(),
-            data.del_prefixes.clone(),
-            data.truncate_ts,
-            data.trim_over_bound,
             data.mem_tbls.clone(),
             new_l0s,
             Arc::new(new_blob_tbl_map),
@@ -340,14 +337,16 @@ impl EngineCore {
         let mut del_file_is_subrange = HashMap::new();
         if comp.conflicted {
             for sst_create in comp.get_sstable_change().get_table_creates() {
-                let is_subrange =
-                    shard.cover_full_table(sst_create.get_smallest(), sst_create.get_biggest());
+                let is_subrange = shard.cover_full_table(
+                    InnerKey::from_inner_buf(sst_create.get_smallest()),
+                    InnerKey::from_inner_buf(sst_create.get_biggest()),
+                );
                 del_file_is_subrange.insert(sst_create.get_id(), is_subrange);
             }
             for blob_tbl_create in comp.get_new_blob_tables() {
                 let is_subrange = shard.cover_full_table(
-                    blob_tbl_create.get_smallest(),
-                    blob_tbl_create.get_biggest(),
+                    InnerKey::from_inner_buf(blob_tbl_create.get_smallest()),
+                    InnerKey::from_inner_buf(blob_tbl_create.get_biggest()),
                 );
                 del_file_is_subrange.insert(blob_tbl_create.get_id(), is_subrange);
             }
@@ -413,7 +412,7 @@ impl EngineCore {
                         }
                     }
                 }
-                tables.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+                tables.sort_by(|a, b| a.smallest().cmp(&b.smallest()));
                 let lh = LevelHandler::new(level, tables);
                 new_cfs[cf].set_level(lh);
             }
@@ -421,9 +420,6 @@ impl EngineCore {
 
         let new_data = ShardData::new(
             shard.range.clone(),
-            data.del_prefixes.clone(),
-            data.truncate_ts,
-            data.trim_over_bound,
             data.mem_tbls.clone(),
             new_l0s,
             Arc::new(new_blob_tbl_map),
@@ -432,6 +428,9 @@ impl EngineCore {
         );
         shard.set_data(new_data);
         self.remove_dfs_files(shard, del_file_is_subrange);
+        let mut lock = shard.pending_ops.write().unwrap();
+        lock.manual_major_compaction = false;
+        shard.set_property(MANUAL_MAJOR_COMPACTION, MANUAL_MAJOR_COMPACTION_DISABLE);
     }
 
     fn get_sstables_from_table_change(
@@ -492,7 +491,7 @@ impl EngineCore {
                         .into_iter()
                         .map(|id| cs.ln_tables.get(&id).unwrap().clone()),
                 );
-                new_level_tables.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+                new_level_tables.sort_by(|a, b| a.smallest().cmp(&b.smallest()));
                 let new_level = LevelHandler::new(level, new_level_tables);
                 new_cfs[cf].set_level(new_level);
             }
@@ -508,20 +507,19 @@ impl EngineCore {
         let mut del_files = HashMap::new();
         let (new_l0s, new_cfs) = self.get_sstables_from_table_change(&data, cs, tc, &mut del_files);
 
-        assert_eq!(cs.get_property_key(), DEL_PREFIXES_KEY);
-        let done = DeletePrefixes::unmarshal(cs.get_property_value(), shard.inner_key_off);
         let new_data = ShardData::new(
             data.range.clone(),
-            data.del_prefixes.split(&done),
-            data.truncate_ts,
-            data.trim_over_bound,
             data.mem_tbls.clone(),
             new_l0s,
             data.blob_tbl_map.clone(),
             new_cfs,
             data.unloaded_tbls.clone(),
         );
-        let new_del_prefixes = new_data.del_prefixes.marshal();
+        assert_eq!(cs.get_property_key(), DEL_PREFIXES_KEY);
+        let done = DeletePrefixes::unmarshal(cs.get_property_value(), shard.inner_key_off);
+        let mut lock = shard.pending_ops.write().unwrap();
+        lock.del_prefixes = Arc::new(lock.del_prefixes.split(&done));
+        let new_del_prefixes = lock.del_prefixes.marshal();
         shard.set_data(new_data);
         shard.set_property(DEL_PREFIXES_KEY, &new_del_prefixes);
         self.remove_dfs_files(shard, del_files);
@@ -535,17 +533,8 @@ impl EngineCore {
         let mut del_files = HashMap::new();
         let (new_l0s, new_cfs) = self.get_sstables_from_table_change(&data, cs, tc, &mut del_files);
         assert_eq!(cs.get_property_key(), TRUNCATE_TS_KEY);
-        let mut new_truncate_ts = data.truncate_ts;
-        let truncated_ts = TruncateTs::unmarshal(cs.get_property_value());
-        // if applied truncate_ts is smaller than truncate ts in shard, remove it.
-        if need_update_truncate_ts(data.truncate_ts, truncated_ts) {
-            new_truncate_ts = None;
-        }
         let new_data = ShardData::new(
             data.range.clone(),
-            data.del_prefixes.clone(),
-            new_truncate_ts,
-            data.trim_over_bound,
             data.mem_tbls.clone(),
             new_l0s,
             data.blob_tbl_map.clone(),
@@ -553,7 +542,11 @@ impl EngineCore {
             data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
-        if new_truncate_ts.is_none() {
+        let truncated_ts = TruncateTs::unmarshal(cs.get_property_value());
+        // if applied truncate_ts is smaller than truncate ts in shard, remove it.
+        let mut lock = shard.pending_ops.write().unwrap();
+        if need_update_truncate_ts(lock.truncate_ts, truncated_ts) {
+            lock.truncate_ts = None;
             shard.set_property(TRUNCATE_TS_KEY, b"");
         }
         self.remove_dfs_files(shard, del_files);
@@ -568,9 +561,6 @@ impl EngineCore {
         let (new_l0s, new_cfs) = self.get_sstables_from_table_change(&data, cs, tc, &mut del_files);
         let new_data = ShardData::new(
             data.range.clone(),
-            data.del_prefixes.clone(),
-            data.truncate_ts,
-            false,
             data.mem_tbls.clone(),
             new_l0s,
             data.blob_tbl_map.clone(),
@@ -578,6 +568,8 @@ impl EngineCore {
             data.unloaded_tbls.clone(),
         );
         shard.set_data(new_data);
+        let mut lock = shard.pending_ops.write().unwrap();
+        lock.trim_over_bound = false;
         shard.set_property(TRIM_OVER_BOUND, TRIM_OVER_BOUND_DISABLE);
         self.remove_dfs_files(shard, del_files);
     }
@@ -623,7 +615,7 @@ impl EngineCore {
                     new_level_tables.push(new_tbl);
                 }
             }
-            new_level_tables.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+            new_level_tables.sort_by(|a, b| a.smallest().cmp(&b.smallest()));
         }
         let new_level = LevelHandler::new(level, new_level_tables);
         new_level.check_order(cf, shard.tag());
@@ -670,8 +662,10 @@ impl EngineCore {
 
     fn apply_ingest_files(&self, shard: &Shard, cs: &ChangeSet) -> Result<()> {
         let ingest_files = cs.get_ingest_files();
-        let ingest_id = get_shard_property(INGEST_ID_KEY, ingest_files.get_properties()).unwrap();
-        if let Some(old_ingest_id) = shard.get_property(INGEST_ID_KEY) {
+        if let (Some(ingest_id), Some(old_ingest_id)) = (
+            get_shard_property(INGEST_ID_KEY, ingest_files.get_properties()),
+            shard.get_property(INGEST_ID_KEY),
+        ) {
             if old_ingest_id.chunk() == ingest_id.as_slice() {
                 // skip duplicated ingest files.
                 return Ok(());
@@ -704,9 +698,6 @@ impl EngineCore {
         new_cfs[0] = new_cf;
         let new_data = ShardData::new(
             old_data.range.clone(),
-            old_data.del_prefixes.clone(),
-            old_data.truncate_ts,
-            old_data.trim_over_bound,
             old_data.mem_tbls.clone(),
             new_l0s,
             Arc::new(new_blob_tbl_map),
@@ -737,6 +728,7 @@ impl EngineCore {
             cs.shard_ver + 1,
             range,
             old_shard.opt.clone(),
+            &self.master_key,
         );
         let snap_data = new_shard.get_data();
         let old_data = old_shard.get_data();
@@ -744,9 +736,6 @@ impl EngineCore {
             create_snapshot_tables(cs.get_restore_shard(), cs, self.opts.for_restore);
         let new_data = ShardData::new(
             snap_data.range.clone(),
-            snap_data.del_prefixes.clone(),
-            snap_data.truncate_ts,
-            snap_data.trim_over_bound,
             vec![CfTable::new()],
             l0_tbls,
             Arc::new(blob_tbl_map),

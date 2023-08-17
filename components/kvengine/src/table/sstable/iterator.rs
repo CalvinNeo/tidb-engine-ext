@@ -1,6 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{mem, sync::Arc};
+use std::{mem, ops::Deref, sync::Arc};
 
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, Bytes, BytesMut};
@@ -10,7 +10,7 @@ use crate::table::{
     search,
     sstable::{Index, BLOCK_FORMAT_V1},
     table::{self, is_old_version, Value, VALUE_VERSION_LEN},
-    LocalAddr,
+    InnerKey, LocalAddr,
 };
 
 #[derive(Default)]
@@ -193,6 +193,7 @@ pub struct TableIterator {
     key_buf: BytesMut,
     iter_state: IterState,
     block_buf: Vec<u8>,
+    decryption_buf: Vec<u8>,
 }
 
 impl TableIterator {
@@ -212,6 +213,7 @@ impl TableIterator {
             key_buf: BytesMut::new(),
             iter_state: IterState::NewVersion,
             block_buf: vec![],
+            decryption_buf: vec![],
         }
     }
 
@@ -233,6 +235,7 @@ impl TableIterator {
                 &self.idx,
                 self.b_pos as usize,
                 &mut self.block_buf,
+                &mut self.decryption_buf,
                 self.fill_cache,
             )
             .unwrap();
@@ -247,6 +250,7 @@ impl TableIterator {
             &old_block,
             self.old_b_pos as usize,
             &mut self.block_buf,
+            &mut self.decryption_buf,
             self.fill_cache,
         ) {
             Ok(b) => b,
@@ -502,16 +506,16 @@ impl table::Iterator for TableIterator {
         }
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek(&mut self, key: InnerKey<'_>) {
         if !self.reversed {
-            self.seek_inner(key);
+            self.seek_inner(key.deref());
         } else {
-            self.seek_for_prev(key);
+            self.seek_for_prev(key.deref());
         }
     }
 
-    fn key(&self) -> &[u8] {
-        self.key_buf.chunk()
+    fn key(&self) -> InnerKey<'_> {
+        InnerKey::from_inner_buf(self.key_buf.chunk())
     }
 
     fn value(&self) -> Value {

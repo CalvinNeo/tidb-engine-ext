@@ -20,7 +20,7 @@ use bytes::Bytes;
 pub use config::Config as DFSConfig;
 use file_system;
 use metrics::*;
-pub use s3::{ListObjectContent, S3Fs, Tagging, STORAGE_CLASS_STANDARD_IA};
+pub use s3::*;
 use thiserror::Error;
 use tikv_util::time::Instant;
 use tokio::runtime::Runtime;

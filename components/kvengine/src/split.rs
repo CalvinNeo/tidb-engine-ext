@@ -25,6 +25,7 @@ impl Engine {
         let old_shard = self.get_shard_with_ver(cs.shard_id, cs.shard_ver)?;
         self.prepare_update_shard_version(&old_shard, sequence);
 
+        let old_pending_ops = old_shard.pending_ops.read().unwrap();
         let mut new_shards = vec![];
         let new_shard_props = split.get_new_shards();
         let new_ver = old_shard.ver + new_shard_props.len() as u64 - 1;
@@ -55,7 +56,15 @@ impl Engine {
                 new_ver,
                 range,
                 self.opts.clone(),
+                &self.master_key,
             );
+            let new_del_prefixes = old_pending_ops.del_prefixes.build_split(
+                &new_shard.outer_start,
+                &new_shard.outer_end,
+                new_shard.inner_key_off,
+            );
+            // TODO: May not need to truncate ts on the new shard.
+            new_shard.pending_ops.write().unwrap().del_prefixes = Arc::new(new_del_prefixes);
             new_shard.parent_id = old_shard.id;
             {
                 let mut guard = new_shard.parent_snap.write().unwrap();
@@ -105,16 +114,8 @@ impl Engine {
                     new_cfs[cf].set_level(new_level);
                 }
             }
-            let new_del_prefixes = old_data.del_prefixes.build_split(
-                &new_shard.outer_start,
-                &new_shard.outer_end,
-                new_shard.inner_key_off,
-            );
             let new_data = ShardData::new(
                 new_shard.range.clone(),
-                new_del_prefixes,
-                old_data.truncate_ts, // TODO: maybe not necessary to truncate ts on the new shard.
-                old_data.trim_over_bound,
                 new_mem_tbls,
                 new_l0s,
                 Arc::new(new_blob_tbl_map),
@@ -228,6 +229,7 @@ impl Engine {
         self.prepare_update_shard_version(&old_shard, sequence);
         let mut new_shard = self.new_shard_version(&old_shard, sequence);
         let source_snap = source.get_snapshot();
+        // TODO: Do we need to merge pending operations here?
         new_shard.range.outer_start = min(
             old_shard.outer_start.clone(),
             source_snap.outer_start.clone().into(),
@@ -286,9 +288,6 @@ impl Engine {
         }
         let data = ShardData::new(
             new_shard.range.clone(),
-            old_data.del_prefixes.clone(),
-            old_data.truncate_ts,
-            old_data.trim_over_bound,
             mem_tbls,
             l0_tbls,
             Arc::new(blob_tbl_map),
@@ -322,6 +321,7 @@ impl Engine {
             old_shard.ver + 1,
             old_shard.range.clone(),
             old_shard.opt.clone(),
+            &self.master_key,
         );
         new_shard.set_data(old_shard.get_data());
         new_shard.set_active(old_shard.is_active());

@@ -19,6 +19,7 @@ use engine_traits::{Engines, KvEngine, Mutable, Peekable, RaftEngine, RaftLogBat
 use fail::fail_point;
 use into_other::into_other;
 use keys::{self, enc_end_key, enc_start_key};
+use kvengine::{get_shard_property, ENCRYPTION_KEY};
 use kvproto::{
     metapb::{self, Region},
     raft_serverpb::{
@@ -659,6 +660,8 @@ where
 
         assert!(change_set.has_snapshot());
         let inner_key_off = change_set.get_snapshot().get_inner_key_off();
+        let encryption_key =
+            get_shard_property(ENCRYPTION_KEY, change_set.get_snapshot().get_properties());
 
         if task.raft_wb.is_none() {
             task.raft_wb = Some(self.engines.raft.log_batch(64));
@@ -700,6 +703,12 @@ where
             CF_RAFT,
             &keys::region_inner_key_off_key(region_id),
             &inner_key_off.to_be_bytes(),
+        )?;
+
+        kv_wb.put_cf(
+            CF_RAFT,
+            &keys::region_encryption_key_key(region_id),
+            &encryption_key.unwrap_or(vec![]),
         )?;
 
         let snap_index = snap.get_metadata().get_index();
@@ -1075,6 +1084,7 @@ where
     box_try!(kv_wb.delete_cf(CF_RAFT, &keys::region_state_key(region_id)));
     box_try!(kv_wb.delete_cf(CF_RAFT, &keys::apply_state_key(region_id)));
     box_try!(kv_wb.delete_cf(CF_RAFT, &keys::region_inner_key_off_key(region_id)));
+    box_try!(kv_wb.delete_cf(CF_RAFT, &keys::region_encryption_key_key(region_id)));
     box_try!(
         engines
             .raft

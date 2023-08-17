@@ -82,7 +82,7 @@ impl Iterator for MergeIterator<'_> {
         self.fix();
     }
 
-    fn seek(&mut self, key: &[u8]) {
+    fn seek(&mut self, key: InnerKey<'_>) {
         self.smaller.iter.seek(key);
         self.smaller.reset();
         self.bigger.iter.seek(key);
@@ -90,7 +90,7 @@ impl Iterator for MergeIterator<'_> {
         self.fix();
     }
 
-    fn key(&self) -> &[u8] {
+    fn key(&self) -> InnerKey<'_> {
         self.smaller.iter.key()
     }
 
@@ -122,7 +122,7 @@ impl<'a> MergeIterator<'a> {
             return;
         }
         if self.smaller.valid {
-            match self.smaller.iter.key().cmp(self.bigger.iter.key()) {
+            match self.smaller.iter.key().cmp(&self.bigger.iter.key()) {
                 Equal => {
                     self.same_key = true;
                     if !self.smaller.is_first {

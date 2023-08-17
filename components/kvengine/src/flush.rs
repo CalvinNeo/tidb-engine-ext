@@ -1,8 +1,12 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    ops::Deref,
+};
 
 use bytes::BytesMut;
+use cloud_encryption::EncryptionKey;
 use fail::fail_point;
 use kvenginepb as pb;
 use slog_global::info;
@@ -13,7 +17,13 @@ use tikv_util::{
 };
 
 use crate::{
-    table::{memtable, memtable::CfTable, sstable, sstable::L0Builder, Iterator},
+    table::{
+        memtable,
+        memtable::CfTable,
+        sstable,
+        sstable::{L0Builder, L0Table, SsTable},
+        InnerKey, Iterator,
+    },
     *,
 };
 
@@ -29,6 +39,7 @@ pub(crate) struct FlushTask {
     pub(crate) range: ShardRange,
     pub(crate) normal: Option<memtable::CfTable>,
     pub(crate) initial: Option<InitialFlush>,
+    pub(crate) encryption_key: Option<EncryptionKey>,
 }
 
 impl FlushTask {
@@ -36,32 +47,34 @@ impl FlushTask {
         shard: &Shard,
         normal: Option<memtable::CfTable>,
         initial: Option<InitialFlush>,
+        encryption_key: Option<EncryptionKey>,
     ) -> Self {
         Self {
             id_ver: IdVer::new(shard.id, shard.ver),
             range: shard.range.clone(),
             normal,
             initial,
+            encryption_key,
         }
     }
 
-    pub(crate) fn inner_start(&self) -> &[u8] {
+    pub(crate) fn inner_start(&self) -> InnerKey<'_> {
         self.range.inner_start()
     }
 
-    pub(crate) fn inner_end(&self) -> &[u8] {
+    pub(crate) fn inner_end(&self) -> InnerKey<'_> {
         self.range.inner_end()
     }
 
     pub(crate) fn new_normal(shard: &Shard, mem_tbl: memtable::CfTable) -> Self {
-        Self::new(shard, Some(mem_tbl), None)
+        Self::new(shard, Some(mem_tbl), None, shard.encryption_key.clone())
     }
 
     pub(crate) fn new_initial(shard: &Shard, initial: InitialFlush) -> Self {
-        Self::new(shard, None, Some(initial))
+        Self::new(shard, None, Some(initial), shard.encryption_key.clone())
     }
 
-    pub(crate) fn overlap_table(&self, start_key: &[u8], end_key: &[u8]) -> bool {
+    pub(crate) fn overlap_table(&self, start_key: InnerKey<'_>, end_key: InnerKey<'_>) -> bool {
         self.inner_start() <= end_key && start_key < self.inner_end()
     }
 
@@ -80,6 +93,8 @@ pub(crate) struct InitialFlush {
     pub(crate) mem_tbls: Vec<memtable::CfTable>,
     pub(crate) base_version: u64,
     pub(crate) data_sequence: u64,
+    pub(crate) double_over_bound_l0s: Vec<L0Table>,
+    pub(crate) double_over_bound_tbls: Vec<SsTable>,
 }
 
 impl InitialFlush {
@@ -122,7 +137,12 @@ impl Engine {
         if let Some(props) = m.get_properties() {
             flush.set_properties(props);
         }
-        let l0_builder = self.build_l0_table(m, task.inner_start(), task.inner_end());
+        let l0_builder = self.build_l0_table(
+            m,
+            task.inner_start(),
+            task.inner_end(),
+            task.encryption_key.clone(),
+        );
         if l0_builder.is_empty() {
             return Ok(cs);
         }
@@ -161,6 +181,17 @@ impl Engine {
                 .max()
                 .unwrap_or(0),
         );
+        let mut discard_overbound_tables: HashSet<u64> = HashSet::new();
+        for l0 in &flush.double_over_bound_l0s {
+            if !l0.has_data_in_range(task.inner_start(), task.inner_end()) {
+                discard_overbound_tables.insert(l0.id());
+            }
+        }
+        for tbl in &flush.double_over_bound_tbls {
+            if !tbl.has_overlap(task.inner_start(), task.inner_end(), false) {
+                discard_overbound_tables.insert(tbl.id());
+            }
+        }
         let mut cs = new_change_set(task.id_ver.id, task.id_ver.ver);
         let initial_flush = cs.mut_initial_flush();
         initial_flush.set_outer_start(task.range.outer_start.to_vec());
@@ -170,23 +201,39 @@ impl Engine {
         initial_flush.set_data_sequence(flush.data_sequence);
         initial_flush.set_max_ts(max_ts);
         for tbl_create in flush.parent_snap.get_table_creates() {
-            if task.overlap_table(tbl_create.get_smallest(), tbl_create.get_biggest()) {
+            if task.overlap_table(
+                InnerKey::from_inner_buf(tbl_create.get_smallest()),
+                InnerKey::from_inner_buf(tbl_create.get_biggest()),
+            ) && !discard_overbound_tables.contains(&tbl_create.get_id())
+            {
                 initial_flush.mut_table_creates().push(tbl_create.clone());
             }
         }
         for l0_create in flush.parent_snap.get_l0_creates() {
-            if task.overlap_table(l0_create.get_smallest(), l0_create.get_biggest()) {
+            if task.overlap_table(
+                InnerKey::from_inner_buf(l0_create.get_smallest()),
+                InnerKey::from_inner_buf(l0_create.get_biggest()),
+            ) && !discard_overbound_tables.contains(&l0_create.get_id())
+            {
                 initial_flush.mut_l0_creates().push(l0_create.clone());
             }
         }
         for blob_create in flush.parent_snap.get_blob_creates() {
-            if task.overlap_table(blob_create.get_smallest(), blob_create.get_biggest()) {
+            if task.overlap_table(
+                InnerKey::from_inner_buf(blob_create.get_smallest()),
+                InnerKey::from_inner_buf(blob_create.get_biggest()),
+            ) {
                 initial_flush.mut_blob_creates().push(blob_create.clone());
             }
         }
         let mut builders = vec![];
         for m in &flush.mem_tbls {
-            let l0_builder = self.build_l0_table(m, task.inner_start(), task.inner_end());
+            let l0_builder = self.build_l0_table(
+                m,
+                task.inner_start(),
+                task.inner_end(),
+                task.encryption_key.clone(),
+            );
             builders.push(l0_builder);
         }
         let num_mem_tables = builders.len();
@@ -212,12 +259,19 @@ impl Engine {
         Err(errs.pop().unwrap())
     }
 
-    pub(crate) fn build_l0_table(&self, m: &CfTable, start: &[u8], end: &[u8]) -> L0Builder {
+    pub(crate) fn build_l0_table(
+        &self,
+        m: &CfTable,
+        start: InnerKey<'_>,
+        end: InnerKey<'_>,
+        encryption_key: Option<EncryptionKey>,
+    ) -> L0Builder {
         let sst_fid = self.id_allocator.alloc_id(1).unwrap().pop().unwrap();
         let mut l0_builder = sstable::L0Builder::new(
             sst_fid,
             self.opts.table_builder_options.block_size,
             m.get_version(),
+            encryption_key,
         );
         for cf in 0..NUM_CFS {
             let skl = m.get_cf(cf);
@@ -230,18 +284,19 @@ impl Engine {
             let mut prev_key = BytesMut::new();
             it.seek(start);
             while it.valid() {
-                if it.key() >= end {
+                let key = it.key();
+                if key >= end {
                     break;
                 }
-                if rc && prev_key == it.key() {
+                if rc && prev_key == key.deref() {
                     // For read committed CF, we can discard all the old
                     // versions.
                 } else {
                     let v = it.value();
-                    l0_builder.add(cf, it.key(), &v, None);
+                    l0_builder.add(cf, key, &v, None);
                     if rc {
                         prev_key.truncate(0);
-                        prev_key.extend_from_slice(it.key());
+                        prev_key.extend_from_slice(key.deref());
                     }
                 }
                 it.next_all_version();

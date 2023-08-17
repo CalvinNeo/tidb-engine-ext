@@ -4,7 +4,10 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use dyn_clone::DynClone;
 
-use crate::{table::sstable, *};
+use crate::{
+    table::{blobtable, sstable},
+    *,
+};
 
 // Options are params for creating Engine object.
 //
@@ -24,6 +27,8 @@ pub struct Options {
 
     pub table_builder_options: sstable::TableBuilderOptions,
 
+    pub blob_table_build_options: blobtable::builder::BlobTableBuildOptions,
+
     pub remote_compactor_addr: String,
 
     pub recovery_concurrency: usize,
@@ -34,17 +39,9 @@ pub struct Options {
 
     pub allow_fallback_local: bool,
 
-    pub min_blob_size: u32,
-
-    pub max_blob_table_size: usize,
-
     pub blob_table_gc_ratio: f64,
 
     pub blob_prefetch_size: usize,
-
-    // Target size of a blob table, if the estimated size of a blob table is smaller than this
-    // value, don't bother creating it.
-    pub blob_table_target_size: usize,
 
     pub max_del_range_delay: Duration,
 
@@ -52,6 +49,10 @@ pub struct Options {
 
     /// Indicate kvengine is used for restore or not.
     pub for_restore: bool,
+
+    pub enable_safe_point_v2: bool,
+
+    pub compaction_request_version: u32,
 }
 
 impl Default for Options {
@@ -62,19 +63,19 @@ impl Default for Options {
             max_block_cache_size: 0,
             num_compactors: 3,
             table_builder_options: Default::default(),
+            blob_table_build_options: Default::default(),
             remote_compactor_addr: Default::default(),
             recovery_concurrency: Default::default(),
             preparation_concurrency: Default::default(),
             max_mem_table_size: 96 << 20,
             allow_fallback_local: true,
-            min_blob_size: 0,
-            max_blob_table_size: 64 * 1024 * 1024,
             blob_table_gc_ratio: 0.5,
             blob_prefetch_size: 256 * 1024,
-            blob_table_target_size: 2 * 1024 * 1024,
             max_del_range_delay: Duration::from_secs(3600),
             enable_inner_key_offset: false,
             for_restore: false,
+            enable_safe_point_v2: false,
+            compaction_request_version: 2,
         }
     }
 }

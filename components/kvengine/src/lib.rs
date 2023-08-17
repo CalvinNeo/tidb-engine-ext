@@ -9,7 +9,7 @@ pub mod apply;
 pub mod compaction;
 mod concat_iterator;
 mod config;
-pub use config::Config as KvEngineConfig;
+pub use config::{Config as KvEngineConfig, PerKeyspaceConfig as KvEnginePerKeyspaceConfig};
 pub mod dfs;
 pub mod engine;
 pub mod engine_trait;
@@ -37,6 +37,7 @@ extern crate tikv_alloc;
 mod metrics;
 #[cfg(test)]
 mod tests;
+mod util;
 
 pub use apply::*;
 pub use compaction::*;
@@ -58,5 +59,5 @@ pub use table::table::Iterator;
 pub use write::*;
 
 const NUM_CFS: usize = 3;
-const CF_LEVELS: [usize; NUM_CFS] = [3, 2, 1];
+pub const CF_LEVELS: [usize; NUM_CFS] = [3, 2, 1];
 const CF_MANAGED: [bool; NUM_CFS] = [true, false, true];

@@ -12,6 +12,7 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes};
+use cloud_encryption::{EncryptionKey, MasterKey};
 use dashmap::DashMap;
 use kvenginepb as pb;
 use rand::Rng;
@@ -25,9 +26,30 @@ use crate::{
         memtable::{self, CfTable},
         search,
         sstable::{L0Table, SsTable},
+        InnerKey,
     },
+    util::evenly_distribute,
     Iterator as TableIterator, *,
 };
+
+#[derive(Clone)]
+pub(crate) struct ShardPendingOperations {
+    pub(crate) del_prefixes: Arc<DeletePrefixes>,
+    pub(crate) truncate_ts: Option<TruncateTs>,
+    pub(crate) trim_over_bound: bool,
+    pub(crate) manual_major_compaction: bool,
+}
+
+impl ShardPendingOperations {
+    fn new(inner_key_off: usize) -> Self {
+        Self {
+            del_prefixes: Arc::new(DeletePrefixes::new_with_inner_key_off(inner_key_off)),
+            truncate_ts: None,
+            trim_over_bound: false,
+            manual_major_compaction: false,
+        }
+    }
+}
 
 pub struct Shard {
     pub engine_id: u64,
@@ -42,7 +64,8 @@ pub struct Shard {
     pub(crate) active: AtomicBool,
 
     pub(crate) properties: Properties,
-    pub(crate) compacting: AtomicBool,
+    pub(crate) pending_ops: RwLock<ShardPendingOperations>,
+    pub(crate) compacting: AtomicBool, // for statistics only
     pub(crate) initial_flushed: AtomicBool,
 
     pub(crate) base_version: AtomicU64,
@@ -63,15 +86,22 @@ pub struct Shard {
     pub(crate) compaction_priority: RwLock<Option<CompactionPriority>>,
 
     pub(crate) parent_snap: RwLock<Option<pb::Snapshot>>,
+
+    pub(crate) encryption_key: Option<EncryptionKey>,
 }
 
 pub const INGEST_ID_KEY: &str = "_ingest_id";
 pub const DEL_PREFIXES_KEY: &str = "_del_prefixes";
 pub const TRUNCATE_TS_KEY: &str = "_truncate_ts";
+pub const ENCRYPTION_KEY: &str = "_encryption";
 
 pub const TRIM_OVER_BOUND: &str = "_trim_over_bound";
 pub const TRIM_OVER_BOUND_ENABLE: &[u8] = &[1];
 pub const TRIM_OVER_BOUND_DISABLE: &[u8] = b"";
+
+pub const MANUAL_MAJOR_COMPACTION: &str = "_manual_major_compaction";
+pub const MANUAL_MAJOR_COMPACTION_ENABLE: &[u8] = &[1];
+pub const MANUAL_MAJOR_COMPACTION_DISABLE: &[u8] = b"";
 
 impl Deref for Shard {
     type Target = ShardRange;
@@ -88,13 +118,17 @@ impl Shard {
         ver: u64,
         range: ShardRange,
         opt: Arc<Options>,
+        master_key: &MasterKey,
     ) -> Self {
+        let encryption_key = get_shard_property(ENCRYPTION_KEY, props)
+            .map(|v| master_key.decrypt_encryption_key(&v).unwrap());
         let shard = Self {
             engine_id,
             id: props.shard_id,
             ver,
             range: range.clone(),
             parent_id: 0,
+            pending_ops: RwLock::new(ShardPendingOperations::new(range.inner_key_off)),
             data: RwLock::new(ShardData::new_empty(range)),
             opt,
             active: Default::default(),
@@ -110,28 +144,46 @@ impl Shard {
             write_sequence: Default::default(),
             compaction_priority: RwLock::new(None),
             parent_snap: RwLock::new(None),
+            encryption_key,
         };
-        if let Some(val) = get_shard_property(DEL_PREFIXES_KEY, props) {
-            shard.set_del_prefix(&val);
-        }
-        if let Some(val) = get_shard_property(TRUNCATE_TS_KEY, props) {
-            // when load shard from Meta, the value maybe empty.
-            if !val.is_empty() {
-                shard.set_truncate_ts(&val);
+        {
+            let mut pending_ops = shard.pending_ops.write().unwrap();
+            if let Some(val) = get_shard_property(DEL_PREFIXES_KEY, props) {
+                let mut del_prefixes = DeletePrefixes::unmarshal(&val, shard.inner_key_off);
+                del_prefixes.schedule_at = shard.gen_rand_schedule_del_range_time();
+                pending_ops.del_prefixes = Arc::new(del_prefixes);
             }
-        }
-        if let Some(val) = get_shard_property(TRIM_OVER_BOUND, props) {
-            if !val.is_empty() {
-                shard.set_trim_over_bound(&val);
+            if let Some(val) = get_shard_property(TRUNCATE_TS_KEY, props) {
+                // when load shard from Meta, the value maybe empty.
+                if !val.is_empty() {
+                    pending_ops.truncate_ts = Some(TruncateTs::unmarshal(&val));
+                }
+            }
+            if let Some(val) = get_shard_property(TRIM_OVER_BOUND, props) {
+                if !val.is_empty() {
+                    pending_ops.trim_over_bound = true;
+                }
             }
         }
         shard
     }
 
-    pub fn new_for_ingest(engine_id: u64, cs: &pb::ChangeSet, opt: Arc<Options>) -> Self {
+    pub fn new_for_ingest(
+        engine_id: u64,
+        cs: &pb::ChangeSet,
+        opt: Arc<Options>,
+        master_key: &MasterKey,
+    ) -> Self {
         let snap = cs.get_snapshot();
         let range = ShardRange::from_snap(snap);
-        let mut shard = Self::new(engine_id, snap.get_properties(), cs.shard_ver, range, opt);
+        let mut shard = Self::new(
+            engine_id,
+            snap.get_properties(),
+            cs.shard_ver,
+            range,
+            opt,
+            master_key,
+        );
         if !cs.has_parent() {
             store_bool(&shard.initial_flushed, true);
         } else {
@@ -199,160 +251,137 @@ impl Shard {
         now + delay
     }
 
-    pub(crate) fn set_del_prefix(&self, val: &[u8]) {
-        let mut del_prefixes = DeletePrefixes::unmarshal(val, self.inner_key_off);
+    pub(crate) fn merge_del_prefix(&self, val: &[u8]) {
+        let mut pending_ops = self.pending_ops.write().unwrap();
+        let mut del_prefixes = (*pending_ops.del_prefixes).merge(val);
         del_prefixes.schedule_at = self.gen_rand_schedule_del_range_time();
-        let data = self.get_data();
-        let new_data = ShardData::new(
-            data.range.clone(),
-            del_prefixes,
-            data.truncate_ts,
-            data.trim_over_bound,
-            data.mem_tbls.clone(),
-            data.l0_tbls.clone(),
-            data.blob_tbl_map.clone(),
-            data.cfs.clone(),
-            data.unloaded_tbls.clone(),
-        );
-        self.set_data(new_data);
-    }
-
-    pub(crate) fn merge_del_prefix(&self, prefix: &[u8]) {
-        let data = self.get_data();
-        let mut del_prefixes = data.del_prefixes.merge(prefix);
-        del_prefixes.schedule_at = self.gen_rand_schedule_del_range_time();
-        let new_data = ShardData::new(
-            data.range.clone(),
-            del_prefixes,
-            data.truncate_ts,
-            data.trim_over_bound,
-            data.mem_tbls.clone(),
-            data.l0_tbls.clone(),
-            data.blob_tbl_map.clone(),
-            data.cfs.clone(),
-            data.unloaded_tbls.clone(),
-        );
-        self.set_data(new_data);
+        pending_ops.del_prefixes = Arc::new(del_prefixes);
     }
 
     pub(crate) fn set_truncate_ts(&self, val: &[u8]) -> bool {
+        let mut pending_ops = self.pending_ops.write().unwrap();
         let truncate_ts = TruncateTs::unmarshal(val);
-        let data = self.get_data();
-        if let Some(curr_truncate_ts) = data.truncate_ts {
+        if let Some(curr_truncate_ts) = pending_ops.truncate_ts {
             if curr_truncate_ts <= truncate_ts {
-                warn!("ignore another PiTR before the current one has completed";
-                    "current truncated_ts" => ?curr_truncate_ts, "incoming truncated_ts" => ?truncate_ts,
-                    "shard" => ?self.tag());
+                warn!("ignore another PiTR before the current one has completed"; "current truncated_ts" => ?curr_truncate_ts, "incoming truncated_ts" => ?truncate_ts, "shard" => ?self.tag());
                 return false;
             } else {
-                warn!("overwrite truncate_ts";
-                    "current truncated_ts" => ?curr_truncate_ts, "incoming truncated_ts" => ?truncate_ts,
-                    "shard" => ?self.tag());
+                warn!("overwrite truncate_ts";"current truncated_ts" => ?curr_truncate_ts, "incoming truncated_ts" => ?truncate_ts, "shard" => ?self.tag());
+                pending_ops.truncate_ts = Some(truncate_ts);
             }
+        } else {
+            pending_ops.truncate_ts = Some(truncate_ts);
         }
-
-        let new_data = ShardData::new(
-            data.range.clone(),
-            data.del_prefixes.clone(),
-            Some(truncate_ts),
-            data.trim_over_bound,
-            data.mem_tbls.clone(),
-            data.l0_tbls.clone(),
-            data.blob_tbl_map.clone(),
-            data.cfs.clone(),
-            data.unloaded_tbls.clone(),
-        );
-        self.set_data(new_data);
-
-        info!("ready to truncate ts"; "truncate_ts" => ?truncate_ts, "shard" => ?self.tag());
         true
     }
 
-    pub(crate) fn set_trim_over_bound(&self, val: &[u8]) {
-        let trim_over_bound = !val.is_empty();
-
-        let data = self.get_data();
-        let new_data = ShardData::new(
-            data.range.clone(),
-            data.del_prefixes.clone(),
-            data.truncate_ts,
-            trim_over_bound,
-            data.mem_tbls.clone(),
-            data.l0_tbls.clone(),
-            data.blob_tbl_map.clone(),
-            data.cfs.clone(),
-            data.unloaded_tbls.clone(),
-        );
-        self.set_data(new_data);
-
-        if trim_over_bound {
-            info!("{} ready to trim_over_bound", self.tag());
+    pub(crate) fn set_trim_over_bound(&self, val: &[u8]) -> bool {
+        let mut pending_ops = self.pending_ops.write().unwrap();
+        if !val.is_empty() {
+            pending_ops.trim_over_bound = true;
+            return true;
         }
+        false
     }
 
+    pub(crate) fn set_manual_major_compaction(&self, val: &[u8]) -> bool {
+        let mut pending_ops = self.pending_ops.write().unwrap();
+        if !val.is_empty() {
+            pending_ops.manual_major_compaction = true;
+            return true;
+        }
+        pending_ops.manual_major_compaction = false;
+        false
+    }
+
+    /// Get suggest key for region split.
     pub fn get_suggest_split_key(&self) -> Option<Bytes> {
         let data = self.get_data();
-        let max_level = data
-            .get_cf(0)
-            .levels
-            .iter()
-            .max_by_key(|level| level.tables.len())?;
-        if max_level.tables.len() == 0 {
+        let (max_level, left, right) = data.get_max_level_by_overlapping_tables_count()?;
+        let tables = &max_level.tables.as_slice()[left..right];
+        if tables.is_empty() {
             return None;
         }
-        if max_level.tables.len() == 1 {
-            if let Some(key) = max_level.tables[0].get_suggest_split_key() {
-                return Some([self.key_prefix(), key.to_vec().as_slice()].concat().into());
+        // Split on block boundaries only when there is one table.
+        // As split on table boundaries would have lower cost for trim over bound data.
+        if tables.len() == 1 {
+            if let Some(inner_key) =
+                tables[0].get_suggest_split_key(Some(data.inner_start()), Some(data.inner_end()))
+            {
+                return Some(
+                    [self.key_prefix(), inner_key.to_vec().as_slice()]
+                        .concat()
+                        .into(),
+                );
             }
             return None;
         }
-        let tbl_idx = max_level.tables.len() * 2 / 3;
+        let tbl_idx = tables.len() * 2 / 3;
         Some(
-            [self.key_prefix(), max_level.tables[tbl_idx].smallest()]
+            [self.key_prefix(), tables[tbl_idx].smallest().deref()]
                 .concat()
                 .into(),
         )
     }
 
+    /// Get evenly split keys, mainly for acquiring bucket keys.
     pub fn get_evenly_split_keys(&self, count: usize) -> Option<Vec<Bytes>> {
         if count <= 1 {
             return None;
         }
+
+        // Get tables in shard range.
         let data = self.get_data();
-        let max_level = data
-            .get_cf(0)
-            .levels
-            .iter()
-            .max_by_key(|level| level.tables.len())?;
-        if max_level.tables.len() <= 1 {
+        let (max_level, left, right) = data.get_max_level_by_overlapping_tables_count()?;
+        let tables = &max_level.tables.as_slice()[left..right];
+        if tables.is_empty() {
             return None;
         }
 
-        let step = (max_level.tables.len() / count).max(1);
-        Some(
-            max_level
-                .tables
-                .iter()
-                .step_by(step)
-                .skip(1)
-                .filter_map(|tbl| {
-                    (self.overlap_key(tbl.smallest()))
-                        .then(|| [self.key_prefix(), tbl.smallest()].concat().into())
-                })
-                .collect(),
-        )
+        // Split at block boundaries when there are not enough tables.
+        if tables.len() < count {
+            let mut inner_keys = Vec::with_capacity(count);
+            let counts_in_table = evenly_distribute(count, tables.len());
+            debug_assert_eq!(counts_in_table.len(), tables.len());
+            for (i, (tbl, count_in_table)) in tables.iter().zip(counts_in_table).enumerate() {
+                let start = (i == 0).then_some(data.inner_start());
+                let end = (i == tables.len() - 1).then_some(data.inner_end());
+                inner_keys.extend(tbl.get_evenly_split_keys(start, end, count_in_table));
+            }
+            return Some(
+                inner_keys
+                    .into_iter()
+                    .skip(1)
+                    .map(|inner_key| [self.key_prefix(), inner_key.deref()].concat().into())
+                    .collect(),
+            );
+        }
+
+        // Split at table boundaries.
+        let steps = evenly_distribute(tables.len(), count);
+        let mut split_keys = Vec::with_capacity(count - 1);
+        let mut tbl_idx = steps[0];
+        for step in steps.into_iter().skip(1) {
+            let tbl = &tables[tbl_idx];
+            let split_key = [self.key_prefix(), tbl.smallest().deref()].concat().into();
+            split_keys.push(split_key);
+
+            tbl_idx += step;
+        }
+        Some(split_keys)
     }
 
-    pub(crate) fn overlap_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+    pub(crate) fn overlap_table(&self, smallest: InnerKey<'_>, biggest: InnerKey<'_>) -> bool {
         self.inner_start() <= biggest && smallest < self.inner_end()
     }
 
-    pub(crate) fn cover_full_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+    pub(crate) fn cover_full_table(&self, smallest: InnerKey<'_>, biggest: InnerKey<'_>) -> bool {
         self.inner_start() <= smallest && biggest < self.inner_end()
     }
 
-    pub(crate) fn overlap_key(&self, key: &[u8]) -> bool {
-        self.inner_start() <= key && key < self.inner_end()
+    #[cfg(test)]
+    pub(crate) fn overlap_key(&self, inner_key: InnerKey<'_>) -> bool {
+        self.inner_start() <= inner_key && inner_key < self.inner_end()
     }
 
     pub fn get_property(&self, key: &str) -> Option<Bytes> {
@@ -419,8 +448,51 @@ impl Shard {
         self.initial_flushed.load(Acquire)
     }
 
+    pub(crate) fn ready_to_destroy_range(
+        del_prefixes: &DeletePrefixes,
+        shard_data: &ShardData,
+    ) -> bool {
+        !del_prefixes.is_empty() && del_prefixes.after_scheduled_time()
+        // No memtable contains data covered by deleted prefixes.
+        && !shard_data.mem_tbls.iter().any(|mem_tbl| {
+            del_prefixes
+                .inner_delete_ranges()
+                .any(|(start, end)| mem_tbl.has_data_in_range(start, end))
+        })
+    }
+
+    fn ready_to_truncate_ts(truncate_ts: &Option<TruncateTs>, shard_data: &ShardData) -> bool {
+        truncate_ts.is_some()
+        // No memtable contains data with version > truncate_ts.
+        && !shard_data.mem_tbls.iter().any(|mem_tbl| {
+            mem_tbl.data_max_ts() > truncate_ts.unwrap().inner()
+        })
+    }
+
+    fn ready_to_trim_over_bound(trim_over_bound: bool, shard_data: &ShardData) -> bool {
+        trim_over_bound && !shard_data.has_mem_over_bound_data()
+    }
+
     fn refresh_compaction_priority(&self) {
         let data = self.get_data();
+        let pending_ops = self.pending_ops.read().unwrap();
+
+        if Self::ready_to_destroy_range(&pending_ops.del_prefixes, &data) {
+            *self.compaction_priority.write().unwrap() = Some(CompactionPriority::DestroyRange);
+            return;
+        } else if Self::ready_to_truncate_ts(&pending_ops.truncate_ts, &data) {
+            *self.compaction_priority.write().unwrap() = Some(CompactionPriority::TruncateTs);
+            return;
+        } else if Self::ready_to_trim_over_bound(pending_ops.trim_over_bound, &data) {
+            *self.compaction_priority.write().unwrap() = Some(CompactionPriority::TrimOverBound);
+            return;
+        } else if pending_ops.manual_major_compaction {
+            // Set major compaction priority to 2.0 to make it less likely to be picked up
+            // when there are other shards waiting to be compacted.
+            *self.compaction_priority.write().unwrap() =
+                Some(CompactionPriority::Major { score: 2.0 });
+            return;
+        }
         if !data.blob_tbl_map.is_empty() {
             let blob_table_utilization = {
                 let mut in_use_blob_size = 0;
@@ -447,7 +519,7 @@ impl Shard {
             };
             if blob_table_utilization < self.opt.blob_table_gc_ratio {
                 let mut lock = self.compaction_priority.write().unwrap();
-                *lock = Some(CompactionPriority::Major);
+                *lock = Some(CompactionPriority::Major { score: f64::MAX });
                 return;
             }
         }
@@ -493,7 +565,16 @@ impl Shard {
             };
             Some(max_pri)
         } else {
-            None
+            let handle_priority_none = || -> Option<CompactionPriority> {
+                if !data.l0_tbls.is_empty() {
+                    // Trigger L0 compaction for test purpose.
+                    fail::fail_point!("refresh_compaction_priority_for_l0", |_| {
+                        Some(CompactionPriority::L0 { score: 2.0 })
+                    });
+                }
+                None
+            };
+            handle_priority_none()
         };
         let mut lock = self.compaction_priority.write().unwrap();
         *lock = priority;
@@ -526,7 +607,19 @@ impl Shard {
     }
 
     pub fn get_trim_over_bound(&self) -> bool {
-        self.get_data().trim_over_bound
+        self.pending_ops.read().unwrap().trim_over_bound
+    }
+
+    pub fn get_del_prefixes(&self) -> Arc<DeletePrefixes> {
+        self.pending_ops.read().unwrap().del_prefixes.clone()
+    }
+
+    pub fn get_truncate_ts(&self) -> Option<TruncateTs> {
+        self.pending_ops.read().unwrap().truncate_ts
+    }
+
+    pub fn get_manual_major_compaction(&self) -> bool {
+        self.pending_ops.read().unwrap().manual_major_compaction
     }
 
     pub fn data_all_persisted(&self) -> bool {
@@ -538,13 +631,7 @@ impl Shard {
     }
 
     pub(crate) fn ready_to_compact(&self) -> bool {
-        let data = self.get_data();
-        self.is_active()
-            && self.get_initial_flushed()
-            && (self.get_compaction_priority().is_some()
-                || data.ready_to_destroy_range()
-                || data.ready_to_truncate_ts()
-                || data.ready_to_trim_over_bound())
+        self.is_active() && self.get_initial_flushed()
     }
 
     pub(crate) fn add_parent_mem_tbls(&self, parent: Arc<Shard>) {
@@ -555,9 +642,6 @@ impl Shard {
         info!("{} add parent mem-tables {:?}", self.tag(), mem_tbl_vers);
         let new_data = ShardData::new(
             shard_data.range.clone(),
-            shard_data.del_prefixes.clone(),
-            shard_data.truncate_ts,
-            shard_data.trim_over_bound,
             mem_tbls,
             shard_data.l0_tbls.clone(),
             shard_data.blob_tbl_map.clone(),
@@ -567,15 +651,12 @@ impl Shard {
         self.set_data(new_data);
     }
 
-    pub(crate) fn inner_start(&self) -> &[u8] {
-        &self.outer_start[self.inner_key_off..]
+    pub(crate) fn inner_start(&self) -> InnerKey<'_> {
+        InnerKey::from_outer_key(&self.outer_start, self.inner_key_off)
     }
 
-    pub(crate) fn inner_end(&self) -> &[u8] {
-        if self.inner_key_off == self.outer_end.len() {
-            return GLOBAL_SHARD_END_KEY;
-        }
-        &self.outer_end[self.inner_key_off..]
+    pub(crate) fn inner_end(&self) -> InnerKey<'_> {
+        InnerKey::from_outer_end_key(&self.outer_end, self.inner_key_off)
     }
 
     pub(crate) fn key_prefix(&self) -> &[u8] {
@@ -601,12 +682,8 @@ impl Deref for ShardData {
 
 impl ShardData {
     pub(crate) fn new_empty(shard_range: ShardRange) -> Self {
-        let inner_key_off = shard_range.inner_key_off;
         Self::new(
             shard_range,
-            DeletePrefixes::new_with_inner_key_off(inner_key_off),
-            None,
-            false,
             vec![CfTable::new()],
             vec![],
             Arc::new(HashMap::new()),
@@ -617,9 +694,6 @@ impl ShardData {
 
     pub(crate) fn new(
         range: ShardRange,
-        del_prefixes: DeletePrefixes,
-        truncate_ts: Option<TruncateTs>,
-        trim_over_bound: bool,
         mem_tbls: Vec<memtable::CfTable>,
         l0_tbls: Vec<L0Table>,
         blob_tbl_map: Arc<HashMap<u64, BlobTable>>,
@@ -631,9 +705,6 @@ impl ShardData {
         Self {
             core: Arc::new(ShardDataCore {
                 range,
-                del_prefixes,
-                truncate_ts,
-                trim_over_bound,
                 mem_tbls,
                 l0_tbls,
                 blob_tbl_map,
@@ -646,9 +717,6 @@ impl ShardData {
 
 pub(crate) struct ShardDataCore {
     pub(crate) range: ShardRange,
-    pub(crate) del_prefixes: DeletePrefixes,
-    pub(crate) truncate_ts: Option<TruncateTs>,
-    pub(crate) trim_over_bound: bool,
     pub(crate) mem_tbls: Vec<memtable::CfTable>,
     pub(crate) l0_tbls: Vec<L0Table>,
     pub(crate) blob_tbl_map: Arc<HashMap<u64, BlobTable>>,
@@ -749,7 +817,7 @@ impl ShardDataCore {
             (0, 0, 0, 0, 0);
         level.tables.iter().enumerate().for_each(|(i, tbl)| {
             if self.is_over_bound_table(level, i, tbl) {
-                total_size += tbl.size() / 2;
+                total_size += tbl.estimated_size_in_range(self.inner_start(), self.inner_end());
                 total_blob_size += tbl.in_use_total_blob_size / 2;
                 total_entries += tbl.entries as u64 / 2;
                 total_kv_size += tbl.kv_size / 2;
@@ -775,29 +843,12 @@ impl ShardDataCore {
         is_bound && !self.cover_full_table(tbl.smallest(), tbl.biggest())
     }
 
-    pub(crate) fn cover_full_table(&self, smallest: &[u8], biggest: &[u8]) -> bool {
+    pub(crate) fn cover_full_table(&self, smallest: InnerKey<'_>, biggest: InnerKey<'_>) -> bool {
         self.inner_start() <= smallest && biggest < self.inner_end()
     }
 
     pub fn all_presisted(&self) -> bool {
         self.mem_tbls.len() == 1 && self.mem_tbls[0].size() == 0
-    }
-
-    pub fn writable_mem_table_has_data_in_deleted_prefix(&self) -> bool {
-        let mem_tbl = self.get_writable_mem_table();
-        self.del_prefixes
-            .inner_delete_ranges()
-            .any(|(start, end)| mem_tbl.has_data_in_range(start, end))
-    }
-
-    pub fn ready_to_destroy_range(&self) -> bool {
-        !self.del_prefixes.is_empty() && self.del_prefixes.after_scheduled_time()
-            // No memtable contains data covered by deleted prefixes.
-            && !self.mem_tbls.iter().any(|mem_tbl| {
-                self.del_prefixes
-                    .inner_delete_ranges()
-                    .any(|(start, end)| mem_tbl.has_data_in_range(start, end))
-            })
     }
 
     pub(crate) fn has_mem_over_bound_data(&self) -> bool {
@@ -811,7 +862,7 @@ impl ShardDataCore {
                 }
                 let mut rev_iter = skl.new_iterator(true);
                 rev_iter.rewind();
-                if iter.valid() && iter.key() >= self.inner_end() {
+                if rev_iter.valid() && rev_iter.key() >= self.inner_end() {
                     return true;
                 }
             }
@@ -828,7 +879,7 @@ impl ShardDataCore {
         for cf in 0..NUM_CFS {
             let scf = &self.cfs[cf];
             for level in &scf.levels {
-                if level.has_over_bound_data(self.inner_start().chunk(), self.inner_end().chunk()) {
+                if level.has_over_bound_data(self.inner_start(), self.inner_end()) {
                     return true;
                 }
             }
@@ -840,21 +891,24 @@ impl ShardDataCore {
         self.has_mem_over_bound_data() || self.has_file_over_bound_data()
     }
 
-    pub fn writable_mem_table_need_truncate_ts(&self) -> bool {
-        let mem_tbl = self.get_writable_mem_table();
-        mem_tbl.data_max_ts() > self.truncate_ts.unwrap().inner()
-    }
-
-    pub fn ready_to_truncate_ts(&self) -> bool {
-        self.truncate_ts.is_some()
-        // No memtable contains data with version > truncate_ts.
-        && !self.mem_tbls.iter().any(|mem_tbl| {
-            mem_tbl.data_max_ts() > self.truncate_ts.unwrap().inner()
-        })
-    }
-
-    pub fn ready_to_trim_over_bound(&self) -> bool {
-        self.trim_over_bound && !self.has_mem_over_bound_data()
+    /// Get max level by count of overlapping tables.
+    /// Return level and range of the overlapping tables.
+    pub fn get_max_level_by_overlapping_tables_count(
+        &self,
+    ) -> Option<(
+        &LevelHandler,
+        usize, // left table index in shard range
+        usize, // exclusive right table index in shard range
+    )> {
+        self.get_cf(0)
+            .levels
+            .iter()
+            .map(|level| {
+                let (left, right) =
+                    level.overlapping_tables_exclusive_end(self.inner_start(), self.inner_end());
+                (level, left, right)
+            })
+            .max_by_key(|(_, left, right)| right - left)
     }
 }
 
@@ -912,7 +966,7 @@ impl LevelHandlerBuilder {
 
     fn build(&mut self, level: usize) -> LevelHandler {
         let mut tables = self.tables.take().unwrap();
-        tables.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+        tables.sort_by(|a, b| a.smallest().cmp(&b.smallest()));
         LevelHandler::new(level, tables)
     }
 
@@ -971,16 +1025,24 @@ impl LevelHandler {
     }
 
     pub(crate) fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
-        get_tables_in_range(
-            &self.tables,
-            key_range.left.chunk(),
-            key_range.right.chunk(),
-        )
+        get_tables_in_range(&self.tables, key_range.left_key(), key_range.right_key())
+    }
+
+    pub(crate) fn overlapping_tables_exclusive_end(
+        &self,
+        start: InnerKey<'_>,
+        exclusive_end: InnerKey<'_>,
+    ) -> (usize, usize) {
+        let left = search(self.tables.len(), |i| start <= self.tables[i].biggest());
+        let right = search(self.tables.len(), |i| {
+            exclusive_end <= self.tables[i].smallest()
+        });
+        (left, right)
     }
 
     pub fn get(
         &self,
-        key: &[u8],
+        key: InnerKey<'_>,
         version: u64,
         key_hash: u64,
         out_val_owner: &mut Vec<u8>,
@@ -990,7 +1052,7 @@ impl LevelHandler {
 
     fn get_in_table(
         &self,
-        key: &[u8],
+        key: InnerKey<'_>,
         version: u64,
         key_hash: u64,
         tbl: Option<&SsTable>,
@@ -1003,7 +1065,8 @@ impl LevelHandler {
             .get(key, version, key_hash, out_val_owner, self.level)
     }
 
-    pub(crate) fn get_table(&self, key: &[u8]) -> Option<&SsTable> {
+    // Note: the `key` may be on the left outside the returned sstable.
+    pub(crate) fn get_table(&self, key: InnerKey<'_>) -> Option<&SsTable> {
         let idx = search(self.tables.len(), |i| self.tables[i].biggest() >= key);
         if idx >= self.tables.len() {
             return None;
@@ -1050,7 +1113,7 @@ impl LevelHandler {
 
     pub(crate) fn get_newer(
         &self,
-        key: &[u8],
+        key: InnerKey<'_>,
         version: u64,
         key_hash: u64,
         out_val_owner: &mut Vec<u8>,
@@ -1064,7 +1127,7 @@ impl LevelHandler {
         table::Value::new()
     }
 
-    pub(crate) fn has_over_bound_data(&self, start: &[u8], end: &[u8]) -> bool {
+    pub(crate) fn has_over_bound_data(&self, start: InnerKey<'_>, end: InnerKey<'_>) -> bool {
         if self.tables.is_empty() {
             return false;
         }
@@ -1277,44 +1340,44 @@ impl DeletePrefixes {
         }
     }
 
-    pub(crate) fn cover_prefix(&self, inner_prefix: &[u8]) -> bool {
+    pub(crate) fn cover_prefix(&self, inner_prefix: InnerKey<'_>) -> bool {
         let inner_key_off = self.inner_key_off;
         self.prefixes.iter().any(|p| {
             if inner_key_off >= p.len() {
                 return true;
             }
-            let inner_p = &p[inner_key_off..];
-            inner_prefix.starts_with(inner_p)
+            let inner_p = InnerKey::from_outer_key(p, inner_key_off);
+            inner_prefix.starts_with(inner_p.deref())
         })
     }
 
-    pub(crate) fn cover_range(&self, inner_start: &[u8], inner_end: &[u8]) -> bool {
+    pub(crate) fn cover_range(&self, inner_start: InnerKey<'_>, inner_end: InnerKey<'_>) -> bool {
         let inner_key_off = self.inner_key_off;
         self.prefixes.iter().any(|p| {
             if inner_key_off >= p.len() {
                 return true;
             }
-            let inner_p = &p[inner_key_off..];
-            inner_start.starts_with(inner_p) && inner_end.starts_with(inner_p)
+            let inner_p = InnerKey::from_outer_key(p, inner_key_off);
+            inner_start.starts_with(inner_p.deref()) && inner_end.starts_with(inner_p.deref())
         })
     }
 
-    pub(crate) fn inner_delete_ranges(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+    pub(crate) fn inner_delete_ranges(&self) -> impl Iterator<Item = (InnerKey<'_>, InnerKey<'_>)> {
         let inner_key_off = self.inner_key_off;
         self.prefixes
             .iter()
             .map(move |p| {
                 if inner_key_off >= p.len() {
-                    &[]
+                    InnerKey::from_inner_buf(&[])
                 } else {
-                    &p[inner_key_off..]
+                    InnerKey::from_outer_key(p, inner_key_off)
                 }
             })
             .zip(self.prefixes_nexts.iter().map(move |p| {
                 if inner_key_off >= p.len() {
-                    GLOBAL_SHARD_END_KEY
+                    InnerKey::from_inner_buf(GLOBAL_SHARD_END_KEY)
                 } else {
-                    &p[inner_key_off..]
+                    InnerKey::from_outer_end_key(p, inner_key_off)
                 }
             }))
     }
@@ -1377,15 +1440,12 @@ impl ShardRange {
         )
     }
 
-    pub fn inner_start(&self) -> &[u8] {
-        &self.outer_start[self.inner_key_off..]
+    pub fn inner_start(&self) -> InnerKey<'_> {
+        InnerKey::from_outer_key(&self.outer_start, self.inner_key_off)
     }
 
-    pub fn inner_end(&self) -> &[u8] {
-        if self.inner_key_off == self.outer_end.len() {
-            return GLOBAL_SHARD_END_KEY;
-        }
-        &self.outer_end[self.inner_key_off..]
+    pub fn inner_end(&self) -> InnerKey<'_> {
+        InnerKey::from_outer_end_key(&self.outer_end, self.inner_key_off)
     }
 
     pub(crate) fn prefix(&self) -> &[u8] {
@@ -1409,7 +1469,7 @@ mod tests {
                 assert!(del_prefix.inner_delete_ranges().all(|(p, p_n)| {
                     let mut p_c = p.to_vec();
                     tidb_query_common::util::convert_to_prefix_next(&mut p_c);
-                    p_c == p_n
+                    p_c == p_n.deref()
                 }));
             };
 
@@ -1421,11 +1481,11 @@ mod tests {
             assert_eq!(del_prefix.prefixes.len(), 1);
             assert_prefix_invariant(&del_prefix);
             for prefix in ["00001010", "0000101"] {
-                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                let inner_prefix = InnerKey::from_outer_key(prefix.as_bytes(), inner_key_off);
                 assert!(del_prefix.cover_prefix(inner_prefix));
             }
             for prefix in ["000010", "0000103"] {
-                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                let inner_prefix = InnerKey::from_outer_key(prefix.as_bytes(), inner_key_off);
                 assert!(!del_prefix.cover_prefix(inner_prefix));
             }
 
@@ -1436,11 +1496,11 @@ mod tests {
             assert_prefix_invariant(&del_prefix);
             assert_eq!(del_prefix.prefixes.len(), 2);
             for prefix in ["00001010", "0000101", "00001050", "0000105"] {
-                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                let inner_prefix = InnerKey::from_outer_key(prefix.as_bytes(), inner_key_off);
                 assert!(del_prefix.cover_prefix(inner_prefix));
             }
             for prefix in ["000010", "0000103"] {
-                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                let inner_prefix = InnerKey::from_outer_key(prefix.as_bytes(), inner_key_off);
                 assert!(!del_prefix.cover_prefix(inner_prefix));
             }
 
@@ -1448,11 +1508,11 @@ mod tests {
             assert_prefix_invariant(&del_prefix);
             assert_eq!(del_prefix.prefixes.len(), 1);
             for prefix in ["000010", "0000101", "0000103", "0000104"] {
-                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                let inner_prefix = InnerKey::from_outer_key(prefix.as_bytes(), inner_key_off);
                 assert!(del_prefix.cover_prefix(inner_prefix));
             }
             for prefix in ["00001", "000011"] {
-                let inner_prefix = &prefix.as_bytes()[inner_key_off..];
+                let inner_prefix = InnerKey::from_outer_key(prefix.as_bytes(), inner_key_off);
                 assert!(!del_prefix.cover_prefix(inner_prefix));
             }
 
@@ -1461,8 +1521,8 @@ mod tests {
             del_prefix = del_prefix.merge("0000102".as_bytes());
             assert_prefix_invariant(&del_prefix);
             for (start, end) in [("0000101", "00001011"), ("0000102", "00001022")] {
-                let inner_start = &start.as_bytes()[inner_key_off..];
-                let inner_end = &end.as_bytes()[inner_key_off..];
+                let inner_start = InnerKey::from_outer_key(start.as_bytes(), inner_key_off);
+                let inner_end = InnerKey::from_outer_key(end.as_bytes(), inner_key_off);
                 assert!(del_prefix.cover_range(inner_start, inner_end));
             }
             for (start, end) in [
@@ -1470,8 +1530,8 @@ mod tests {
                 ("0000101", "0000102"),
                 ("0000102", "0000103"),
             ] {
-                let inner_start = &start.as_bytes()[inner_key_off..];
-                let inner_end = &end.as_bytes()[inner_key_off..];
+                let inner_start = InnerKey::from_outer_key(start.as_bytes(), inner_key_off);
+                let inner_end = InnerKey::from_outer_key(end.as_bytes(), inner_key_off);
                 assert!(!del_prefix.cover_range(inner_start, inner_end));
             }
 
@@ -1513,9 +1573,18 @@ mod tests {
             );
             assert_prefix_invariant(&del_prefix);
             assert_eq!(del_prefix.prefixes.len(), 2);
-            assert!(!del_prefix.cover_prefix(&"0000100".as_bytes()[inner_key_off..]));
-            assert!(del_prefix.cover_prefix(&"0000200".as_bytes()[inner_key_off..]));
-            assert!(del_prefix.cover_prefix(&"0000300".as_bytes()[inner_key_off..]));
+            assert!(!del_prefix.cover_prefix(InnerKey::from_outer_key(
+                "0000100".as_bytes(),
+                inner_key_off
+            )));
+            assert!(del_prefix.cover_prefix(InnerKey::from_outer_key(
+                "0000200".as_bytes(),
+                inner_key_off
+            )));
+            assert!(del_prefix.cover_prefix(InnerKey::from_outer_key(
+                "0000300".as_bytes(),
+                inner_key_off
+            )));
             del_prefix = del_prefix.split(
                 &DeletePrefixes::new_with_inner_key_off(inner_key_off)
                     .merge("0000200".as_bytes())
@@ -1523,9 +1592,18 @@ mod tests {
             );
             assert_prefix_invariant(&del_prefix);
             assert_eq!(del_prefix.prefixes.len(), 0);
-            assert!(!del_prefix.cover_prefix(&"0000100".as_bytes()[inner_key_off..]));
-            assert!(!del_prefix.cover_prefix(&"0000200".as_bytes()[inner_key_off..]));
-            assert!(!del_prefix.cover_prefix(&"0000300".as_bytes()[inner_key_off..]));
+            assert!(!del_prefix.cover_prefix(InnerKey::from_outer_key(
+                "0000100".as_bytes(),
+                inner_key_off
+            )));
+            assert!(!del_prefix.cover_prefix(InnerKey::from_outer_key(
+                "0000200".as_bytes(),
+                inner_key_off
+            )));
+            assert!(!del_prefix.cover_prefix(InnerKey::from_outer_key(
+                "0000300".as_bytes(),
+                inner_key_off
+            )));
         }
     }
 

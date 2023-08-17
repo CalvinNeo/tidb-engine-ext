@@ -11,7 +11,7 @@ use std::{
 };
 
 use super::{Arena, SkipList};
-use crate::{Iterator, EXTRA_CF, NUM_CFS, WRITE_CF};
+use crate::{table::InnerKey, Iterator, EXTRA_CF, NUM_CFS, WRITE_CF};
 
 #[derive(Clone)]
 pub struct CfTable {
@@ -119,7 +119,7 @@ impl CfTableCore {
         self.ver.load(Ordering::Acquire)
     }
 
-    pub fn has_data_in_range(&self, start: &[u8], end: &[u8]) -> bool {
+    pub fn has_data_in_range(&self, start: InnerKey<'_>, end: InnerKey<'_>) -> bool {
         if self.is_empty() {
             return false;
         }

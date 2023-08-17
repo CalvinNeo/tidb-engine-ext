@@ -9,6 +9,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
+use cloud_encryption::EncryptionKey;
 use file_system::{IoOp, IoType};
 use tikv_util::{mpsc::Receiver, time::Instant};
 
@@ -101,7 +102,7 @@ impl EngineCore {
         if let Some(table_filter) = table_filter {
             info!(
                 "[{}:{}] is preparing change set (before table filter)", cs.shard_id, cs.shard_ver;
-                "ids" => ?ids,
+                "ids" => ?ids.keys(),
             );
             cs.unloaded_tables = ids
                 .drain_filter(|_, tb| !table_filter(cs.shard_id, tb)) // !table_filter: table will not load
@@ -110,9 +111,29 @@ impl EngineCore {
 
         info!(
             "[{}:{}] is preparing change set, loading file by ids", cs.shard_id, cs.shard_ver;
-            "ids" => ?ids,
+            "ids" => ?ids.keys(),
         );
-        self.load_tables_by_ids(cs.shard_id, cs.shard_ver, &ids, &mut cs, use_direct_io)?;
+        let encryption_key = if cs.has_snapshot() {
+            get_shard_property(ENCRYPTION_KEY, cs.get_snapshot().get_properties())
+                .map(|v| self.master_key.decrypt_encryption_key(&v).unwrap())
+        } else {
+            match self.get_shard(cs.shard_id) {
+                Some(shard) => shard.encryption_key.clone(),
+                None => {
+                    // If shard not exists it means the peer has been destroyed, return the empty
+                    // changeset.
+                    return Ok(cs);
+                }
+            }
+        };
+        self.load_tables_by_ids(
+            cs.shard_id,
+            cs.shard_ver,
+            &ids,
+            &mut cs,
+            use_direct_io,
+            encryption_key,
+        )?;
         Ok(cs)
     }
 
@@ -135,6 +156,7 @@ impl EngineCore {
         ids: &HashMap<u64, FileMeta>,
         cs: &mut ChangeSet,
         use_direct_io: bool,
+        encryption_key: Option<EncryptionKey>,
     ) -> Result<()> {
         let (result_tx, result_rx) = tikv_util::mpsc::bounded(ids.len());
         let runtime = self.fs.get_runtime();
@@ -143,11 +165,23 @@ impl EngineCore {
         for (&id, tb) in ids {
             if tb.is_blob_file() {
                 if let Ok(file) = self.open_blob_table_file(id) {
-                    cs.add_file(id, file, tb.get_level(), self.cache.clone())?;
+                    cs.add_file(
+                        id,
+                        file,
+                        tb.get_level(),
+                        self.cache.clone(),
+                        encryption_key.clone(),
+                    )?;
                     continue;
                 }
             } else if let Ok(file) = self.open_sstable_file(id) {
-                cs.add_file(id, file, tb.get_level(), self.cache.clone())?;
+                cs.add_file(
+                    id,
+                    file,
+                    tb.get_level(),
+                    self.cache.clone(),
+                    encryption_key.clone(),
+                )?;
                 continue;
             }
             let level = tb.get_level();
@@ -160,11 +194,11 @@ impl EngineCore {
             if msg_count < LOAD_FILE_CONCURRENCY {
                 msg_count += 1;
             } else {
-                self.recv_file_data(cs, use_direct_io, &result_rx)?;
+                self.recv_file_data(cs, use_direct_io, &result_rx, encryption_key.clone())?;
             }
         }
         for _ in 0..msg_count {
-            self.recv_file_data(cs, use_direct_io, &result_rx)?;
+            self.recv_file_data(cs, use_direct_io, &result_rx, encryption_key.clone())?;
         }
         Ok(())
     }
@@ -174,6 +208,7 @@ impl EngineCore {
         cs: &mut ChangeSet,
         use_direct_io: bool,
         result_tx: &Receiver<dfs::Result<(u64, u32, Bytes)>>,
+        encryption_key: Option<EncryptionKey>,
     ) -> Result<()> {
         let (id, level, data) = result_tx.recv().unwrap()?;
         let data_len = data.len();
@@ -189,7 +224,7 @@ impl EngineCore {
         } else {
             self.open_sstable_file(id)?
         };
-        cs.add_file(id, file, level, self.cache.clone())?;
+        cs.add_file(id, file, level, self.cache.clone(), encryption_key)?;
         ENGINE_LEVEL_WRITE_VEC
             .with_label_values(&[&level.to_string()])
             .inc_by(data_len as u64);
@@ -209,12 +244,19 @@ impl EngineCore {
         let load_tables = data
             .unloaded_tbls
             .iter()
-            .filter(|&(_, tbl)| shard.overlap_table(tbl.smallest.chunk(), tbl.biggest.chunk()))
+            .filter(|&(_, tbl)| shard.overlap_table(tbl.smallest(), tbl.biggest()))
             .map(|(id, tbl)| (*id, tbl.clone()))
             .collect();
         info!("{} load_unloaded_tables: {:?}", shard.tag(), load_tables);
 
-        self.load_tables_by_ids(shard_id, shard_ver, &load_tables, &mut cs, use_direct_io)?;
+        self.load_tables_by_ids(
+            shard_id,
+            shard_ver,
+            &load_tables,
+            &mut cs,
+            use_direct_io,
+            shard.encryption_key.clone(),
+        )?;
 
         // level 0
         let mut new_l0s = data.l0_tbls.clone();
@@ -259,9 +301,6 @@ impl EngineCore {
 
         let new_data = ShardData::new(
             data.range.clone(),
-            data.del_prefixes.clone(),
-            data.truncate_ts,
-            data.trim_over_bound,
             data.mem_tbls.clone(),
             new_l0s,
             Arc::new(new_blob_tbl_map),

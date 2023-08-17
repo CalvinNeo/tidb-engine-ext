@@ -2,6 +2,8 @@
 
 use std::{fmt::Debug, str};
 
+use cloud_encryption::MasterKey;
+
 use crate::*;
 
 // FIXME: Revisit the remaining types and methods on KvEngine. Some of these are
@@ -71,5 +73,9 @@ pub trait KvEngine:
         _queue_size: usize,
     ) -> bool {
         true
+    }
+
+    fn get_master_key(&self) -> Option<MasterKey> {
+        None
     }
 }
