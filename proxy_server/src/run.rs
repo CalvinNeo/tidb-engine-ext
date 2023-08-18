@@ -146,8 +146,9 @@ pub fn run_impl<CER: ConfiguredRaftEngine, F: KvFormat>(
     tikv.init_fs();
     tikv.init_yatp();
     // tikv.init_encryption();
+    let runtime = tikv.dfs.get_runtime();
 
-    let master_key = block_on(security_config.new_master_key());
+    let master_key = runtime.block_on(security_config.new_master_key());
     let mut proxy = RaftStoreProxy::new(
         AtomicU8::new(RaftProxyStatus::Idle as u8),
         tikv.encryption_key_manager.clone(),
@@ -269,8 +270,9 @@ fn run_impl_only_for_decryption<CER: ConfiguredRaftEngine, F: KvFormat>(
     let mut security_config = config.security.clone();
     security_config.master_key.override_from_env();
     let tikv = TiKvServer::<CER>::init(config, proxy_config, engine_store_server_helper_ptr);
+    let runtime = tikv.dfs.get_runtime();
 
-    let master_key = block_on(security_config.new_master_key());
+    let master_key = runtime.block_on(security_config.new_master_key());
     let mut proxy = RaftStoreProxy::new(
         AtomicU8::new(RaftProxyStatus::Idle as u8),
         encryption_key_manager.clone(),
