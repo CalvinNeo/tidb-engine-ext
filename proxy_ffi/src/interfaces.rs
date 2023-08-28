@@ -426,6 +426,15 @@ pub mod root {
                     timeout_ms: i64,
                 ) -> root::DB::RaftstoreVer,
             >,
+            pub fn_notify_compact_log: ::std::option::Option<
+                unsafe extern "C" fn(
+                    arg1: root::DB::RaftStoreProxyPtr,
+                    region_id: u64,
+                    compact_index: u64,
+                    compact_term: u64,
+                    applied_index: u64,
+                ),
+            >,
         }
         #[repr(C)]
         #[derive(Debug)]
@@ -517,10 +526,12 @@ pub mod root {
             pub fn_try_flush_data: ::std::option::Option<
                 unsafe extern "C" fn(
                     arg1: *mut root::DB::EngineStoreServerWrap,
-                    arg2: u64,
-                    arg3: u8,
-                    arg4: u64,
-                    arg5: u64,
+                    region_id: u64,
+                    flush_pattern: u8,
+                    index: u64,
+                    term: u64,
+                    truncated_index: u64,
+                    truncated_term: u64,
                 ) -> u8,
             >,
             pub fn_atomic_update_proxy: ::std::option::Option<
@@ -656,7 +667,7 @@ pub mod root {
                 arg3: root::DB::RawVoidPtr,
             ) -> u32;
         }
-        pub const RAFT_STORE_PROXY_VERSION: u64 = 11689320661671341411;
+        pub const RAFT_STORE_PROXY_VERSION: u64 = 8142728127937313804;
         pub const RAFT_STORE_PROXY_MAGIC_NUMBER: u32 = 324508639;
     }
 }
