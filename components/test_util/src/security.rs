@@ -5,6 +5,7 @@ use std::{fs, io::Read, path::PathBuf};
 use collections::HashSet;
 use encryption_export::EncryptionConfig;
 use grpcio::{ChannelCredentials, ChannelCredentialsBuilder};
+use cloud_encryption::MasterKeyConfig;
 use security::SecurityConfig;
 
 pub fn new_security_cfg(cn: Option<HashSet<String>>) -> SecurityConfig {
@@ -17,6 +18,7 @@ pub fn new_security_cfg(cn: Option<HashSet<String>>) -> SecurityConfig {
         cert_allowed_cn: cn.unwrap_or_default(),
         encryption: EncryptionConfig::default(),
         redact_info_log: Some(true),
+        master_key: MasterKeyConfig::default(),
     }
 }
 

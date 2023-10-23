@@ -183,6 +183,19 @@ pub unsafe extern "C" fn ffi_apply_pre_handled_snapshot(
     );
 }
 
+unsafe extern "C" fn ffi_abort_pre_handle_snapshot(
+    _: *mut interfaces_ffi::EngineStoreServerWrap,
+    _: u64,
+    _: u64,
+) {
+}
+unsafe extern "C" fn ffi_release_pre_handled_snapshot(
+    _: *mut interfaces_ffi::EngineStoreServerWrap,
+    _: interfaces_ffi::RawVoidPtr,
+    _: interfaces_ffi::RawCppPtrType,
+) {
+}
+
 pub unsafe extern "C" fn ffi_handle_ingest_sst(
     arg1: *mut interfaces_ffi::EngineStoreServerWrap,
     snaps: interfaces_ffi::SSTViewVec,

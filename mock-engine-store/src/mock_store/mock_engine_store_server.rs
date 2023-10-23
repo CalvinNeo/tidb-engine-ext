@@ -288,6 +288,8 @@ pub fn gen_engine_store_server_helper(
         fn_handle_get_engine_store_server_status: None,
         fn_pre_handle_snapshot: Some(ffi_pre_handle_snapshot),
         fn_apply_pre_handled_snapshot: Some(ffi_apply_pre_handled_snapshot),
+        fn_abort_pre_handle_snapshot: Some(ffi_abort_pre_handle_snapshot),
+        fn_release_pre_handled_snapshot: Some(ffi_release_pre_handled_snapshot),
         fn_handle_http_request: None,
         fn_check_http_uri_available: None,
         fn_gc_raw_cpp_ptr: Some(ffi_gc_raw_cpp_ptr),

@@ -6837,6 +6837,7 @@ name = "test_util"
 version = "0.0.1"
 dependencies = [
  "backtrace",
+ "cloud_encryption",
  "collections",
  "encryption_export",
  "fail",

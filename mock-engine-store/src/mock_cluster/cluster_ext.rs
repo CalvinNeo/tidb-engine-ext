@@ -73,6 +73,8 @@ impl ClusterExt {
                 None => None,
             },
             engine_store_ffi::ffi::RaftStoreProxyEngine::from_tiflash_engine(engines.kv.clone()),
+            tikv.dfs.clone(),
+            None
         ));
 
         let proxy_ref = proxy.as_ref();
