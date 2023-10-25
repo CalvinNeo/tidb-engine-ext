@@ -2,10 +2,10 @@
 
 use std::{fs, io::Read, path::PathBuf};
 
+use cloud_encryption::MasterKeyConfig;
 use collections::HashSet;
 use encryption_export::EncryptionConfig;
 use grpcio::{ChannelCredentials, ChannelCredentialsBuilder};
-use cloud_encryption::MasterKeyConfig;
 use security::SecurityConfig;
 
 pub fn new_security_cfg(cn: Option<HashSet<String>>) -> SecurityConfig {

@@ -1,6 +1,9 @@
 // Copyright 2022 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{time::{Duration, Instant}, pin::Pin};
+use std::{
+    pin::Pin,
+    time::{Duration, Instant},
+};
 
 use engine_store_ffi::ffi::interfaces_ffi::{BaseBuffView, RaftStoreProxyPtr, RawVoidPtr};
 use futures::{compat::Future01CompatExt, executor::block_on};

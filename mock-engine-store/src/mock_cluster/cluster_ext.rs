@@ -58,6 +58,7 @@ impl ClusterExt {
         node_cfg: TikvConfig,
         cluster_id: isize,
         mock_cfg: MockConfig,
+        dfs: Arc<dyn kvengine::dfs::Dfs>,
     ) -> (FFIHelperSet, TikvConfig) {
         // We must allocate on heap to avoid move.
         let proxy = Box::new(engine_store_ffi::ffi::RaftStoreProxy::new(
@@ -73,8 +74,8 @@ impl ClusterExt {
                 None => None,
             },
             engine_store_ffi::ffi::RaftStoreProxyEngine::from_tiflash_engine(engines.kv.clone()),
-            tikv.dfs.clone(),
-            None
+            dfs,
+            None,
         ));
 
         let proxy_ref = proxy.as_ref();
@@ -180,6 +181,14 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
         key_mgr: &Option<Arc<DataKeyManager>>,
         router: &Option<RaftRouter<TiFlashEngine, engine_rocks::RocksEngine>>,
     ) -> (FFIHelperSet, TikvConfig) {
+        let s3fs = Arc::new(kvengine::dfs::S3Fs::new(
+            "oss_test".to_string(),
+            format!("http://127.0.0.1:{}", self.oss.port()),
+            "admin".to_string(),
+            "admin".to_string(),
+            "local".to_string(),
+            "cse_test".to_string(),
+        ));
         ClusterExt::make_ffi_helper_set_no_bind(
             id,
             engines,
@@ -188,6 +197,7 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
             self.cfg.tikv.clone(),
             self as *const Cluster<T> as isize,
             self.cfg.mock_cfg.clone(),
+            s3fs,
         )
     }
 

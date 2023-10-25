@@ -2,12 +2,12 @@
 
 use std::mem;
 
-use crate::errors::Result;
-
 use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BufMut};
 use kvproto::raft_cmdpb::{CustomRequest, RaftCmdRequest};
 use protobuf::Message;
+
+use crate::errors::Result;
 
 pub fn get_custom_log(req: &RaftCmdRequest) -> Option<CustomRaftLog<'_>> {
     if !req.has_custom_request() {
@@ -33,8 +33,8 @@ pub const TYPE_TRIGGER_TRIM_OVER_BOUND: CustomRaftlogType = 10;
 
 const HEADER_SIZE: usize = 2;
 
-// CustomRaftLog is the raft log format for unistore to store Prewrite/Commit/PessimisticLock.
-//  | type(1) | version(1) | entries
+// CustomRaftLog is the raft log format for unistore to store
+// Prewrite/Commit/PessimisticLock.  | type(1) | version(1) | entries
 //
 // It reduces the cost of marshal/unmarshal and avoid DB lookup during apply.
 #[derive(Debug)]
@@ -273,8 +273,8 @@ impl CustomBuilder {
         self.buf[0] as CustomRaftlogType
     }
 
-    // Some custom logs may contains multiple types of logs, e.g., resolve-lock can contain both
-    // commit and rollback. We use type to distinguish them.
+    // Some custom logs may contains multiple types of logs, e.g., resolve-lock can
+    // contain both commit and rollback. We use type to distinguish them.
     pub fn append_type(&mut self, tp: CustomRaftlogType) {
         self.buf.push(tp as u8);
     }

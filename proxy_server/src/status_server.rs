@@ -581,7 +581,10 @@ where
         }
     }
 
-    pub async fn unsafe_destroy_region(req: Request<Body>, router: R) -> hyper::Result<Response<Body>> {
+    pub async fn unsafe_destroy_region(
+        req: Request<Body>,
+        router: R,
+    ) -> hyper::Result<Response<Body>> {
         let query = req.uri().query().unwrap_or("");
         let query_pairs: HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes()).collect();
         let region_id = query_pairs

@@ -58,6 +58,7 @@ use tokio::sync::oneshot;
 use txn_types::WriteBatchFlags;
 
 use super::{cluster_ext::*, common::*, config::Config, transport_simulate::Filter, util::*};
+use crate::mock_oss::ObjectStorageService;
 
 // We simulate 3 or 5 nodes, each has a store.
 // Sometimes, we use fixed id to test, which means the id
@@ -170,6 +171,7 @@ pub struct Cluster<T: Simulator<TiFlashEngine>> {
     pub sim: Arc<RwLock<T>>,
     pub pd_client: Arc<TestPdClient>,
     resource_manager: Option<Arc<ResourceGroupManager>>,
+    pub oss: Arc<ObjectStorageService>,
 }
 
 impl<T: Simulator<TiFlashEngine>> std::panic::UnwindSafe for Cluster<T> {}
@@ -187,6 +189,12 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
         // Force sync to enable Leader run as a Leader, rather than proxy
         fail::cfg("apply_on_handle_snapshot_sync", "return").unwrap();
 
+        let base_dir = tempfile::Builder::new()
+            .prefix("proxy_test_")
+            .tempdir()
+            .unwrap();
+        let mut svr = ObjectStorageService::new(base_dir.path());
+        svr.start_server();
         Cluster {
             cluster_ext: ClusterExt::default(),
             cfg: Config {
@@ -209,6 +217,7 @@ impl<T: Simulator<TiFlashEngine>> Cluster<T> {
             sim,
             pd_client,
             resource_manager: Some(Arc::new(ResourceGroupManager::default())),
+            oss: Arc::new(svr),
         }
     }
 

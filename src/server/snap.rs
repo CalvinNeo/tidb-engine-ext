@@ -480,7 +480,8 @@ impl<R: RaftExtension + 'static> Runnable for Runner<R> {
                 let security_mgr = Arc::clone(&self.security_mgr);
                 let sending_count = Arc::clone(&self.sending_count);
                 sending_count.fetch_add(1, Ordering::SeqCst);
-                let send_task = send_cse_snap(env, mgr, security_mgr, &self.cfg.clone(), &addr, msg);
+                let send_task =
+                    send_cse_snap(env, mgr, security_mgr, &self.cfg.clone(), &addr, msg);
                 let task = async move {
                     let res = match send_task {
                         Err(e) => Err(e),

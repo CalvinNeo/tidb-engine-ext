@@ -754,7 +754,7 @@ where
     ) {
         let label = "download";
         let timer = Instant::now_coarse();
-        
+
         // proxy don't need to download the RockDB SST files.
         let task = async move {
             let res = Ok(DownloadResponse::default());

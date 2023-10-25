@@ -22,8 +22,8 @@ use super::{
     interfaces_ffi,
     interfaces_ffi::{
         BaseBuffView, CppStrVecView, KVGetStatus, RaftProxyStatus, RaftStoreProxyFFIHelper,
-        RaftStoreProxyPtr, RawCppPtr, RawCppStringPtr, RawRustPtr, RawVoidPtr, SSTReaderInterfaces,
-        RaftstoreVer,
+        RaftStoreProxyPtr, RaftstoreVer, RawCppPtr, RawCppStringPtr, RawRustPtr, RawVoidPtr,
+        SSTReaderInterfaces,
     },
     read_index_helper,
     sst_reader_impls::*,

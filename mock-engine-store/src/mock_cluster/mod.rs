@@ -4,6 +4,7 @@ pub mod cluster;
 pub mod cluster_ext;
 mod common;
 pub mod config;
+pub mod mock_oss;
 pub mod node;
 pub mod server;
 pub mod transport_simulate;

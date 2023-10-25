@@ -290,6 +290,7 @@ pub fn gen_engine_store_server_helper(
         fn_apply_pre_handled_snapshot: Some(ffi_apply_pre_handled_snapshot),
         fn_abort_pre_handle_snapshot: Some(ffi_abort_pre_handle_snapshot),
         fn_release_pre_handled_snapshot: Some(ffi_release_pre_handled_snapshot),
+        fn_get_lock_by_key: Some(ffi_get_lock_by_key),
         fn_handle_http_request: None,
         fn_check_http_uri_available: None,
         fn_gc_raw_cpp_ptr: Some(ffi_gc_raw_cpp_ptr),
@@ -517,4 +518,12 @@ unsafe extern "C" fn ffi_handle_compute_store_stats(
         engine_bytes_read: 0,
         engine_keys_read: 0,
     }
+}
+
+pub unsafe extern "C" fn ffi_get_lock_by_key(
+    _arg1: *const interfaces_ffi::EngineStoreServerWrap,
+    _region_id: u64,
+    _bf: interfaces_ffi::BaseBuffView,
+) -> interfaces_ffi::BaseBuffView {
+    todo!()
 }

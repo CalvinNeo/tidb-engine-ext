@@ -12,8 +12,8 @@ cloud-azure = ["encryption_export/cloud-azure"]
 
 [dependencies]
 backtrace = "0.3"
-collections = { workspace = true }
 cloud_encryption = { workspace = true }
+collections = { workspace = true }
 encryption_export = { workspace = true }
 fail = "0.5"
 grpcio = { workspace = true }

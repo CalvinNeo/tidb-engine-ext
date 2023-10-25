@@ -87,8 +87,8 @@ tikv_util = { workspace = true, default-features = false }
 time = "0.1"
 tokio = { version = "1.5", features = ["sync", "rt-multi-thread"] }
 tokio-timer = { git = "https://github.com/tikv/tokio", branch = "tokio-timer-hotfix" }
-txn_types = { workspace = true }
 tracker = { workspace = true, default-features = false }
+txn_types = { workspace = true }
 uuid = { version = "0.8.1", features = ["serde", "v4"] }
 yatp = { git = "https://github.com/tikv/yatp.git", branch = "master" }
 

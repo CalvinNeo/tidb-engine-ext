@@ -4172,7 +4172,7 @@ where
     fn on_check_merge(&mut self) {
         // Return ASAP for tiflash learner
         return;
-        
+
         if self.fsm.stopped
             || self.fsm.peer.pending_remove
             || self.fsm.peer.pending_merge_state.is_none()
