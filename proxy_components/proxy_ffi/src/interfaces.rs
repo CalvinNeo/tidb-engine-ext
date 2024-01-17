@@ -547,11 +547,41 @@ pub mod root {
         }
         #[repr(C)]
         #[derive(Debug)]
+        pub struct FastAddPeerInterfaces {
+            pub fn_apply_fap_snapshot: ::std::option::Option<
+                unsafe extern "C" fn(
+                    arg1: *mut root::DB::EngineStoreServerWrap,
+                    arg2: u64,
+                    arg3: u64,
+                    arg4: u8,
+                ) -> u8,
+            >,
+            pub fn_fast_add_peer: ::std::option::Option<
+                unsafe extern "C" fn(
+                    arg1: *mut root::DB::EngineStoreServerWrap,
+                    region_id: u64,
+                    new_peer_id: u64,
+                ) -> root::DB::FastAddPeerRes,
+            >,
+            pub fn_query_fap_snapshot_state: ::std::option::Option<
+                unsafe extern "C" fn(
+                    arg1: *mut root::DB::EngineStoreServerWrap,
+                    region_id: u64,
+                    new_peer_id: u64,
+                ) -> root::DB::FapSnapshotState,
+            >,
+            pub fn_clear_fap_snapshot: ::std::option::Option<
+                unsafe extern "C" fn(arg1: *mut root::DB::EngineStoreServerWrap, region_id: u64),
+            >,
+        }
+        #[repr(C)]
+        #[derive(Debug)]
         pub struct EngineStoreServerHelper {
             pub magic_number: u32,
             pub version: u64,
             pub inner: *mut root::DB::EngineStoreServerWrap,
             pub ps: root::DB::PageStorageInterfaces,
+            pub fap: root::DB::FastAddPeerInterfaces,
             pub fn_gen_cpp_string: ::std::option::Option<
                 unsafe extern "C" fn(arg1: root::DB::BaseBuffView) -> root::DB::RawCppPtr,
             >,
@@ -641,14 +671,6 @@ pub mod root {
                     arg3: root::DB::RawCppPtrType,
                 ),
             >,
-            pub fn_apply_fap_snapshot: ::std::option::Option<
-                unsafe extern "C" fn(
-                    arg1: *mut root::DB::EngineStoreServerWrap,
-                    arg2: u64,
-                    arg3: u64,
-                    arg4: u8,
-                ) -> u8,
-            >,
             pub fn_handle_http_request: ::std::option::Option<
                 unsafe extern "C" fn(
                     arg1: *mut root::DB::EngineStoreServerWrap,
@@ -703,23 +725,6 @@ pub mod root {
                     leader_safe_ts: u64,
                 ),
             >,
-            pub fn_fast_add_peer: ::std::option::Option<
-                unsafe extern "C" fn(
-                    arg1: *mut root::DB::EngineStoreServerWrap,
-                    region_id: u64,
-                    new_peer_id: u64,
-                ) -> root::DB::FastAddPeerRes,
-            >,
-            pub fn_query_fap_snapshot_state: ::std::option::Option<
-                unsafe extern "C" fn(
-                    arg1: *mut root::DB::EngineStoreServerWrap,
-                    region_id: u64,
-                    new_peer_id: u64,
-                ) -> root::DB::FapSnapshotState,
-            >,
-            pub fn_clear_fap_snapshot: ::std::option::Option<
-                unsafe extern "C" fn(arg1: *mut root::DB::EngineStoreServerWrap, region_id: u64),
-            >,
             pub fn_kvstore_region_exists: ::std::option::Option<
                 unsafe extern "C" fn(
                     arg1: *mut root::DB::EngineStoreServerWrap,
@@ -734,7 +739,7 @@ pub mod root {
                 arg3: root::DB::RawVoidPtr,
             ) -> u32;
         }
-        pub const RAFT_STORE_PROXY_VERSION: u64 = 14498963167462351742;
+        pub const RAFT_STORE_PROXY_VERSION: u64 = 6610196017444861749;
         pub const RAFT_STORE_PROXY_MAGIC_NUMBER: u32 = 324508639;
     }
 }

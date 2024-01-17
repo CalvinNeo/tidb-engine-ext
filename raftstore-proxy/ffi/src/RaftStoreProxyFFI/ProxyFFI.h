@@ -305,6 +305,17 @@ struct PageStorageInterfaces {
   void (*fn_handle_purge_ps)(const EngineStoreServerWrap *);
 };
 
+struct FastAddPeerInterfaces {
+  uint8_t (*fn_apply_fap_snapshot)(EngineStoreServerWrap *, uint64_t, uint64_t,
+                                   uint8_t);
+  FastAddPeerRes (*fn_fast_add_peer)(EngineStoreServerWrap *,
+                                     uint64_t region_id, uint64_t new_peer_id);
+  FapSnapshotState (*fn_query_fap_snapshot_state)(EngineStoreServerWrap *,
+                                                  uint64_t region_id,
+                                                  uint64_t new_peer_id);
+  void (*fn_clear_fap_snapshot)(EngineStoreServerWrap *, uint64_t region_id);
+};
+
 struct EngineStoreServerHelper {
   uint32_t magic_number;  // use a very special number to check whether this
                           // struct is legal
@@ -313,6 +324,7 @@ struct EngineStoreServerHelper {
 
   EngineStoreServerWrap *inner;
   PageStorageInterfaces ps;
+  FastAddPeerInterfaces fap;
   RawCppPtr (*fn_gen_cpp_string)(BaseBuffView);
   EngineStoreApplyRes (*fn_handle_write_raft_cmd)(const EngineStoreServerWrap *,
                                                   WriteCmdsView, RaftCmdHeader);
@@ -340,8 +352,6 @@ struct EngineStoreServerHelper {
                                        uint64_t);
   void (*fn_release_pre_handled_snapshot)(EngineStoreServerWrap *, RawVoidPtr,
                                           RawCppPtrType);
-  uint8_t (*fn_apply_fap_snapshot)(EngineStoreServerWrap *, uint64_t, uint64_t,
-                                   uint8_t);
   HttpRequestRes (*fn_handle_http_request)(EngineStoreServerWrap *,
                                            BaseBuffView path,
                                            BaseBuffView query,
@@ -357,12 +367,6 @@ struct EngineStoreServerHelper {
   void (*fn_handle_safe_ts_update)(EngineStoreServerWrap *, uint64_t region_id,
                                    uint64_t self_safe_ts,
                                    uint64_t leader_safe_ts);
-  FastAddPeerRes (*fn_fast_add_peer)(EngineStoreServerWrap *,
-                                     uint64_t region_id, uint64_t new_peer_id);
-  FapSnapshotState (*fn_query_fap_snapshot_state)(EngineStoreServerWrap *,
-                                                  uint64_t region_id,
-                                                  uint64_t new_peer_id);
-  void (*fn_clear_fap_snapshot)(EngineStoreServerWrap *, uint64_t region_id);
   bool (*fn_kvstore_region_exists)(EngineStoreServerWrap *, uint64_t region_id);
 };
 
