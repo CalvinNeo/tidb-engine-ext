@@ -167,7 +167,7 @@ impl ReqContext {
         }
         let deadline = Deadline::from_now(deadline_duration);
         let bypass_locks = TsSet::from_u64s(context.take_resolved_locks());
-        let access_locks = TsSet::from_u64s(context.take_committed_locks());
+        let access_locks = Default::default();
         let lower_bound = match ranges.first().as_ref() {
             Some(range) => range.start.clone(),
             None => vec![],

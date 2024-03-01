@@ -655,7 +655,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                 // The bypass_locks and access_locks set will be checked at most once.
                 // `TsSet::vec` is more efficient here.
                 let bypass_locks = TsSet::vec_from_u64s(ctx.take_resolved_locks());
-                let access_locks = TsSet::vec_from_u64s(ctx.take_committed_locks());
+                let access_locks = Default::default();
 
                 let snap_ctx = prepare_snap_ctx(
                     &ctx,
@@ -849,7 +849,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     let isolation_level = ctx.get_isolation_level();
                     let fill_cache = !ctx.get_not_fill_cache();
                     let bypass_locks = TsSet::vec_from_u64s(ctx.take_resolved_locks());
-                    let access_locks = TsSet::vec_from_u64s(ctx.take_committed_locks());
+                    let access_locks = Default::default();
                     let region_id = ctx.get_region_id();
 
                     let snap_ctx = match prepare_snap_ctx(
@@ -1230,7 +1230,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                 let command_duration = Instant::now();
 
                 let bypass_locks = TsSet::from_u64s(ctx.take_resolved_locks());
-                let access_locks = TsSet::from_u64s(ctx.take_committed_locks());
+                let access_locks = Default::default();
 
                 let snap_ctx = prepare_snap_ctx(
                     &ctx,
@@ -1432,7 +1432,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                 let command_duration = Instant::now();
 
                 let bypass_locks = TsSet::from_u64s(ctx.take_resolved_locks());
-                let access_locks = TsSet::from_u64s(ctx.take_committed_locks());
+                let access_locks = Default::default();
 
                 // Update max_ts and check the in-memory lock table before getting the snapshot
                 if !ctx.get_stale_read() {
