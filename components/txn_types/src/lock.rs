@@ -427,6 +427,7 @@ impl Lock {
         .set_txn_source(txn_source)
         .with_rollback_ts(rollback_ts)
         .with_generation(generation);
+        tikv_util::info!("with_generation"; "gen" => generation, "ts" => lock.ts);
         if use_async_commit {
             lock = lock.use_async_commit(secondaries);
         }

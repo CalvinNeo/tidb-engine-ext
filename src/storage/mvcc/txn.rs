@@ -124,7 +124,10 @@ impl MvccTxn {
             self.new_locks
                 .push(lock.clone().into_lock_info(key.to_raw().unwrap()));
         }
-        let write = Modify::Put(CF_LOCK, key, lock.to_bytes());
+        let lock_bytes = lock.to_bytes();
+        let hex = hex::encode(&lock_bytes);
+        info!("put_lock"; "lock" => ?lock, "bytes" => hex);
+        let write = Modify::Put(CF_LOCK, key, lock_bytes);
         self.write_size += write.size();
         self.modifies.push(write);
     }

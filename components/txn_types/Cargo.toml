@@ -18,6 +18,7 @@ slog = { workspace = true }
 thiserror = "1.0"
 tikv_alloc = { workspace = true }
 tikv_util = { workspace = true }
+slog-global = { workspace = true }
 
 [dev-dependencies]
 panic_hook = { workspace = true }
