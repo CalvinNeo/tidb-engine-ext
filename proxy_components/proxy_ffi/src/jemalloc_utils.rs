@@ -2,7 +2,7 @@
 
 extern "C" {
     // External jemalloc
-    pub fn je_mallctl(
+    pub fn mallctl(
         name: *const ::std::os::raw::c_char,
         oldp: *mut ::std::os::raw::c_void,
         oldlenp: *mut u64,
@@ -49,7 +49,7 @@ fn issue_mallctl(command: &str) -> u64 {
                     target_os = "dragonfly",
                     target_os = "macos"
                 )))]
-                je_mallctl(
+                mallctl(
                     c_ptr,
                     &mut ptr as *mut _ as *mut ::std::os::raw::c_void,
                     &mut size as *mut u64,
@@ -63,7 +63,7 @@ fn issue_mallctl(command: &str) -> u64 {
         {
             // Must linked to tiflash.
             #[cfg(feature = "external-jemalloc")]
-            je_mallctl(
+            mallctl(
                 c_ptr,
                 &mut ptr as *mut _ as *mut ::std::os::raw::c_void,
                 &mut size as *mut u64,
